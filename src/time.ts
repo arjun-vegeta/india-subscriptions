@@ -28,11 +28,22 @@ export function fromUnixSeconds(value: unknown): Date | undefined {
 /** Parses ISO-8601 strings; returns undefined instead of an Invalid Date. */
 export function parseIso(value: unknown): Date | undefined {
   if (typeof value !== 'string' || value.trim() === '') return undefined;
-  const date = new Date(value);
+  const text = value.trim();
+  // JavaScript rolls impossible dates over (30 Feb becomes 2 Mar); reject them.
+  const calendar = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  if (calendar && !isRealCalendarDate(Number(calendar[1]), Number(calendar[2]), Number(calendar[3]))) {
+    return undefined;
+  }
+  const date = new Date(text);
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
-/** "2026-11-17T10:30:00+05:30" — the ISO form Indian gateways expect. */
+function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  return day <= daysInMonth(year, month - 1);
+}
+
+/** "2026-11-17T10:30:00+05:30" — the ISO form Indian gateways expect. Truncates to whole seconds. */
 export function toIstIso(date: Date): string {
   const shifted = new Date(date.getTime() + IST_OFFSET_MS);
   return shifted.toISOString().replace(/\.\d{3}Z$/, '+05:30');
@@ -48,6 +59,7 @@ export function fromIstDateString(value: unknown): Date | undefined {
   if (typeof value !== 'string') return undefined;
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
   if (!match) return undefined;
+  if (!isRealCalendarDate(Number(match[1]), Number(match[2]), Number(match[3]))) return undefined;
   const utcMidnight = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
   return new Date(utcMidnight - IST_OFFSET_MS);
 }
@@ -69,6 +81,7 @@ function daysInMonth(year: number, monthIndex: number): number {
  */
 export function cycleStart(anchor: Date, interval: BillingInterval, n: number): Date {
   assertInterval(interval);
+  if (!(anchor instanceof Date) || Number.isNaN(anchor.getTime())) throw invalid('cycle anchor is not a valid date');
   if (!Number.isInteger(n) || n < 0) throw invalid(`cycle index must be a non-negative integer, got ${n}`);
   const steps = n * interval.count;
   if (steps === 0) return new Date(anchor.getTime());

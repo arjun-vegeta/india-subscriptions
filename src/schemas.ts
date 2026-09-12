@@ -81,7 +81,8 @@ export type Customer = z.infer<typeof CustomerSchema>;
 // Plans
 // ---------------------------------------------------------------------------
 
-export const CreatePlanInputSchema = z.object({
+export const CreatePlanInputSchema = z
+  .object({
   /**
    * Your own plan id. Used where the gateway lets the merchant choose the id;
    * ignored where the gateway generates one.
@@ -103,7 +104,11 @@ export const CreatePlanInputSchema = z.object({
   /** Number of cycles after which the plan ends. Omit for open-ended. */
   maxCycles: z.number().int().positive().optional(),
   metadata: MetadataSchema.optional(),
-});
+})
+  .refine((plan) => plan.maxAmount === undefined || plan.maxAmount >= plan.amount, {
+    error: 'maxAmount must be at least amount: the mandate ceiling cannot be below the recurring charge',
+    path: ['maxAmount'],
+  });
 export type CreatePlanInput = z.input<typeof CreatePlanInputSchema>;
 export type ParsedCreatePlanInput = z.output<typeof CreatePlanInputSchema>;
 
@@ -220,7 +225,23 @@ export const CreateSubscriptionInputSchema = z
   })
   .refine((input) => !(input.trial && input.startAt), {
     error: 'Pass either trial or startAt, not both: both set the date of the first charge',
-  });
+  })
+  .refine(
+    (input) => {
+      const firstCharge = input.startAt ?? input.trial?.endsAt;
+      if (!firstCharge || !input.mandateEndsAt) return true;
+      return Date.parse(input.mandateEndsAt) > Date.parse(firstCharge);
+    },
+    { error: 'mandateEndsAt must be after the first charge date', path: ['mandateEndsAt'] },
+  )
+  .refine(
+    (input) => {
+      const firstCharge = input.startAt ?? input.trial?.endsAt;
+      if (!firstCharge || !input.authorizeBy) return true;
+      return Date.parse(input.authorizeBy) <= Date.parse(firstCharge);
+    },
+    { error: 'authorizeBy must not be after the first charge date', path: ['authorizeBy'] },
+  );
 export type CreateSubscriptionInput = z.input<typeof CreateSubscriptionInputSchema>;
 export type ParsedCreateSubscriptionInput = z.output<typeof CreateSubscriptionInputSchema>;
 

@@ -220,7 +220,7 @@ describe('HttpClient: retries on idempotent requests', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('a network error on the final attempt does not mask... but a later response wins over an earlier network error', async () => {
+  it('a later HTTP response wins over an earlier network error', async () => {
     const { client } = setup([
       { url: URL_, networkError: true },
       { url: URL_, status: 503 },
@@ -302,18 +302,12 @@ describe('HttpClient: transport failures', () => {
 
   it('error messages never include the query string (it may carry secrets)', async () => {
     const secretUrl = `${URL_}?token=s3cr3t&x=1`;
-    const { client } = setup([{ url: secretUrl, networkError: true }]);
-    const idempotent = await rejection(client.send(get({ url: secretUrl, ...{ idempotent: true } })).catch((e) => Promise.reject(e)) as Promise<unknown>).catch(() => undefined);
-    void idempotent;
-
     for (const request of [get({ url: secretUrl }), post({ url: secretUrl })]) {
-      const routes = Array.from({ length: 3 }, () => ({ url: secretUrl, networkError: true }));
-      const { client: c } = setup(routes);
-      const error = await rejection(c.send(request));
+      const { client } = setup(Array.from({ length: 3 }, () => ({ url: secretUrl, networkError: true })));
+      const error = await rejection(client.send(request));
       expect(error.message).not.toContain('s3cr3t');
       expect(error.message).toContain(URL_);
     }
-    void client;
   });
 
   it('the abort timer is cleared after a fast response (no stray abort later)', async () => {
@@ -432,11 +426,11 @@ describe('withQuery', () => {
   // DEFECT (src/http.ts, withQuery): a URL that already ends in "?" gets "&" appended,
   // producing "https://x.test/a?&count=10" (an empty first parameter), and a URL with a
   // #fragment gets the query appended after the fragment, where it is not sent to the server.
-  it.fails('does not produce "?&" when the URL already ends with "?"', () => {
+  it('does not produce "?&" when the URL already ends with "?"', () => {
     expect(withQuery('https://x.test/a?', { count: 10 })).toBe('https://x.test/a?count=10');
   });
 
-  it.fails('inserts the query before a #fragment', () => {
+  it('inserts the query before a #fragment', () => {
     expect(withQuery('https://x.test/a#frag', { count: 10 })).toBe('https://x.test/a?count=10#frag');
   });
 });

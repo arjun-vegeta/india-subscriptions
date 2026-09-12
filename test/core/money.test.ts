@@ -203,19 +203,19 @@ describe('rupeesToPaise', () => {
   // dangling "." ("2.", "1.", "1999.", "0."). The regex then rejects it and the amount comes back
   // as undefined instead of the nearest paise. Callers that treat undefined as "no amount" would
   // silently drop a real amount.
-  it.fails('parses 1.99999 as 200 paise (currently undefined)', () => {
+  it('parses 1.99999 as 200 paise', () => {
     expect(rupeesToPaise(1.99999)).toBe(200);
   });
 
-  it.fails('parses 0.3 * 3 + 0.1 (0.9999999999999999) as 100 paise (currently undefined)', () => {
+  it('parses 0.3 * 3 + 0.1 (0.9999999999999999) as 100 paise', () => {
     expect(rupeesToPaise(0.3 * 3 + 0.1)).toBe(100);
   });
 
-  it.fails('parses 19.99 * 100 (1998.9999999999998) as 199900 paise (currently undefined)', () => {
+  it('parses 19.99 * 100 (1998.9999999999998) as 199900 paise', () => {
     expect(rupeesToPaise(19.99 * 100)).toBe(199900);
   });
 
-  it.fails('parses 0.00001 as 0 paise (currently undefined)', () => {
+  it('parses 0.00001 as 0 paise', () => {
     expect(rupeesToPaise(0.00001)).toBe(0);
   });
 });

@@ -32,7 +32,16 @@ export function paiseToRupeeNumber(paise: number): number {
  */
 export function rupeesToPaise(value: unknown): number | undefined {
   if (value === null || value === undefined || value === '') return undefined;
-  const text = typeof value === 'number' ? toPlainString(value) : String(value).trim();
+  let text: string;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined;
+    // Gateways send at most two decimals; toFixed(2) also absorbs float noise
+    // such as 1998.9999999999998 without ever producing exponent notation
+    // for realistic amounts.
+    text = value.toFixed(2);
+  } else {
+    text = String(value).trim();
+  }
   const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(text);
   if (!match) return undefined;
   const [, sign, whole, fraction = ''] = match;
@@ -40,13 +49,8 @@ export function rupeesToPaise(value: unknown): number | undefined {
   // Round half up on a third decimal, which gateways should never send.
   const roundUp = fraction.length > 2 && Number(fraction[2]) >= 5 ? 1 : 0;
   const paise = Number(whole) * 100 + Number(padded) + roundUp;
-  return sign ? -paise : paise;
-}
-
-function toPlainString(value: number): string {
-  if (!Number.isFinite(value)) return 'NaN';
-  // Avoid exponent notation; amounts never need more than 2 decimals.
-  return Number.isInteger(value) ? String(value) : value.toFixed(4).replace(/0+$/, '');
+  if (!Number.isSafeInteger(paise)) return undefined;
+  return sign && paise !== 0 ? -paise : paise;
 }
 
 export function toPaiseOrUndefined(value: unknown): number | undefined {

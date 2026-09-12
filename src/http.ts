@@ -34,6 +34,9 @@ export interface HttpResponse {
 }
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRY_AFTER_HEADER = 'retry-after';
+/** Never sleep longer than this on a gateway's Retry-After; the caller can retry later instead. */
+const MAX_RETRY_AFTER_MS = 5000;
 
 export class HttpClient {
   private readonly fetchImpl: FetchLike;
@@ -49,16 +52,19 @@ export class HttpClient {
       throw new SubscriptionError(ErrorCode.Config, 'No fetch implementation found. Use Node 18+ or pass options.fetch.');
     }
     this.fetchImpl = options.fetch ? chosen : chosen.bind(globalThis);
-    this.timeoutMs = options.timeoutMs ?? 30_000;
-    this.maxRetries = options.maxRetries ?? 2;
+    this.timeoutMs = positiveOr(options.timeoutMs, 30_000);
+    this.maxRetries = Math.floor(nonNegativeOr(options.maxRetries, 2));
   }
 
   async send(request: HttpRequest): Promise<HttpResponse> {
     const attempts = request.idempotent ? this.maxRetries + 1 : 1;
     let lastError: SubscriptionError | undefined;
 
+    let retryAfterMs: number | undefined;
+
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      if (attempt > 1) await this.sleep(backoffMs(attempt - 1));
+      if (attempt > 1) await this.sleep(retryAfterMs ?? backoffMs(attempt - 1));
+      retryAfterMs = undefined;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
@@ -77,6 +83,7 @@ export class HttpClient {
         };
         if (RETRYABLE_STATUS.has(response.status) && attempt < attempts) {
           lastError = undefined;
+          retryAfterMs = retryAfterToMs(response.headers.get(RETRY_AFTER_HEADER));
           continue;
         }
         return result;
@@ -110,6 +117,22 @@ function transportError(
   return timedOut
     ? new SubscriptionError(ErrorCode.Timeout, `${where} timed out after ${timeoutMs}ms`, { provider: request.provider, cause })
     : new SubscriptionError(ErrorCode.Network, `${where} failed: ${describe(cause)}`, { provider: request.provider, cause });
+}
+
+function positiveOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+/** Honours a numeric Retry-After (seconds), capped so a request never stalls for long. */
+function retryAfterToMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+  return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
 }
 
 function backoffMs(retryNumber: number): number {
@@ -164,5 +187,11 @@ export function formEncode(fields: Record<string, string | number | undefined>):
 
 export function withQuery(url: string, query: Record<string, string | number | undefined>): string {
   const encoded = formEncode(query);
-  return encoded ? `${url}${url.includes('?') ? '&' : '?'}${encoded}` : url;
+  if (!encoded) return url;
+  const hashIndex = url.indexOf('#');
+  const base = hashIndex === -1 ? url : url.slice(0, hashIndex);
+  const fragment = hashIndex === -1 ? '' : url.slice(hashIndex);
+  let separator = '?';
+  if (base.includes('?')) separator = base.endsWith('?') || base.endsWith('&') ? '' : '&';
+  return `${base}${separator}${encoded}${fragment}`;
 }

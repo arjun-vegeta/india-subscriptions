@@ -98,7 +98,7 @@ describe('unix / ISO helpers', () => {
   // DEFECT (src/time.ts, parseIso): it relies on `new Date(string)`, and V8 silently rolls
   // an impossible calendar day over (2026-02-30 -> 2026-03-02) instead of returning undefined.
   // A gateway date that is off by a few days would be accepted as a different, valid day.
-  it.fails('parseIso rejects an impossible calendar date such as 2026-02-30', () => {
+  it('parseIso rejects an impossible calendar date such as 2026-02-30', () => {
     expect(parseIso('2026-02-30')).toBeUndefined();
   });
 });
@@ -158,13 +158,13 @@ describe('IST formatting', () => {
   // DEFECT (src/time.ts, fromIstDateString): the regex only checks the digit shape, then
   // Date.UTC() normalises out-of-range parts. "2026-02-30" becomes 2 March, "2026-13-45" becomes
   // 14 January 2027, "2026-00-00" becomes 30 November 2025 - none return undefined.
-  it.fails('fromIstDateString rejects 2026-02-30', () => {
+  it('fromIstDateString rejects 2026-02-30', () => {
     expect(fromIstDateString('2026-02-30')).toBeUndefined();
   });
-  it.fails('fromIstDateString rejects month 13', () => {
+  it('fromIstDateString rejects month 13', () => {
     expect(fromIstDateString('2026-13-01')).toBeUndefined();
   });
-  it.fails('fromIstDateString rejects day 00', () => {
+  it('fromIstDateString rejects day 00', () => {
     expect(fromIstDateString('2026-11-00')).toBeUndefined();
   });
 

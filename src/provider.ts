@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import type { Provider } from './constants.js';
+import { ErrorCode, type Provider } from './constants.js';
 import { SubscriptionError, parseResponse, unsupported } from './errors.js';
 import { HttpClient, codeForStatus, type HttpOptions, type HttpRequest, type HttpResponse } from './http.js';
 import type {
@@ -110,6 +110,13 @@ export abstract class BaseProvider implements SubscriptionProvider {
     what: string,
   ): Promise<z.output<S>> {
     const response = await this.sendRaw(request);
+    if (response.json === undefined && response.text !== '') {
+      throw new SubscriptionError(
+        ErrorCode.UnexpectedResponse,
+        `${this.name} returned a ${what} that is not JSON`,
+        { provider: this.name, httpStatus: response.status, raw: response.text },
+      );
+    }
     return parseResponse(schema, response.json, what, this.name);
   }
 
