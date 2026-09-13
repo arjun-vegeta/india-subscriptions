@@ -199,6 +199,7 @@ export const ServerHeader = {
   CacheControl: 'cache-control',
   ContentTypeOptions: 'x-content-type-options',
   Connection: 'connection',
+  ContentLength: 'content-length',
 } as const;
 export type ServerHeader = (typeof ServerHeader)[keyof typeof ServerHeader];
 

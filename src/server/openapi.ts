@@ -3,7 +3,7 @@
  * Zod schemas, so the document is the contract typed clients are built from.
  */
 import { z } from 'zod';
-import { ContentType, HttpMethod } from '../constants.js';
+import { ContentType } from '../constants.js';
 import { SchemaName, exportJsonSchemas } from '../schema-registry.js';
 import { TickResultSchema } from '../scheduler/schemas.js';
 import {
@@ -256,5 +256,3 @@ export function buildOpenApiDocument(options: OpenApiOptions = {}): OpenApiDocum
   if (options.serverUrl !== undefined) document.servers = [{ url: options.serverUrl }];
   return document;
 }
-
-export { HttpMethod };

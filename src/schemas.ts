@@ -512,6 +512,15 @@ export const CapabilitiesSchema = z.object({
   merchantCharges: z.boolean(),
   /** The merchant must send the pre-debit notification itself (`notifyCharge`). */
   merchantPreDebitNotification: z.boolean(),
+  /**
+   * Hours before the debit date by which a merchant-raised charge must be
+   * created (with `scheduledAt` set), for gateways that send the pre-debit
+   * notification themselves once the charge exists. Absent or 0 means a
+   * charge can be raised on the due date itself.
+   */
+  merchantChargeLeadHours: z.number().int().nonnegative().optional(),
+  /** Furthest ahead, in hours, that a merchant-raised charge may be scheduled. */
+  merchantChargeMaxAheadHours: z.number().int().positive().optional(),
   listCharges: z.boolean(),
   refunds: z.boolean(),
   /** Webhooks carry a signature this library verifies. */

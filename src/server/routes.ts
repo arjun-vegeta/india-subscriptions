@@ -4,7 +4,7 @@
  * drift from the behaviour. Every route maps to one `Subscriptions` method.
  */
 import { z } from 'zod';
-import { ErrorCode, HttpMethod, Provider, type Provider as ProviderName } from '../constants.js';
+import { ErrorCode, HttpMethod, type Provider as ProviderName } from '../constants.js';
 import type { Subscriptions } from '../client.js';
 import { parseInput } from '../errors.js';
 import { SchemaName, namedSchema } from '../schema-registry.js';
@@ -555,6 +555,3 @@ export const routes: readonly RouteDefinition[] = [
     handler: ({ client, body }) => client.tick(body.limit === undefined ? undefined : { limit: body.limit }),
   }),
 ];
-
-/** Every value a `{provider}` segment may take. */
-export const KNOWN_PROVIDERS: readonly ProviderName[] = Object.values(Provider);
