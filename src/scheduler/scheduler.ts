@@ -81,6 +81,19 @@ interface Failure {
  * pause/resume/cancel. Call {@link BillingScheduler.tick} from a cron job; it
  * does whatever is due, exactly once, even with several workers.
  *
+ * ## Three gateway styles (chosen from the provider's `capabilities`)
+ *
+ * - `merchantPreDebitNotification: true` (PayU): `notifyCharge` at
+ *   `due - notifyLeadHours`, then `createCharge` on the due date once
+ *   `minNoticeHours` have passed since the accepted notification.
+ * - `merchantChargeLeadHours > 0` (Cashfree on-demand): no `notifyCharge`. The
+ *   charge is raised `leadHours` before the due date with `scheduledAt` set; the
+ *   gateway notifies the customer and debits on that date. If the schedule is
+ *   already too close to the due date (late activation, retry, resume),
+ *   `scheduledAt` becomes `now + leadHours`. The cycle's `dueAt` stays the
+ *   contractual date; the actual one is kept in `scheduledAt`.
+ * - neither: `createCharge` on the due date.
+ *
  * ## How a cycle runs
  *
  * ```

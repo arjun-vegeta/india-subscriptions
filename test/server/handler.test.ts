@@ -789,6 +789,7 @@ const EXPECTED_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.ProviderUnavailable]: 503,
   [ErrorCode.Timeout]: 504,
   [ErrorCode.OutcomeUnknown]: 504,
+  [ErrorCode.Internal]: 500,
 };
 
 describe('errors', () => {

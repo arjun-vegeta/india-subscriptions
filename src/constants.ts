@@ -188,6 +188,8 @@ export const ErrorCode = {
   Timeout: 'TIMEOUT',
   OutcomeUnknown: 'OUTCOME_UNKNOWN',
   SignatureInvalid: 'SIGNATURE_INVALID',
+  /** A failure inside this library or its storage, not at a gateway. */
+  Internal: 'INTERNAL_ERROR',
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 

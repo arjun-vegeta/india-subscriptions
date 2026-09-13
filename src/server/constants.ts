@@ -183,6 +183,7 @@ export const ERROR_HTTP_STATUS: Record<ErrorCode, HttpStatus> = {
   [ErrorCode.ProviderUnavailable]: HttpStatus.ServiceUnavailable,
   [ErrorCode.Timeout]: HttpStatus.GatewayTimeout,
   [ErrorCode.OutcomeUnknown]: HttpStatus.GatewayTimeout,
+  [ErrorCode.Internal]: HttpStatus.InternalServerError,
 };
 
 export const SERVER_ERROR_HTTP_STATUS: Record<ServerErrorCode, HttpStatus> = {

@@ -4016,10 +4016,10 @@
                   "TIMEOUT",
                   "OUTCOME_UNKNOWN",
                   "SIGNATURE_INVALID",
+                  "INTERNAL_ERROR",
                   "UNAUTHORIZED",
                   "METHOD_NOT_ALLOWED",
-                  "PAYLOAD_TOO_LARGE",
-                  "INTERNAL_ERROR"
+                  "PAYLOAD_TOO_LARGE"
                 ]
               },
               "message": {
@@ -4215,7 +4215,8 @@
                     "NETWORK",
                     "TIMEOUT",
                     "OUTCOME_UNKNOWN",
-                    "SIGNATURE_INVALID"
+                    "SIGNATURE_INVALID",
+                    "INTERNAL_ERROR"
                   ]
                 },
                 "message": {
