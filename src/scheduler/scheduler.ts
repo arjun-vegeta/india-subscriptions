@@ -233,7 +233,7 @@ export class BillingScheduler {
    * the activation instant. Activating an active schedule with the same data is
    * a no-op; on any other status it throws `CONFLICT`.
    */
-  activate(id: string, input: ActivateScheduleInput = {}): Promise<ScheduleRecord> {
+  async activate(id: string, input: ActivateScheduleInput = {}): Promise<ScheduleRecord> {
     const parsed = parseInput(ActivateScheduleInputSchema, input, 'activation');
     return this.mutate(id, (schedule) => this.activateLocked(schedule, parsed));
   }
@@ -249,7 +249,7 @@ export class BillingScheduler {
    * date; cycles that fell due while paused are never billed retroactively.
    * A pre-debit notification already sent for a date that changed is redone.
    */
-  resume(id: string, input: ResumeScheduleInput = {}): Promise<ScheduleRecord> {
+  async resume(id: string, input: ResumeScheduleInput = {}): Promise<ScheduleRecord> {
     const parsed = parseInput(ResumeScheduleInputSchema, input, 'resume options');
     return this.mutate(id, (schedule) => this.resumeLocked(schedule, parsed.nextChargeAt));
   }
@@ -264,7 +264,7 @@ export class BillingScheduler {
   }
 
   /** Sets the amount (paise) for cycles that have not been notified yet. */
-  updateAmount(id: string, amount: number): Promise<ScheduleRecord> {
+  async updateAmount(id: string, amount: number): Promise<ScheduleRecord> {
     const parsed = parseInput(PositivePaiseSchema, amount, 'amount');
     return this.mutate(id, async (schedule) => {
       if (this.isTerminal(schedule)) {
