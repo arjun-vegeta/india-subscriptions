@@ -154,6 +154,10 @@ export const RazorpayCheckoutSchema = z.object({
   subscriptionId: z.string(),
   /** Razorpay-hosted authorisation page, usable instead of the JS checkout. */
   hostedUrl: z.url().optional(),
+  /** Where Razorpay Checkout redirects after authorisation (its `callback_url` option). */
+  callbackUrl: z.url().optional(),
+  /** Customer details to prefill in the checkout form. */
+  prefill: CustomerSchema.optional(),
 });
 
 export const CashfreeCheckoutSchema = z.object({

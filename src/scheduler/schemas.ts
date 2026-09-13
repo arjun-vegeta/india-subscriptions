@@ -59,6 +59,12 @@ export const SchedulePolicySchema = z.object({
   /** Wait between a failed attempt and the next one. */
   retryIntervalHours: HoursSchema,
   /**
+   * For gateways that want the charge raised days before the debit (Cashfree
+   * on-demand): raise it at least this many hours ahead. The effective lead is
+   * the larger of this and the gateway's own `merchantChargeLeadHours`.
+   */
+  chargeLeadHours: HoursSchema.optional(),
+  /**
    * A schedule still awaiting authorisation this many hours after it was
    * registered is cancelled by `tick()`. Omit for no timeout.
    */
@@ -75,6 +81,7 @@ export const SchedulerConfigSchema = z.object({
   minNoticeHours: HoursSchema.default(DEFAULT_MIN_NOTICE_HOURS),
   maxAttempts: z.number().int().min(1).default(DEFAULT_MAX_ATTEMPTS),
   retryIntervalHours: HoursSchema.default(DEFAULT_RETRY_INTERVAL_HOURS),
+  chargeLeadHours: HoursSchema.optional(),
   authorizationTimeoutHours: z.number().positive().optional(),
   /** How long a per-schedule lock survives its owner. Must exceed the longest time one schedule spends in a tick. */
   lockTtlMs: z.number().int().positive().default(DEFAULT_LOCK_TTL_MS),
@@ -133,6 +140,13 @@ export const CycleRecordSchema = z.object({
   /** The gateway's own id for the debit, once known. */
   providerChargeId: z.string().optional(),
   chargeRequestedAt: IsoDateTimeSchema.optional(),
+  /**
+   * For gateways that take the charge in advance: the debit date sent to the
+   * gateway. Equals `attemptDueAt`, or a later instant when the charge was
+   * raised too late to make it (late activation, retry, resume). `dueAt` always
+   * stays the contractual date.
+   */
+  scheduledAt: IsoDateTimeSchema.optional(),
   paidAt: IsoDateTimeSchema.optional(),
   completedAt: IsoDateTimeSchema.optional(),
   lastError: CycleErrorSchema.optional(),

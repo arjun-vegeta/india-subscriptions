@@ -7,6 +7,7 @@ import { cycleStart, toDate, toIso } from '../time.js';
 import { EventType } from '../constants.js';
 import {
   ChargeMetadataKey,
+  ChargeTiming,
   CycleStatus,
   HOUR_MS,
   ID_HASH_LENGTH,
@@ -52,6 +53,15 @@ export interface SchedulerOptions extends SchedulerConfigInput {
    * emitting, so make listeners idempotent.
    */
   onEvent?: (event: SchedulerEvent) => void | Promise<void>;
+}
+
+/** How a gateway wants debits raised (see `ChargeTiming`). */
+interface Timing {
+  kind: ChargeTiming;
+  /** Hours (as ms) ahead of the debit date a charge must be raised (`ChargeInAdvance` only). */
+  leadMs: number;
+  /** Furthest ahead (as ms) a charge may be scheduled, when the gateway limits it. */
+  maxAheadMs?: number;
 }
 
 /** What a gateway said about a failed debit attempt. */
@@ -176,6 +186,8 @@ export class BillingScheduler {
         maxAttempts: parsed.maxAttempts ?? this.config.maxAttempts,
         retryIntervalHours: parsed.retryIntervalHours ?? this.config.retryIntervalHours,
       };
+      const chargeLeadHours = parsed.chargeLeadHours ?? this.config.chargeLeadHours;
+      if (chargeLeadHours !== undefined) policy.chargeLeadHours = chargeLeadHours;
       const authorizationTimeoutHours = parsed.authorizationTimeoutHours ?? this.config.authorizationTimeoutHours;
       if (authorizationTimeoutHours !== undefined) policy.authorizationTimeoutHours = authorizationTimeoutHours;
 
@@ -366,7 +378,10 @@ export class BillingScheduler {
         }
         return false;
       case CycleStatus.Charging:
+        return this.reconcile(schedule, cycle, result);
       case CycleStatus.AwaitingConfirmation:
+        // A charge scheduled for a future date cannot have an outcome yet: do not poll before then.
+        if (cycle.scheduledAt !== undefined && this.now().getTime() < Date.parse(cycle.scheduledAt)) return false;
         return this.reconcile(schedule, cycle, result);
       default:
         break;
@@ -377,18 +392,46 @@ export class BillingScheduler {
     const provider = this.providerFor(schedule.provider);
 
     if (cycle.status === CycleStatus.Pending) {
-      if (provider.capabilities.merchantPreDebitNotification) {
-        const notifyAt = Date.parse(cycle.attemptDueAt) - schedule.policy.notifyLeadHours * HOUR_MS;
-        if (now.getTime() < notifyAt) return false;
-        return this.notify(schedule, cycle, provider, result);
-      }
-      if (now.getTime() < Date.parse(cycle.attemptDueAt)) return false;
-      return this.startCharge(schedule, cycle, result);
+      const timing = this.timing(schedule, provider);
+      if (now.getTime() < this.actionTime(cycle, schedule.policy, timing)) return false;
+      if (timing.kind === ChargeTiming.NotifyThenCharge) return this.notify(schedule, cycle, provider, result);
+      return this.startCharge(schedule, cycle, timing, result);
     }
 
     // Notified: the debit may go out once both the due time and the minimum notice have passed.
     if (now.getTime() < this.earliestDebit(cycle, schedule.policy)) return false;
-    return this.startCharge(schedule, cycle, result);
+    return this.startCharge(schedule, cycle, this.timing(schedule, provider), result);
+  }
+
+  /** Which of the three gateway styles applies, and its lead time in milliseconds. */
+  private timing(schedule: ScheduleRecord, provider: SubscriptionProvider): Timing {
+    const capabilities = provider.capabilities;
+    if (capabilities.merchantPreDebitNotification) return { kind: ChargeTiming.NotifyThenCharge, leadMs: 0 };
+    const gatewayLead = capabilities.merchantChargeLeadHours ?? 0;
+    if (gatewayLead > 0) {
+      const leadHours = Math.max(gatewayLead, schedule.policy.chargeLeadHours ?? 0);
+      const maxAhead = capabilities.merchantChargeMaxAheadHours;
+      return {
+        kind: ChargeTiming.ChargeInAdvance,
+        leadMs: leadHours * HOUR_MS,
+        ...(maxAhead !== undefined ? { maxAheadMs: maxAhead * HOUR_MS } : {}),
+      };
+    }
+    return { kind: ChargeTiming.ChargeOnDue, leadMs: 0 };
+  }
+
+  /** When a pending cycle's next action (notify, or raise the charge) becomes due, in epoch ms. */
+  private actionTime(cycle: CycleRecord, policy: SchedulePolicy, timing: Timing): number {
+    const due = Date.parse(cycle.attemptDueAt);
+    switch (timing.kind) {
+      case ChargeTiming.NotifyThenCharge:
+        return due - policy.notifyLeadHours * HOUR_MS;
+      case ChargeTiming.ChargeInAdvance:
+        // Never earlier than the gateway allows a charge to be scheduled ahead.
+        return Math.max(due - timing.leadMs, timing.maxAheadMs !== undefined ? due - timing.maxAheadMs : -Infinity);
+      case ChargeTiming.ChargeOnDue:
+        return due;
+    }
   }
 
   private async notify(
@@ -447,12 +490,22 @@ export class BillingScheduler {
   }
 
   /** Persists `charging` + the deterministic charge id, and only then calls the gateway. */
-  private async startCharge(schedule: ScheduleRecord, cycle: CycleRecord, result: TickResult): Promise<boolean> {
-    const nowIso = toIso(this.now());
+  private async startCharge(
+    schedule: ScheduleRecord,
+    cycle: CycleRecord,
+    timing: Timing,
+    result: TickResult,
+  ): Promise<boolean> {
+    const now = this.now();
+    const nowIso = toIso(now);
     cycle.amount ??= schedule.amount;
     cycle.chargeId = this.chargeId(schedule, cycle);
     cycle.status = CycleStatus.Charging;
     cycle.chargeRequestedAt = nowIso;
+    if (timing.kind === ChargeTiming.ChargeInAdvance) {
+      // The debit date: the due date, or the earliest legal one when we are already too close to it.
+      cycle.scheduledAt = toIso(new Date(Math.max(Date.parse(cycle.attemptDueAt), now.getTime() + timing.leadMs)));
+    }
     cycle.updatedAt = nowIso;
     await this.store.saveCycle(cycle);
     schedule.nextActionAt = nowIso;
@@ -464,6 +517,17 @@ export class BillingScheduler {
   /** Calls `createCharge` for a cycle that is already persisted as `charging`. */
   private async submitCharge(schedule: ScheduleRecord, cycle: CycleRecord, result: TickResult): Promise<boolean> {
     const provider = this.providerFor(schedule.provider);
+    const timing = this.timing(schedule, provider);
+    if (timing.kind === ChargeTiming.ChargeInAdvance) {
+      // A resubmission after a lost answer may be later than the original: never send a date that is now too close.
+      const earliest = this.now().getTime() + timing.leadMs;
+      const planned = cycle.scheduledAt !== undefined ? Date.parse(cycle.scheduledAt) : earliest;
+      const scheduledAt = toIso(new Date(Math.max(planned, earliest)));
+      if (cycle.scheduledAt !== scheduledAt) {
+        cycle.scheduledAt = scheduledAt;
+        await this.store.saveCycle(cycle);
+      }
+    }
     let charge: Charge;
     result.charged += 1;
     try {
@@ -471,6 +535,9 @@ export class BillingScheduler {
         subscriptionId: schedule.subscriptionId,
         chargeId: cycle.chargeId as string,
         amount: cycle.amount as number,
+        ...(timing.kind === ChargeTiming.ChargeInAdvance && cycle.scheduledAt !== undefined
+          ? { scheduledAt: cycle.scheduledAt }
+          : {}),
         ...(cycle.invoiceNumber !== undefined ? { invoiceNumber: cycle.invoiceNumber } : {}),
         ...(schedule.customer !== undefined ? { customer: schedule.customer } : {}),
         metadata: {
@@ -894,6 +961,7 @@ export class BillingScheduler {
     this.plan(schedule, cycle, now);
     await this.store.saveSchedule(schedule);
     await this.emit(SchedulerEventType.SchedulePaused, schedule, { reason });
+    await this.emitInFlight(schedule, cycle);
     return schedule;
   }
 
@@ -979,7 +1047,15 @@ export class BillingScheduler {
     this.plan(schedule, cycle, now);
     await this.store.saveSchedule(schedule);
     await this.emit(SchedulerEventType.ScheduleCancelled, schedule, { reason });
+    await this.emitInFlight(schedule, cycle);
     return schedule;
+  }
+
+  /** Tells the caller a debit is already raised at the gateway, so it can cancel it there if unwanted. */
+  private async emitInFlight(schedule: ScheduleRecord, cycle: CycleRecord | undefined): Promise<void> {
+    if (cycle && IN_FLIGHT_CYCLE_STATUSES.includes(cycle.status)) {
+      await this.emit(SchedulerEventType.ChargeInFlight, schedule, this.cycleFields(cycle));
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -998,6 +1074,14 @@ export class BillingScheduler {
 
     if (cycle && IN_FLIGHT_CYCLE_STATUSES.includes(cycle.status)) {
       nextAction = nowIso;
+      // A debit scheduled for a future date has no outcome to ask about before then.
+      if (
+        cycle.status === CycleStatus.AwaitingConfirmation &&
+        cycle.scheduledAt !== undefined &&
+        Date.parse(cycle.scheduledAt) > now.getTime()
+      ) {
+        nextAction = cycle.scheduledAt;
+      }
       if (schedule.status === ScheduleStatus.Active) nextCharge = cycle.attemptDueAt;
     } else if (schedule.status === ScheduleStatus.PendingAuthorization) {
       const timeout = schedule.policy.authorizationTimeoutHours;
@@ -1009,8 +1093,8 @@ export class BillingScheduler {
       } else {
         switch (cycle.status) {
           case CycleStatus.Pending: {
-            const needsNotice = this.providerFor(schedule.provider).capabilities.merchantPreDebitNotification;
-            let at = Date.parse(cycle.attemptDueAt) - (needsNotice ? schedule.policy.notifyLeadHours * HOUR_MS : 0);
+            const provider = this.providerFor(schedule.provider);
+            let at = this.actionTime(cycle, schedule.policy, this.timing(schedule, provider));
             // After a gateway error, try again on a later tick rather than at the head of the queue.
             if (cycle.lastError) at = Math.max(at, Date.parse(cycle.lastError.at));
             nextAction = toIso(new Date(at));
@@ -1088,6 +1172,7 @@ export class BillingScheduler {
     delete cycle.chargeId;
     delete cycle.providerChargeId;
     delete cycle.chargeRequestedAt;
+    delete cycle.scheduledAt;
     delete cycle.lastError;
   }
 

@@ -21,8 +21,7 @@ import {
   AuthMode,
 } from './constants.js';
 import { buildOpenApiDocument } from './openapi.js';
-import { routes, type ErrorResponse, type EventsHook, type RouteDefinition } from './routes.js';
-import { type SchemaName, namedSchema } from '../schema-registry.js';
+import { requestBodySchema, routes, type ErrorResponse, type EventsHook, type RouteDefinition } from './routes.js';
 
 export interface HandlerOptions {
   /** The facade the routes call. Configure the gateways (and the billing scheduler) on it. */
@@ -275,7 +274,7 @@ export function createHandler(options: HandlerOptions): FetchHandler {
         if (route.requestBody.required) {
           return libraryError(ErrorCode.Validation, 'A JSON request body is required');
         }
-        body = parseInput(namedSchema(route.requestBody.schema as SchemaName), {}, 'request body', provider);
+        body = parseInput(requestBodySchema(route.requestBody.schema), {}, 'request body', provider);
       } else {
         let json: unknown;
         try {
@@ -283,7 +282,7 @@ export function createHandler(options: HandlerOptions): FetchHandler {
         } catch {
           return libraryError(ErrorCode.Validation, 'The request body is not valid JSON');
         }
-        body = parseInput(namedSchema(route.requestBody.schema as SchemaName), json, 'request body', provider);
+        body = parseInput(requestBodySchema(route.requestBody.schema), json, 'request body', provider);
       }
     }
 

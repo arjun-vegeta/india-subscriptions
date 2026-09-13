@@ -6,3 +6,13 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# Python client
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/

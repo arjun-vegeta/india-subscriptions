@@ -154,6 +154,11 @@ export interface RouteDefinition {
   handler: (context: RouteContext) => unknown;
 }
 
+/** The schema a JSON request body is validated against. */
+export function requestBodySchema(name: RequestBodyDefinition['schema']): z.ZodType {
+  return name in SERVER_SCHEMAS ? SERVER_SCHEMAS[name as keyof typeof SERVER_SCHEMAS] : namedSchema(name as SchemaName);
+}
+
 /** Schema names whose parsed value reaches a typed handler. */
 interface BodyTypes {
   [SchemaName.CreatePlanInput]: CreatePlanInput;

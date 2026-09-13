@@ -93,8 +93,33 @@ export const SchedulerEventType = {
   ChargeOutcomeUnknown: 'charge.outcome_unknown',
   CycleFailed: 'cycle.failed',
   CycleSkipped: 'cycle.skipped',
+  /**
+   * The schedule was paused or cancelled while a debit was already raised at the
+   * gateway (`charging` / `awaiting_confirmation`). The gateway may still debit
+   * the customer: cancel the charge there if that is not wanted. The scheduler
+   * keeps reconciling it and emits `charge.succeeded` / `charge.failed` when its
+   * outcome is known.
+   */
+  ChargeInFlight: 'charge.in_flight',
 } as const;
 export type SchedulerEventType = (typeof SchedulerEventType)[keyof typeof SchedulerEventType];
+
+/**
+ * How a gateway wants merchant-scheduled debits raised, derived from its
+ * capabilities.
+ */
+export const ChargeTiming = {
+  /** PayU style: `notifyCharge` at `due - notifyLeadHours`, then `createCharge` at the due time once the notice period passed. */
+  NotifyThenCharge: 'notify_then_charge',
+  /**
+   * Cashfree on-demand style: no `notifyCharge`; `createCharge` is called days
+   * ahead with `scheduledAt` = the due time, and the gateway notifies and debits.
+   */
+  ChargeInAdvance: 'charge_in_advance',
+  /** No notification and no lead: `createCharge` at the due time. */
+  ChargeOnDue: 'charge_on_due',
+} as const;
+export type ChargeTiming = (typeof ChargeTiming)[keyof typeof ChargeTiming];
 
 // ---------------------------------------------------------------------------
 // Defaults
