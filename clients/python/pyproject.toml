@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "india-subscriptions"
+dynamic = ["version"]
+description = "Typed Python client for the india-subscriptions HTTP service: one API over subscriptions on Razorpay, Cashfree and PayU."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [{ name = "india-subscriptions contributors" }]
+keywords = ["subscriptions", "recurring-payments", "upi-autopay", "enach", "mandate", "razorpay", "cashfree", "payu", "india", "pydantic"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pydantic>=2.6",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+  # Pinned: the committed models.py must be reproducible byte for byte (tests/test_models_generated.py).
+  "datamodel-code-generator==0.97.0",
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "mypy>=1.10",
+]
+
+[tool.hatch.version]
+path = "src/india_subscriptions/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/india_subscriptions"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "scripts", "README.md", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"
+markers = ["e2e: drives the real TypeScript service (skipped when node/npx is missing)"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+exclude = ["^tests/e2e/.*\\.ts$"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true

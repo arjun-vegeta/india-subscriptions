@@ -179,7 +179,7 @@ def transport_error(exc: httpx.RequestError, request: PreparedRequest) -> Subscr
 
 
 def retry_delay(attempt: int, backoff: float) -> float:
-    return backoff * (2**attempt)
+    return backoff * float(2**attempt)
 
 
 def may_retry(

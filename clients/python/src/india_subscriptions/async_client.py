@@ -1,4 +1,4 @@
-"""The asyncio client. It mirrors ``AsyncSubscriptionsClient`` (``client.py``) method for method, with ``await``."""
+"""The asyncio client. It mirrors ``SubscriptionsClient`` (``client.py``) method for method, with ``await``."""
 
 from __future__ import annotations
 
@@ -105,12 +105,12 @@ class AsyncSubscriptionsClient:
         self._owns_http = http_client is None
         self._http = http_client if http_client is not None else httpx.AsyncClient(timeout=timeout, transport=transport)
 
-        self.plans = PlansResource(self)
-        self.subscriptions = SubscriptionsResource(self)
-        self.charges = ChargesResource(self)
-        self.checkout = CheckoutResource(self)
-        self.webhooks = WebhooksResource(self)
-        self.scheduler = SchedulerResource(self)
+        self.plans = AsyncPlansResource(self)
+        self.subscriptions = AsyncSubscriptionsResource(self)
+        self.charges = AsyncChargesResource(self)
+        self.checkout = AsyncCheckoutResource(self)
+        self.webhooks = AsyncWebhooksResource(self)
+        self.scheduler = AsyncSchedulerResource(self)
 
     def __repr__(self) -> str:
         return f"AsyncSubscriptionsClient(base_url={self._base_url!r})"
@@ -176,12 +176,12 @@ class AsyncSubscriptionsClient:
             raise transport_error(exc, request) from exc
 
 
-class _Resource:
+class _AsyncResource:
     def __init__(self, client: AsyncSubscriptionsClient) -> None:
         self._client = client
 
 
-class PlansResource(_Resource):
+class AsyncPlansResource(_AsyncResource):
     async def create(self, provider: Provider, plan: Union[CreatePlanInput, Input]) -> Plan:
         """Creates a billing plan at the gateway, or registers it where the gateway has no plan object."""
         return await self._client._execute(calls.create_plan(provider, plan))
@@ -190,7 +190,7 @@ class PlansResource(_Resource):
         return await self._client._execute(calls.get_plan(provider, plan_id))
 
 
-class SubscriptionsResource(_Resource):
+class AsyncSubscriptionsResource(_AsyncResource):
     async def create(self, provider: Provider, subscription: Union[CreateSubscriptionInput, Input]) -> Subscription:
         """Creates the subscription. The result carries ``checkout`` instructions for the customer."""
         return await self._client._execute(calls.create_subscription(provider, subscription))
@@ -233,7 +233,7 @@ class SubscriptionsResource(_Resource):
         return await self._client._execute(calls.resume_subscription(provider, subscription_id, options))
 
 
-class ChargesResource(_Resource):
+class AsyncChargesResource(_AsyncResource):
     async def list(
         self,
         provider: Provider,
@@ -267,7 +267,7 @@ class ChargesResource(_Resource):
         return await self._client._execute(calls.create_refund(provider, refund))
 
 
-class CheckoutResource(_Resource):
+class AsyncCheckoutResource(_AsyncResource):
     async def verify(self, provider: Provider, result: Union[CheckoutResult, Input]) -> CheckoutVerification:
         """Verifies what the gateway returned to the customer's browser after authorisation.
 
@@ -277,7 +277,7 @@ class CheckoutResource(_Resource):
         return await self._client._execute(calls.verify_checkout(provider, result))
 
 
-class WebhooksResource(_Resource):
+class AsyncWebhooksResource(_AsyncResource):
     async def parse(self, provider: Provider, request: Union[WebhookRequest, Input]) -> List[SubscriptionEvent]:
         """Has the service verify a gateway webhook's signature and return its normalised events.
 
@@ -298,7 +298,7 @@ class WebhooksResource(_Resource):
         )
 
 
-class SchedulerResource(_Resource):
+class AsyncSchedulerResource(_AsyncResource):
     async def tick(self, options: Union[TickRequest, Input, None] = None) -> TickResult:
         """Runs the billing scheduler once: raises the debits that are due. Needs a scheduler on the service.
 
@@ -309,10 +309,10 @@ class SchedulerResource(_Resource):
 
 __all__ = [
     "AsyncSubscriptionsClient",
-    "PlansResource",
-    "SubscriptionsResource",
-    "ChargesResource",
-    "CheckoutResource",
-    "WebhooksResource",
-    "SchedulerResource",
+    "AsyncPlansResource",
+    "AsyncSubscriptionsResource",
+    "AsyncChargesResource",
+    "AsyncCheckoutResource",
+    "AsyncWebhooksResource",
+    "AsyncSchedulerResource",
 ]
