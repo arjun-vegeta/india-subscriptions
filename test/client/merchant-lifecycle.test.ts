@@ -124,8 +124,10 @@ describe('merchant-scheduled (notify style): nothing happens before the customer
 describe('merchant-scheduled (notify style): full lifecycle through the facade, authorised by verifyCheckout', () => {
   it('trial -> notification -> first debit -> active -> three cycles -> completed', async () => {
     const world = makeWorld();
+    const created = await world.subs.create(PAYU, trialInput());
+    // The customer authorises an hour after the subscription was created.
     world.setClock(plusHours(T0, 1));
-    const { created, verification } = await createAndAuthorize(world);
+    const verification = await world.subs.verifyCheckout(PAYU, world.gateway.authorize(created.id));
     const id = created.id;
     expect(verification.authorized).toBe(true);
 

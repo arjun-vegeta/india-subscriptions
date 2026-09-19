@@ -14,6 +14,7 @@ from india_subscriptions import (
     AsyncSubscriptionsClient,
     CreatePlanInput,
     CreateSubscriptionInput,
+    Customer,
     Provider,
     SubscriptionsClient,
 )
@@ -108,7 +109,7 @@ async def test_an_inline_plan_and_a_plan_id_are_both_accepted(kind: ClientKind) 
 
     await run(kind, recorder, lambda c: c.subscriptions.create(Provider.RAZORPAY, {"plan": "plan_1", "customer": customer}))
     await run(kind, recorder, lambda c: c.subscriptions.create(Provider.RAZORPAY, {"plan": PLAN_DICT, "customer": customer}))
-    typed = CreateSubscriptionInput(plan="plan_1", customer={"name": "Asha"})  # type: ignore[arg-type]
+    typed = CreateSubscriptionInput(plan="plan_1", customer=Customer(name="Asha"))
     await run(kind, recorder, lambda c: c.subscriptions.create(Provider.RAZORPAY, typed))
 
     assert [request.content for request in recorder.requests] == [
@@ -187,7 +188,7 @@ async def test_an_unknown_provider_is_refused(kind: ClientKind) -> None:
     recorder = Recorder(json_response(200, SUBSCRIPTION_JSON))
 
     with pytest.raises(ValueError):
-        await run(kind, recorder, lambda c: c.subscriptions.get("stripe", SUBSCRIPTION_ID))  # type: ignore[arg-type]
+        await run(kind, recorder, lambda c: c.subscriptions.get("stripe", SUBSCRIPTION_ID))
     assert recorder.requests == []
 
 

@@ -237,14 +237,6 @@ export const CreateSubscriptionInputSchema = z
       return Date.parse(input.mandateEndsAt) > Date.parse(firstCharge);
     },
     { error: 'mandateEndsAt must be after the first charge date', path: ['mandateEndsAt'] },
-  )
-  .refine(
-    (input) => {
-      const firstCharge = input.startAt ?? input.trial?.endsAt;
-      if (!firstCharge || !input.authorizeBy) return true;
-      return Date.parse(input.authorizeBy) <= Date.parse(firstCharge);
-    },
-    { error: 'authorizeBy must not be after the first charge date', path: ['authorizeBy'] },
   );
 export type CreateSubscriptionInput = z.input<typeof CreateSubscriptionInputSchema>;
 export type ParsedCreateSubscriptionInput = z.output<typeof CreateSubscriptionInputSchema>;

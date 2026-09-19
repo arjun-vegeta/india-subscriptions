@@ -84,6 +84,7 @@ async def run(kind: ClientKind, recorder: Recorder, call: Callable[[Any], Any], 
             result = await result
         return result
     finally:
-        closing = client.aclose() if isinstance(client, AsyncSubscriptionsClient) else client.close()
-        if inspect.isawaitable(closing):
-            await closing
+        if isinstance(client, AsyncSubscriptionsClient):
+            await client.aclose()
+        else:
+            client.close()
