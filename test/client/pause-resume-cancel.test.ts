@@ -73,7 +73,7 @@ describe('pause / resume: provider WITHOUT a gateway pause operation', () => {
     world.setClock(plusHours(TRIAL_END, 24));
     await world.subs.pause(PAYU, id);
     await world.at(CYCLE_2); // the second cycle's due date passes while paused
-    await world.at(LATE - 0 === 0 ? CYCLE_3 : LATE);
+    await world.at(CYCLE_3);
     world.setClock(LATE);
     const resumed = await world.subs.resume(PAYU, id);
 
@@ -216,8 +216,14 @@ describe('pause / resume: provider WITH a gateway pause operation', () => {
     } catch {
       refused = true;
     }
-    expect(refused).toBe(true); // a loud refusal would be acceptable ...
-    // ... and so would billing that resumes by itself; silently pausing for ever is not.
+    if (!refused) {
+      // Accepted: then it has to honour it.
+      for (const probe of [CYCLE_2, resumeAt, plusHours(resumeAt, 24), notifyAt(CYCLE_3), CYCLE_3, plusHours(CYCLE_3, 24)]) {
+        await world.at(probe);
+      }
+      expect(debits(world)).toBeGreaterThan(1);
+    }
+    expect(refused || debits(world) > 1).toBe(true);
   });
 
   it('a gateway pause that fails after the scheduler was paused leaves billing stopped and surfaces the error', async () => {
