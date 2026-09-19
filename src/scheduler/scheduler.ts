@@ -261,10 +261,16 @@ export class BillingScheduler {
    * `nextChargeAt`, or at the current instant if the pause swallowed the due
    * date; cycles that fell due while paused are never billed retroactively.
    * A pre-debit notification already sent for a date that changed is redone.
+   *
+   * Also works on a `halted` schedule (for example after the customer tops up
+   * their account): the failed cycle is re-opened for one more round of
+   * `maxAttempts`, due at `nextChargeAt` or as soon as the gateway style allows.
+   * With `skipFailedCycle` that cycle is skipped instead and billing continues
+   * from the next cycle date. Cancelled and completed schedules throw `CONFLICT`.
    */
   async resume(id: string, input: ResumeScheduleInput = {}): Promise<ScheduleRecord> {
     const parsed = parseInput(ResumeScheduleInputSchema, input, 'resume options');
-    return this.mutate(id, (schedule) => this.resumeLocked(schedule, parsed.nextChargeAt));
+    return this.mutate(id, (schedule) => this.resumeLocked(schedule, parsed));
   }
 
   /**
@@ -471,7 +477,7 @@ export class BillingScheduler {
       await this.recordError(
         schedule,
         cycle,
-        asSubscriptionError(error, ErrorCode.ProviderError),
+        asSubscriptionError(error, ErrorCode.Internal),
         SchedulerEventType.NotificationFailed,
         result,
       );
@@ -561,7 +567,7 @@ export class BillingScheduler {
         },
       });
     } catch (error) {
-      const failure = asSubscriptionError(error, ErrorCode.OutcomeUnknown);
+      const failure = asSubscriptionError(error, ErrorCode.Internal);
       if (isDefiniteRejection(failure)) {
         // The gateway answered and refused: no debit exists, so this attempt failed.
         return this.settleFailure(
@@ -588,7 +594,7 @@ export class BillingScheduler {
     try {
       charge = await provider.getCharge(schedule.subscriptionId, chargeId);
     } catch (error) {
-      const failure = asSubscriptionError(error, ErrorCode.ProviderError);
+      const failure = asSubscriptionError(error, ErrorCode.Internal);
       if (failure.code === ErrorCode.NotFound && cycle.status === CycleStatus.Charging) {
         // The gateway has never seen this debit, so asking again with the same id cannot double-debit.
         if (schedule.status === ScheduleStatus.Active) return this.submitCharge(schedule, cycle, result);
@@ -746,7 +752,9 @@ export class BillingScheduler {
     const failedChargeId = cycle.chargeId;
 
     const live = schedule.status === ScheduleStatus.Active || schedule.status === ScheduleStatus.Paused;
-    const exhausted = failedAttempt >= schedule.policy.maxAttempts;
+    // A re-opened cycle (resume after a halt) gets a fresh budget of attempts, with attempt numbers still increasing.
+    const attemptsInRound = failedAttempt - (cycle.roundStartAttempt ?? 1) + 1;
+    const exhausted = attemptsInRound >= schedule.policy.maxAttempts;
     if (!live || exhausted) {
       cycle.status = CycleStatus.Failed;
       cycle.completedAt = nowIso;
@@ -978,9 +986,9 @@ export class BillingScheduler {
     return schedule;
   }
 
-  private async resumeLocked(schedule: ScheduleRecord, nextChargeAt: string | undefined): Promise<ScheduleRecord> {
+  private async resumeLocked(schedule: ScheduleRecord, input: ResumeScheduleInput): Promise<ScheduleRecord> {
     if (schedule.status === ScheduleStatus.Active) return schedule;
-    if (schedule.status !== ScheduleStatus.Paused) {
+    if (schedule.status !== ScheduleStatus.Paused && schedule.status !== ScheduleStatus.Halted) {
       throw new SubscriptionError(
         ErrorCode.Conflict,
         `Schedule "${schedule.id}" is ${schedule.status} and cannot be resumed`,
@@ -989,7 +997,17 @@ export class BillingScheduler {
     }
     const now = this.now();
     const nowIso = toIso(now);
+    const nextChargeAt = input.nextChargeAt;
     let cycle = await this.store.getCycle(schedule.id, schedule.cycleIndex);
+    if (cycle?.status === CycleStatus.Failed) {
+      return this.reopenFailedCycle(
+        schedule,
+        cycle,
+        nextChargeAt !== undefined ? toDate(nextChargeAt, 'nextChargeAt') : undefined,
+        input.skipFailedCycle === true,
+        now,
+      );
+    }
     const inFlight = cycle !== undefined && IN_FLIGHT_CYCLE_STATUSES.includes(cycle.status);
     // A debit in flight belongs to the current cycle; the re-anchoring applies to the one after it.
     const targetIndex = inFlight ? schedule.cycleIndex + 1 : schedule.cycleIndex;
@@ -1023,6 +1041,7 @@ export class BillingScheduler {
     }
     schedule.status = ScheduleStatus.Active;
     delete schedule.statusReason;
+    delete schedule.endedAt;
     schedule.updatedAt = nowIso;
     if (!cycle) {
       cycle = this.newCycle(schedule, schedule.cycleIndex, now);
@@ -1030,6 +1049,83 @@ export class BillingScheduler {
     }
     this.plan(schedule, cycle, now);
     await this.store.saveSchedule(schedule);
+    await this.emit(SchedulerEventType.ScheduleResumed, schedule);
+    return schedule;
+  }
+
+  /**
+   * Resume of a halted schedule whose current cycle exhausted its attempts.
+   * Either re-opens that cycle for one more round (attempt numbers keep
+   * increasing, so charge ids stay unique; a fresh notification or charge lead
+   * applies, per the provider style) or, with `skip`, marks it skipped and moves
+   * on to the next cycle.
+   */
+  private async reopenFailedCycle(
+    schedule: ScheduleRecord,
+    cycle: CycleRecord,
+    nextChargeAt: Date | undefined,
+    skip: boolean,
+    now: Date,
+  ): Promise<ScheduleRecord> {
+    const nowIso = toIso(now);
+    let current: CycleRecord | undefined;
+    let skipped: CycleRecord | undefined;
+
+    if (skip) {
+      cycle.status = CycleStatus.Skipped;
+      cycle.completedAt = nowIso;
+      cycle.updatedAt = nowIso;
+      await this.store.saveCycle(cycle);
+      skipped = cycle;
+
+      const nextIndex = cycle.index + 1;
+      schedule.cycleIndex = nextIndex;
+      if (schedule.totalCycles !== undefined && nextIndex >= schedule.totalCycles) {
+        schedule.status = ScheduleStatus.Completed;
+        schedule.statusReason = ScheduleStatusReason.FinalCycleSkipped;
+        schedule.endedAt = nowIso;
+        schedule.updatedAt = nowIso;
+        this.plan(schedule, undefined, now);
+        await this.store.saveSchedule(schedule);
+        await this.emit(SchedulerEventType.CycleSkipped, schedule, this.cycleFields(cycle));
+        await this.emit(SchedulerEventType.ScheduleCompleted, schedule);
+        return schedule;
+      }
+      // Billing continues from the next cycle date; if that date has already passed, re-anchor from now.
+      const anchor = nextChargeAt ?? (this.dueAt(schedule, nextIndex).getTime() <= now.getTime() ? now : undefined);
+      if (anchor) {
+        schedule.anchorAt = toIso(anchor);
+        schedule.anchorIndex = nextIndex;
+      }
+      current = this.newCycle(schedule, nextIndex, now);
+    } else {
+      this.clearAttemptState(cycle, false);
+      delete cycle.completedAt;
+      cycle.status = CycleStatus.Pending;
+      cycle.attempt += 1;
+      cycle.roundStartAttempt = cycle.attempt;
+      // Without a date, "due now" lets each provider style act as soon as it legally can.
+      const anchor = nextChargeAt ?? (this.dueAt(schedule, cycle.index + 1).getTime() <= now.getTime() ? now : undefined);
+      if (anchor) {
+        schedule.anchorAt = toIso(anchor);
+        schedule.anchorIndex = cycle.index;
+        cycle.dueAt = schedule.anchorAt;
+        cycle.attemptDueAt = schedule.anchorAt;
+      } else {
+        cycle.attemptDueAt = nowIso;
+      }
+      cycle.updatedAt = nowIso;
+      current = cycle;
+    }
+
+    await this.store.saveCycle(current);
+    schedule.status = ScheduleStatus.Active;
+    delete schedule.statusReason;
+    delete schedule.endedAt;
+    schedule.updatedAt = nowIso;
+    this.plan(schedule, current, now);
+    await this.store.saveSchedule(schedule);
+    if (skipped) await this.emit(SchedulerEventType.CycleSkipped, schedule, this.cycleFields(skipped));
     await this.emit(SchedulerEventType.ScheduleResumed, schedule);
     return schedule;
   }
@@ -1276,7 +1372,7 @@ export class BillingScheduler {
   }
 
   private pushError(result: TickResult, scheduleId: string, error: unknown): void {
-    const failure = asSubscriptionError(error, ErrorCode.ProviderError);
+    const failure = asSubscriptionError(error, ErrorCode.Internal);
     result.errors.push({ scheduleId, code: failure.code, message: failure.message });
   }
 
@@ -1362,13 +1458,31 @@ function asSubscriptionError(error: unknown, fallback: ErrorCode): SubscriptionE
 }
 
 /**
+ * Codes that prove the gateway did NOT accept a debit: it answered, and refused.
+ * Only these make a `createCharge` failure count as a failed attempt.
+ *
+ * `CONFLICT` is deliberately absent: a 409 on a charge id usually means the debit
+ * already exists, so it must be reconciled with `getCharge`, never retried under
+ * a new id.
+ */
+const DEFINITE_REJECTION_CODES: readonly ErrorCode[] = [
+  ErrorCode.ProviderError,
+  ErrorCode.Validation,
+  ErrorCode.Unsupported,
+  ErrorCode.NotFound,
+  ErrorCode.Auth,
+  ErrorCode.Config,
+];
+
+/**
  * True when a `createCharge` failure proves the gateway refused the debit (so
- * no debit exists and the attempt counts as failed). Everything else (timeouts,
- * `OUTCOME_UNKNOWN`, 5xx, unparseable answers, rate limits, auth problems) is
- * treated as "may have happened" and reconciled with `getCharge`.
+ * no debit exists and the attempt counts as failed). Anything else (timeouts,
+ * `OUTCOME_UNKNOWN`, 5xx, unparseable answers, conflicts, and above all unknown
+ * exceptions, which map to `INTERNAL_ERROR`) is treated as "may have happened"
+ * and reconciled with `getCharge`.
  */
 function isDefiniteRejection(error: SubscriptionError): boolean {
-  return error.code === ErrorCode.ProviderError || error.code === ErrorCode.Validation;
+  return DEFINITE_REJECTION_CODES.includes(error.code);
 }
 
 /** JSON with sorted keys and no `undefined`, so equal data always hashes equally. */

@@ -32,7 +32,6 @@ import {
   CashfreeAuthorizationStatus,
   CashfreePaymentStatus,
   CashfreePlanType,
-  CashfreeSubscriptionStatus,
   CashfreeWebhookEvent,
   EVENT_ID_HASH_LENGTH,
   METHOD_TO_PAYMENT_METHOD,
@@ -354,8 +353,8 @@ function failureReasonOf(payment: CashfreePayment): string | undefined {
       const text = nonEmpty(details);
       if (text) return text;
     } else if (details) {
-      const text = nonEmpty('failure_reason' in details ? details.failure_reason : undefined) ??
-        nonEmpty('failureReason' in details ? details.failureReason : undefined);
+      const candidate: unknown = details.failure_reason ?? details.failureReason;
+      const text = typeof candidate === 'string' ? nonEmpty(candidate) : undefined;
       if (text) return text;
     }
   }
@@ -636,6 +635,3 @@ function refundEventType(status: string): EventType {
       return EventType.Unknown;
   }
 }
-
-// Exposed for tests and for the adapter's pre-flight checks.
-export { CashfreeSubscriptionStatus };

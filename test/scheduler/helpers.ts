@@ -69,6 +69,12 @@ export const CreateBehaviour = {
   UnknownLost: 'unknown_lost',
   /** The gateway refuses the request outright. */
   Reject: 'reject',
+  /** The debit is recorded at the gateway, then the adapter throws a non-SubscriptionError (a bug after the request was sent). */
+  ForeignCreated: 'foreign_created',
+  /** The adapter throws a non-SubscriptionError and the gateway never saw the request. */
+  ForeignLost: 'foreign_lost',
+  /** Throws `FakeProvider.createError` (nothing is recorded at the gateway). */
+  ThrowConfigured: 'throw_configured',
 } as const;
 export type CreateBehaviour = (typeof CreateBehaviour)[keyof typeof CreateBehaviour];
 
@@ -111,6 +117,8 @@ export class FakeProvider implements SubscriptionProvider {
   createScript: CreateBehaviour[] = [];
   notifyScript: NotifyBehaviour[] = [];
   getChargeError: SubscriptionError | undefined;
+  /** What `CreateBehaviour.ThrowConfigured` throws. */
+  createError: SubscriptionError | undefined;
   createDelayMs = 0;
   /** Runs inside `createCharge` before the gateway acts; throwing here simulates a crash. */
   onCreate: ((input: CreateChargeInput) => void | Promise<void>) | undefined;
@@ -223,6 +231,13 @@ export class FakeProvider implements SubscriptionProvider {
         throw unknown();
       case CreateBehaviour.UnknownLost:
         throw unknown();
+      case CreateBehaviour.ForeignCreated:
+        record(ChargeStatus.Succeeded);
+        throw new TypeError("Cannot read properties of undefined (reading 'status')");
+      case CreateBehaviour.ForeignLost:
+        throw new TypeError("Cannot read properties of undefined (reading 'status')");
+      case CreateBehaviour.ThrowConfigured:
+        throw this.createError ?? unknown();
       case CreateBehaviour.Reject:
         throw new SubscriptionError(ErrorCode.ProviderError, 'mandate is not active', {
           provider: this.name,

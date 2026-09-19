@@ -380,5 +380,8 @@ export const STATUS_EVENT_MAP: Record<CashfreeSubscriptionStatus, EventType> = {
   [CashfreeSubscriptionStatus.CardExpired]: EventType.SubscriptionExpired,
 };
 
+/** `type` of the 422 body: "Different request body with the same idempotent key" [openapi IdempotencyError]. */
+export const CASHFREE_IDEMPOTENCY_ERROR_TYPE = 'idempotency_error';
+
 /** Length of the body hash used as an event id for event types that carry no entity id. */
 export const EVENT_ID_HASH_LENGTH = 32;

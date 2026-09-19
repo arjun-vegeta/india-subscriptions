@@ -75,6 +75,9 @@ export const RazorpayCreatePlanRequestSchema = z.object({
 });
 export type RazorpayCreatePlanRequest = z.infer<typeof RazorpayCreatePlanRequestSchema>;
 
+/** The 100-paise floor is documented for plan items only; add-ons get the integer and upper-bound checks. */
+const AddonAmountSchema = z.number().int().min(1).max(RAZORPAY_MAX_AMOUNT_PAISE);
+
 export const RazorpayCreateSubscriptionRequestSchema = z.object({
   plan_id: z.string().min(1),
   total_count: z.number().int().min(1),
@@ -89,7 +92,7 @@ export const RazorpayCreateSubscriptionRequestSchema = z.object({
       z.object({
         item: z.object({
           name: z.string().min(1),
-          amount: RequestAmountSchema,
+          amount: AddonAmountSchema,
           currency: z.string().min(1),
         }),
       }),

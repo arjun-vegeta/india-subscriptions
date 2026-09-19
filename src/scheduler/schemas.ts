@@ -124,8 +124,10 @@ export const CycleRecordSchema = z.object({
   dueAt: IsoDateTimeSchema,
   /** Earliest instant the current attempt may be debited: `dueAt` for attempt 1, later for retries. */
   attemptDueAt: IsoDateTimeSchema,
-  /** The current attempt, 1-based. */
+  /** The current attempt, 1-based. Keeps increasing across rounds so charge ids stay unique. */
   attempt: z.number().int().min(1),
+  /** First attempt of the current round of `maxAttempts`; later than 1 after a halted schedule was resumed. */
+  roundStartAttempt: z.number().int().min(1).optional(),
   /** Frozen when the cycle is first notified or charged, so `updateAmount` never changes a notified cycle. */
   amount: PositivePaiseSchema.optional(),
   /** Counts re-notifications for the same attempt (a changed debit date needs a fresh notification). */
@@ -236,6 +238,11 @@ export type ActivateScheduleInput = z.input<typeof ActivateScheduleInputSchema>;
 export const ResumeScheduleInputSchema = z.object({
   /** When the next cycle is due. Without it the schedule continues unchanged, or from now if the pause swallowed the due date. */
   nextChargeAt: IsoDateTimeSchema.optional(),
+  /**
+   * For a halted schedule whose current cycle failed: skip that cycle and continue
+   * from the next one, instead of re-opening it for another round of attempts.
+   */
+  skipFailedCycle: z.boolean().optional(),
 });
 export type ResumeScheduleInput = z.input<typeof ResumeScheduleInputSchema>;
 

@@ -37,6 +37,8 @@ export const ScheduleStatusReason = {
   HaltedByGateway: 'halted_by_gateway',
   RetriesExhausted: 'retries_exhausted',
   AllCyclesCollected: 'all_cycles_collected',
+  /** A halted schedule was resumed with `skipFailedCycle` and the skipped cycle was the last one. */
+  FinalCycleSkipped: 'final_cycle_skipped',
 } as const;
 export type ScheduleStatusReason = (typeof ScheduleStatusReason)[keyof typeof ScheduleStatusReason];
 
