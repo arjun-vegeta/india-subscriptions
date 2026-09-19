@@ -144,9 +144,6 @@ export const DomAttribute = {
   Type: 'type',
   Name: 'name',
   Value: 'value',
-  Hidden: 'hidden',
-  /** Marks a script this helper injected, so repeated loads are recognisable. */
-  LoaderMarker: 'data-india-subscriptions',
 } as const;
 export type DomAttribute = (typeof DomAttribute)[keyof typeof DomAttribute];
 

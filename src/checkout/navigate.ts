@@ -3,7 +3,7 @@ import { CheckoutKind, ErrorCode } from '../constants.js';
 import { parseInput, SubscriptionError } from '../errors.js';
 import { FormPostCheckoutSchema, RedirectCheckoutSchema } from '../schemas.js';
 import { CheckoutStatus, DomAttribute, DomTag, FormMethod, InputType } from './constants.js';
-import { assertWebUrl, resolveEnv, type CheckoutEnv } from './env.js';
+import { append, assertWebUrl, resolveEnv, type CheckoutEnv } from './env.js';
 import type { CheckoutOutcome } from './schemas.js';
 
 export type RedirectCheckout = z.infer<typeof RedirectCheckoutSchema>;
@@ -46,9 +46,9 @@ export function submitForm(instruction: FormPostCheckout, env?: Partial<Checkout
     input.setAttribute(DomAttribute.Type, InputType.Hidden);
     input.setAttribute(DomAttribute.Name, name);
     input.setAttribute(DomAttribute.Value, value);
-    form.appendChild(input);
+    append(form, input);
   }
-  parent.appendChild(form);
+  append(parent, form);
   submit.call(form);
   return { status: CheckoutStatus.Redirecting };
 }

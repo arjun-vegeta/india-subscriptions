@@ -9,14 +9,14 @@ import { ALLOWED_URL_PROTOCOLS, DomAttribute, DomEvent, DomTag, GlobalName } fro
  */
 export interface CheckoutElement {
   setAttribute(name: string, value: string): void;
-  appendChild(child: CheckoutElement): unknown;
+  appendChild(child: never): unknown;
   addEventListener(type: string, listener: () => void): void;
   /** Present on `<form>` elements. */
   submit?: () => void;
 }
 
 export interface CheckoutParentNode {
-  appendChild<T extends CheckoutElement>(child: T): unknown;
+  appendChild(child: never): unknown;
 }
 
 export interface CheckoutDocument {
@@ -32,6 +32,14 @@ export interface CheckoutWindow {
 export interface CheckoutEnv {
   window: CheckoutWindow;
   document: CheckoutDocument;
+}
+
+/**
+ * `appendChild` is typed `never` in the structural interfaces because the real
+ * DOM method is generic over `Node`; this is the one place that bridges it.
+ */
+export function append(parent: CheckoutParentNode | CheckoutElement, child: CheckoutElement): void {
+  parent.appendChild(child as never);
 }
 
 /** Uses the page's own `window` / `document` unless `env` overrides them. Throws `CONFIG` without a DOM. */
@@ -72,7 +80,7 @@ const loads = new WeakMap<object, Map<string, Promise<void>>>();
  * one `<script>` element; later calls reuse the result. A failed load is
  * forgotten so the caller can try again. Rejects with `PROVIDER_UNAVAILABLE`.
  */
-export function loadScript(url: string, env?: Partial<CheckoutEnv>, provider?: Provider): Promise<void> {
+export async function loadScript(url: string, env?: Partial<CheckoutEnv>, provider?: Provider): Promise<void> {
   const { document: doc } = resolveEnv(env);
   assertWebUrl(url, 'script URL');
   let perDocument = loads.get(doc);
@@ -82,6 +90,7 @@ export function loadScript(url: string, env?: Partial<CheckoutEnv>, provider?: P
   }
   const cached = perDocument.get(url);
   if (cached) return cached;
+
 
   const pending = new Promise<void>((resolve, reject) => {
     const parent = doc.head ?? doc.body;
@@ -100,7 +109,7 @@ export function loadScript(url: string, env?: Partial<CheckoutEnv>, provider?: P
         }),
       ),
     );
-    parent.appendChild(script);
+    append(parent, script);
   });
   perDocument.set(url, pending);
   pending.catch(() => {
