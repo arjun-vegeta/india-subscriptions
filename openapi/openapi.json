@@ -2295,7 +2295,7 @@
           "Checkout"
         ],
         "summary": "Verify a checkout result",
-        "description": "Verifies what the gateway returned to the customer's browser after authorisation, and starts the billing schedule for merchant-scheduled subscriptions. The body is the gateway's result, untouched. Calls the gateway.",
+        "description": "Verifies what the gateway returned to the customer's browser after authorisation, and starts the billing schedule for merchant-scheduled subscriptions. Pass the gateway's result untouched as `result`, and the subscription id your server stored as `expectedSubscriptionId`: a genuine result that belongs to a different subscription is then rejected like a forged one. Calls the gateway.",
         "parameters": [
           {
             "name": "provider",
@@ -2439,7 +2439,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CheckoutResult"
+                "$ref": "#/components/schemas/VerifyCheckoutInput"
               }
             }
           }
@@ -2803,13 +2803,15 @@
           "razorpay",
           "cashfree",
           "payu"
-        ]
+        ],
+        "description": "A supported payment gateway."
       },
       "Currency": {
         "type": "string",
         "enum": [
           "INR"
-        ]
+        ],
+        "description": "ISO 4217 currency code. Only INR is supported."
       },
       "SubscriptionStatus": {
         "type": "string",
@@ -2825,7 +2827,8 @@
           "completed",
           "expired",
           "failed"
-        ]
+        ],
+        "description": "Normalised subscription lifecycle. Each gateway's own status is preserved verbatim in `providerStatus`. `cancelled`, `completed`, `expired` and `failed` are terminal."
       },
       "ChargeStatus": {
         "type": "string",
@@ -2837,7 +2840,8 @@
           "cancelled",
           "refunded",
           "partially_refunded"
-        ]
+        ],
+        "description": "Normalised status of a charge (one debit)."
       },
       "ChargeKind": {
         "type": "string",
@@ -2845,7 +2849,8 @@
           "authorization",
           "recurring",
           "upfront"
-        ]
+        ],
+        "description": "`authorization` is the small verification debit taken when the mandate is set up, `recurring` is a debit for a billing cycle, `upfront` is a one-off amount such as a setup fee or add-on."
       },
       "RefundStatus": {
         "type": "string",
@@ -2853,7 +2858,8 @@
           "pending",
           "succeeded",
           "failed"
-        ]
+        ],
+        "description": "Status of a refund."
       },
       "PaymentMethod": {
         "type": "string",
@@ -2862,14 +2868,16 @@
           "card",
           "enach",
           "physical_nach"
-        ]
+        ],
+        "description": "`upi` is a UPI Autopay mandate, `card` a card standing instruction, `enach` an eNACH e-mandate on a bank account, `physical_nach` a paper NACH mandate."
       },
       "SchedulingMode": {
         "type": "string",
         "enum": [
           "gateway",
           "merchant"
-        ]
+        ],
+        "description": "Who decides when each recurring debit happens: `gateway` raises every charge on the plan's schedule, `merchant` means the merchant (this library's scheduler) raises each charge."
       },
       "EventType": {
         "type": "string",
@@ -2891,64 +2899,104 @@
           "refund.succeeded",
           "refund.failed",
           "unknown"
-        ]
+        ],
+        "description": "Normalised webhook / lifecycle event. `unknown` is a verified event this library does not normalise; inspect `raw`."
       },
       "Environment": {
         "type": "string",
         "enum": [
           "test",
           "live"
-        ]
+        ],
+        "description": "`test` is the gateway sandbox, `live` is real money."
+      },
+      "IntervalUnit": {
+        "type": "string",
+        "enum": [
+          "day",
+          "week",
+          "month",
+          "year"
+        ],
+        "description": "Unit of a billing interval."
+      },
+      "CancelMode": {
+        "type": "string",
+        "enum": [
+          "immediately",
+          "at_period_end"
+        ],
+        "description": "`immediately` stops now with no further charges; `at_period_end` keeps the current paid period, then stops."
+      },
+      "ChangeTiming": {
+        "type": "string",
+        "enum": [
+          "immediately",
+          "at_period_end"
+        ],
+        "description": "When a subscription change takes effect: `immediately`, or `at_period_end` (the next cycle boundary)."
+      },
+      "CheckoutKind": {
+        "type": "string",
+        "enum": [
+          "redirect",
+          "form_post",
+          "razorpay_checkout",
+          "cashfree_checkout"
+        ],
+        "description": "How the customer's browser or app completes mandate authorisation; the `kind` of a `CheckoutInstruction`."
       },
       "BillingInterval": {
         "type": "object",
         "properties": {
           "unit": {
-            "type": "string",
-            "enum": [
-              "day",
-              "week",
-              "month",
-              "year"
-            ]
+            "description": "The unit of the interval.",
+            "$ref": "#/components/schemas/IntervalUnit"
           },
           "count": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 9007199254740991
+            "description": "Bill every `count` units: `{ unit: 'month', count: 3 }` is quarterly."
           }
         },
         "required": [
           "unit",
           "count"
-        ]
+        ],
+        "description": "How often a plan bills."
       },
       "Customer": {
         "type": "object",
         "properties": {
           "id": {
+            "description": "The gateway's customer id, where one exists.",
             "type": "string",
             "minLength": 1
           },
           "name": {
+            "description": "The customer's name.",
             "type": "string",
             "minLength": 1
           },
           "email": {
+            "description": "The customer's e-mail address.",
             "type": "string",
             "format": "email",
             "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
           },
           "phone": {
+            "description": "Mobile number; 10 digits or E.164. Adapters format it for their gateway.",
             "type": "string",
             "pattern": "^\\+?[0-9]{10,15}$"
           }
-        }
+        },
+        "description": "The paying customer."
       },
       "CreatePlanInput": {
         "type": "object",
         "properties": {
           "id": {
+            "description": "Your own plan id. Used where the gateway lets the merchant choose the id; ignored where the gateway generates one.",
             "type": "string",
             "minLength": 1,
             "maxLength": 40
@@ -2956,38 +3004,44 @@
           "name": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100
+            "maxLength": 100,
+            "description": "Plan name."
           },
           "description": {
+            "description": "Plan description.",
             "type": "string",
             "maxLength": 500
           },
           "amount": {
             "type": "integer",
             "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Amount charged every cycle, in paise."
           },
           "currency": {
             "default": "INR",
+            "description": "Currency of the plan. Defaults to INR.",
             "$ref": "#/components/schemas/Currency"
           },
           "interval": {
+            "description": "How often the plan bills.",
             "$ref": "#/components/schemas/BillingInterval"
           },
           "scheduling": {
+            "description": "Who raises each charge. Defaults to the gateway's native mode.",
             "$ref": "#/components/schemas/SchedulingMode"
           },
           "maxAmount": {
+            "description": "Ceiling the mandate allows per debit, in paise. Defaults to `amount`. Set it higher to leave room for upgrades or add-ons.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "maxCycles": {
+            "description": "Number of cycles after which the plan ends. Omit for open-ended.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "metadata": {
+            "description": "Free-form key/value pairs stored with the plan.",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -3001,56 +3055,66 @@
           "name",
           "amount",
           "interval"
-        ]
+        ],
+        "description": "Details of a billing plan to create."
       },
       "Plan": {
         "type": "object",
         "properties": {
           "provider": {
+            "description": "The gateway that holds the plan.",
             "$ref": "#/components/schemas/Provider"
           },
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The plan id to pass back to this library."
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Plan name."
           },
           "description": {
+            "description": "Plan description.",
             "type": "string"
           },
           "amount": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Amount charged every cycle, in paise."
           },
           "currency": {
+            "description": "Currency of the plan.",
             "$ref": "#/components/schemas/Currency"
           },
           "interval": {
+            "description": "How often the plan bills, where known.",
             "$ref": "#/components/schemas/BillingInterval"
           },
           "scheduling": {
+            "description": "Who raises each charge.",
             "$ref": "#/components/schemas/SchedulingMode"
           },
           "maxAmount": {
+            "description": "Ceiling the mandate allows per debit, in paise.",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "maxCycles": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "description": "Number of cycles after which the plan ends, where limited.",
+            "type": "integer"
           },
           "providerStatus": {
+            "description": "The gateway's own plan status, verbatim, where it has one.",
             "type": "string"
           },
           "createdAt": {
+            "description": "When the plan was created.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "metadata": {
+            "description": "Key/value pairs stored with the plan.",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -3059,7 +3123,9 @@
               "type": "string"
             }
           },
-          "raw": {}
+          "raw": {
+            "description": "The gateway's response, untouched. Absent when the gateway returned no body."
+          }
         },
         "required": [
           "provider",
@@ -3067,133 +3133,176 @@
           "name",
           "amount",
           "currency",
-          "scheduling",
-          "raw"
+          "scheduling"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "A billing plan."
+      },
+      "RedirectCheckout": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "redirect",
+            "description": "Discriminator: send the customer to `url`."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The page to send the customer to."
+          }
+        },
+        "required": [
+          "kind",
+          "url"
+        ],
+        "additionalProperties": false,
+        "description": "Authorise by redirecting the customer to a URL."
+      },
+      "FormPostCheckout": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "form_post",
+            "description": "Discriminator: auto-submit an HTML form to `url`."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL the form is posted to."
+          },
+          "fields": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Post these fields exactly as given; they are covered by a hash."
+          }
+        },
+        "required": [
+          "kind",
+          "url",
+          "fields"
+        ],
+        "additionalProperties": false,
+        "description": "Authorise by auto-submitting an HTML form to the gateway."
+      },
+      "RazorpayCheckout": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "razorpay_checkout",
+            "description": "Discriminator: open Razorpay Standard Checkout."
+          },
+          "keyId": {
+            "type": "string",
+            "description": "The Razorpay key id to open Checkout with."
+          },
+          "subscriptionId": {
+            "type": "string",
+            "description": "The Razorpay subscription id to authorise."
+          },
+          "hostedUrl": {
+            "description": "Razorpay-hosted authorisation page, usable instead of the JS checkout.",
+            "type": "string",
+            "format": "uri"
+          },
+          "callbackUrl": {
+            "description": "Where Razorpay Checkout redirects after authorisation (its `callback_url` option).",
+            "type": "string",
+            "format": "uri"
+          },
+          "prefill": {
+            "description": "Customer details to prefill in the checkout form.",
+            "$ref": "#/components/schemas/Customer"
+          }
+        },
+        "required": [
+          "kind",
+          "keyId",
+          "subscriptionId"
+        ],
+        "additionalProperties": false,
+        "description": "Authorise with Razorpay Standard Checkout."
+      },
+      "CashfreeCheckout": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "cashfree_checkout",
+            "description": "Discriminator: call Cashfree.js `subscriptionsCheckout`."
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "The subscription session id to pass to Cashfree.js."
+          },
+          "environment": {
+            "description": "Which Cashfree environment to initialise Cashfree.js with.",
+            "$ref": "#/components/schemas/Environment"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "environment"
+        ],
+        "additionalProperties": false,
+        "description": "Authorise with Cashfree.js `subscriptionsCheckout`."
       },
       "CheckoutInstruction": {
         "oneOf": [
           {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "const": "redirect"
-              },
-              "url": {
-                "type": "string",
-                "format": "uri"
-              }
-            },
-            "required": [
-              "kind",
-              "url"
-            ],
-            "additionalProperties": false
+            "$ref": "#/components/schemas/RedirectCheckout"
           },
           {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "const": "form_post"
-              },
-              "url": {
-                "type": "string",
-                "format": "uri"
-              },
-              "fields": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {
-                  "type": "string"
-                }
-              }
-            },
-            "required": [
-              "kind",
-              "url",
-              "fields"
-            ],
-            "additionalProperties": false
+            "$ref": "#/components/schemas/FormPostCheckout"
           },
           {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "const": "razorpay_checkout"
-              },
-              "keyId": {
-                "type": "string"
-              },
-              "subscriptionId": {
-                "type": "string"
-              },
-              "hostedUrl": {
-                "type": "string",
-                "format": "uri"
-              },
-              "callbackUrl": {
-                "type": "string",
-                "format": "uri"
-              },
-              "prefill": {
-                "$ref": "#/components/schemas/Customer"
-              }
-            },
-            "required": [
-              "kind",
-              "keyId",
-              "subscriptionId"
-            ],
-            "additionalProperties": false
+            "$ref": "#/components/schemas/RazorpayCheckout"
           },
           {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "const": "cashfree_checkout"
-              },
-              "sessionId": {
-                "type": "string"
-              },
-              "environment": {
-                "$ref": "#/components/schemas/Environment"
-              }
-            },
-            "required": [
-              "kind",
-              "sessionId",
-              "environment"
-            ],
-            "additionalProperties": false
+            "$ref": "#/components/schemas/CashfreeCheckout"
           }
-        ]
+        ],
+        "description": "What the customer's browser or app must do to authorise the mandate; branch on `kind`.",
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "redirect": "#/components/schemas/RedirectCheckout",
+            "form_post": "#/components/schemas/FormPostCheckout",
+            "razorpay_checkout": "#/components/schemas/RazorpayCheckout",
+            "cashfree_checkout": "#/components/schemas/CashfreeCheckout"
+          }
+        }
       },
       "Trial": {
         "type": "object",
         "properties": {
           "days": {
+            "description": "Trial length in days from now.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "endsAt": {
+            "description": "Or an exact instant at which the trial ends.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           }
-        }
+        },
+        "description": "Free trial: the mandate is set up now, the first charge happens when the trial ends. Pass exactly one of `days` or `endsAt`."
       },
       "CreateSubscriptionInput": {
         "type": "object",
         "properties": {
           "reference": {
+            "description": "Your own id for this subscription. Sent to the gateway where it accepts a merchant reference, and echoed back on `Subscription.reference`.",
             "type": "string",
             "minLength": 1,
             "maxLength": 60
@@ -3207,40 +3316,45 @@
               {
                 "$ref": "#/components/schemas/CreatePlanInput"
               }
-            ]
+            ],
+            "description": "An existing plan id, or plan details to create inline."
           },
           "customer": {
             "$ref": "#/components/schemas/Customer"
           },
           "quantity": {
+            "description": "Units of the plan billed each cycle. Defaults to 1.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "totalCycles": {
+            "description": "Total number of recurring charges. Omit to bill until cancelled, where the gateway allows.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "trial": {
+            "description": "Free trial. Mutually exclusive with `startAt`.",
             "$ref": "#/components/schemas/Trial"
           },
           "startAt": {
+            "description": "Delay the first recurring charge to this instant without calling it a trial.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "upfrontAmount": {
+            "description": "One-off amount collected together with the authorisation (setup fee or first payment), in paise.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "upfrontLabel": {
+            "description": "Label shown to the customer for the upfront amount.",
             "type": "string",
             "minLength": 1,
             "maxLength": 100
           },
           "paymentMethods": {
+            "description": "Restrict the mandate to these payment methods. Omit to allow all the gateway supports.",
             "minItems": 1,
             "type": "array",
             "items": {
@@ -3248,23 +3362,28 @@
             }
           },
           "authorizeBy": {
+            "description": "Deadline for the customer to authorise the mandate.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "mandateEndsAt": {
+            "description": "When the mandate itself should lapse.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "returnUrl": {
+            "description": "Where the gateway sends the customer after authorisation.",
             "type": "string",
             "format": "uri"
           },
           "notifyCustomer": {
+            "description": "Let the gateway send its own SMS/email to the customer.",
             "type": "boolean"
           },
           "metadata": {
+            "description": "Free-form key/value pairs stored with the subscription.",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -3274,6 +3393,7 @@
             }
           },
           "idempotencyKey": {
+            "description": "Makes the create call safe to retry, where the gateway supports idempotency keys.",
             "type": "string",
             "minLength": 1,
             "maxLength": 255
@@ -3282,121 +3402,140 @@
         "required": [
           "plan",
           "customer"
-        ]
+        ],
+        "description": "Everything needed to create a subscription."
       },
       "Subscription": {
         "type": "object",
         "properties": {
           "provider": {
+            "description": "The gateway that holds the subscription.",
             "$ref": "#/components/schemas/Provider"
           },
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The identifier to pass back to this library for every later call."
           },
           "reference": {
+            "description": "Your own reference, where one was supplied.",
             "type": "string"
           },
           "planId": {
+            "description": "The plan the subscription bills.",
             "type": "string"
           },
           "status": {
+            "description": "Normalised lifecycle status.",
             "$ref": "#/components/schemas/SubscriptionStatus"
           },
           "providerStatus": {
-            "type": "string"
+            "type": "string",
+            "description": "The gateway's own status, verbatim."
           },
           "scheduling": {
+            "description": "Who raises each charge.",
             "$ref": "#/components/schemas/SchedulingMode"
           },
           "customer": {
+            "description": "The paying customer, where known.",
             "$ref": "#/components/schemas/Customer"
           },
           "quantity": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "description": "Units of the plan billed each cycle.",
+            "type": "integer"
           },
           "amount": {
+            "description": "Recurring amount per cycle in paise, where known.",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "maxAmount": {
+            "description": "Mandate ceiling per debit in paise, where known.",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "currency": {
+            "description": "Currency of the subscription.",
             "$ref": "#/components/schemas/Currency"
           },
           "interval": {
+            "description": "How often the subscription bills, where known.",
             "$ref": "#/components/schemas/BillingInterval"
           },
           "totalCycles": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "description": "Total number of recurring charges, where limited.",
+            "type": "integer"
           },
           "paidCycles": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "description": "Number of cycles collected so far.",
+            "type": "integer"
           },
           "remainingCycles": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "description": "Number of cycles still to collect, where limited.",
+            "type": "integer"
           },
           "createdAt": {
+            "description": "When the subscription was created.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "startAt": {
+            "description": "When the first recurring charge is or was due.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "trialEndsAt": {
+            "description": "Set while `status` is `trialing`: when the trial ends and the first charge is due.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "currentPeriodStart": {
+            "description": "Start of the current billing period.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "currentPeriodEnd": {
+            "description": "End of the current billing period.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "nextChargeAt": {
+            "description": "When the next charge is due.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "endedAt": {
+            "description": "When the subscription ended, if it did.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "mandateEndsAt": {
+            "description": "When the mandate lapses.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "cancelAtPeriodEnd": {
+            "description": "True when a cancellation is scheduled for the end of the current period.",
             "type": "boolean"
           },
           "paymentMethod": {
+            "description": "The payment method the mandate was authorised with.",
             "$ref": "#/components/schemas/PaymentMethod"
           },
           "checkout": {
+            "description": "Present on freshly created subscriptions: what the customer must do to authorise.",
             "$ref": "#/components/schemas/CheckoutInstruction"
           },
           "metadata": {
+            "description": "Key/value pairs stored with the subscription.",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -3405,197 +3544,222 @@
               "type": "string"
             }
           },
-          "raw": {}
+          "raw": {
+            "description": "The gateway's response, untouched. Absent when the gateway returned no body."
+          }
         },
         "required": [
           "provider",
           "id",
           "status",
           "providerStatus",
-          "scheduling",
-          "raw"
+          "scheduling"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "A subscription (a recurring-payment mandate) at a gateway."
       },
       "CancelSubscriptionOptions": {
         "type": "object",
         "properties": {
           "mode": {
             "default": "immediately",
-            "type": "string",
-            "enum": [
-              "immediately",
-              "at_period_end"
-            ]
+            "description": "When the cancellation takes effect. Defaults to `immediately`.",
+            "$ref": "#/components/schemas/CancelMode"
           }
-        }
+        },
+        "description": "Options for cancelling a subscription."
       },
       "PauseSubscriptionOptions": {
         "type": "object",
         "properties": {
           "resumeAt": {
+            "description": "Resume automatically at this instant, where the gateway supports it.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           }
-        }
+        },
+        "description": "Options for pausing a subscription."
       },
       "ResumeSubscriptionOptions": {
         "type": "object",
         "properties": {
           "nextChargeAt": {
+            "description": "Date of the next charge after resuming, where the gateway needs one.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           }
-        }
+        },
+        "description": "Options for resuming a paused subscription."
       },
       "UpdateSubscriptionInput": {
         "type": "object",
         "properties": {
           "planId": {
+            "description": "Move to another plan (upgrade or downgrade).",
             "type": "string",
             "minLength": 1
           },
           "quantity": {
+            "description": "New number of units billed each cycle.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "remainingCycles": {
+            "description": "New number of cycles still to collect.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "amount": {
+            "description": "New amount per cycle in paise, for mandates that are not plan-based.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "nextChargeAt": {
+            "description": "Move the next charge date.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "mandateEndsAt": {
+            "description": "New mandate end date.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "timing": {
             "default": "immediately",
-            "type": "string",
-            "enum": [
-              "immediately",
-              "at_period_end"
-            ]
+            "description": "When the change takes effect. Defaults to `immediately`.",
+            "$ref": "#/components/schemas/ChangeTiming"
           },
           "notifyCustomer": {
+            "description": "Let the gateway notify the customer of the change.",
             "type": "boolean"
           }
-        }
+        },
+        "description": "Changes to make to a subscription. Pass at least one field to change."
       },
       "Charge": {
         "type": "object",
         "properties": {
           "provider": {
+            "description": "The gateway that holds the charge.",
             "$ref": "#/components/schemas/Provider"
           },
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The gateway's payment id (or your charge id where the gateway keys on that)."
           },
           "reference": {
+            "description": "Your own charge id, where one was supplied.",
             "type": "string"
           },
           "subscriptionId": {
+            "description": "The subscription the charge belongs to.",
             "type": "string"
           },
           "kind": {
+            "description": "What the debit is for.",
             "$ref": "#/components/schemas/ChargeKind"
           },
           "status": {
+            "description": "Normalised charge status.",
             "$ref": "#/components/schemas/ChargeStatus"
           },
           "providerStatus": {
+            "description": "The gateway's own status, verbatim.",
             "type": "string"
           },
           "amount": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Amount of the debit in paise."
           },
           "currency": {
+            "description": "Currency of the debit.",
             "$ref": "#/components/schemas/Currency"
           },
           "cycle": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "description": "1-based billing cycle number, where known.",
+            "type": "integer"
           },
           "scheduledAt": {
+            "description": "When the debit is or was scheduled.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "paidAt": {
+            "description": "When the debit succeeded.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "failureCode": {
+            "description": "The gateway's failure code, where the debit failed.",
             "type": "string"
           },
           "failureReason": {
+            "description": "Human-readable reason the debit failed.",
             "type": "string"
           },
           "paymentMethod": {
+            "description": "The payment method the debit used.",
             "$ref": "#/components/schemas/PaymentMethod"
           },
           "refundedAmount": {
+            "description": "Amount refunded so far, in paise.",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
-          "raw": {}
+          "raw": {
+            "description": "The gateway's response, untouched. Absent when the gateway returned no body."
+          }
         },
         "required": [
           "provider",
           "id",
           "kind",
           "status",
-          "amount",
-          "raw"
+          "amount"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "One debit against a mandate."
       },
       "CreateChargeInput": {
         "type": "object",
         "properties": {
           "subscriptionId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "The subscription to debit."
           },
           "chargeId": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 50
+            "maxLength": 50,
+            "description": "Your unique id for this debit. Reusing an id must never debit twice, so derive it from the subscription and cycle (the scheduler does)."
           },
           "amount": {
             "type": "integer",
             "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Amount to debit, in paise."
           },
           "scheduledAt": {
+            "description": "When to debit. Omit for the earliest the gateway allows.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "invoiceNumber": {
+            "description": "Invoice number shown to the customer where the gateway supports it.",
             "type": "string",
             "minLength": 1,
             "maxLength": 50
           },
           "description": {
+            "description": "Description of the debit.",
             "type": "string",
             "maxLength": 200
           },
@@ -3603,6 +3767,7 @@
             "$ref": "#/components/schemas/Customer"
           },
           "metadata": {
+            "description": "Free-form key/value pairs stored with the charge.",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -3616,31 +3781,36 @@
           "subscriptionId",
           "chargeId",
           "amount"
-        ]
+        ],
+        "description": "A merchant-raised recurring debit, for gateways/plans the merchant schedules."
       },
       "NotifyChargeInput": {
         "type": "object",
         "properties": {
           "subscriptionId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "The subscription that will be debited."
           },
           "notificationId": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 50
+            "maxLength": 50,
+            "description": "Your unique id for this notification."
           },
           "amount": {
             "type": "integer",
             "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Amount that will be debited, in paise."
           },
           "debitAt": {
             "type": "string",
             "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "description": "The date the debit will be attempted."
           },
           "invoiceNumber": {
+            "description": "Invoice number to show the customer.",
             "type": "string",
             "minLength": 1,
             "maxLength": 50
@@ -3651,40 +3821,50 @@
           "notificationId",
           "amount",
           "debitAt"
-        ]
+        ],
+        "description": "The advance notice RBI rules require before debiting a mandate."
       },
       "ChargeNotification": {
         "type": "object",
         "properties": {
           "provider": {
+            "description": "The gateway that holds the notification.",
             "$ref": "#/components/schemas/Provider"
           },
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The notification id."
           },
           "subscriptionId": {
-            "type": "string"
+            "type": "string",
+            "description": "The subscription that will be debited."
           },
           "accepted": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "True when the gateway accepted the notification for delivery."
           },
           "providerStatus": {
+            "description": "The gateway's own status, verbatim.",
             "type": "string"
           },
           "amount": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Amount that will be debited, in paise."
           },
           "debitAt": {
             "type": "string",
             "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "description": "The date the debit will be attempted."
           },
           "invoiceNumber": {
+            "description": "Carry this into the matching charge call where the gateway requires it.",
             "type": "string"
           },
-          "raw": {}
+          "raw": {
+            "description": "The gateway's response, untouched. Absent when the gateway returned no body."
+          }
         },
         "required": [
           "provider",
@@ -3692,44 +3872,50 @@
           "subscriptionId",
           "accepted",
           "amount",
-          "debitAt",
-          "raw"
+          "debitAt"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "The result of sending a pre-debit notification."
       },
       "ListChargesOptions": {
         "type": "object",
         "properties": {
           "limit": {
+            "description": "Most charges to return.",
             "type": "integer",
             "minimum": 1,
             "maximum": 100
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Options for listing the charges of a subscription."
       },
       "RefundInput": {
         "type": "object",
         "properties": {
           "subscriptionId": {
+            "description": "Required by gateways that scope payments under a subscription.",
             "type": "string",
             "minLength": 1
           },
           "chargeId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "The charge to refund."
           },
           "refundId": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 40
+            "maxLength": 40,
+            "description": "Your unique id for this refund."
           },
           "amount": {
+            "description": "Amount to refund in paise. Omit to refund the full charge.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "reason": {
+            "description": "Why the charge is refunded.",
             "type": "string",
             "maxLength": 250
           }
@@ -3737,100 +3923,140 @@
         "required": [
           "chargeId",
           "refundId"
-        ]
+        ],
+        "description": "A refund of a charge."
       },
       "Refund": {
         "type": "object",
         "properties": {
           "provider": {
+            "description": "The gateway that holds the refund.",
             "$ref": "#/components/schemas/Provider"
           },
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The gateway's refund id."
           },
           "reference": {
+            "description": "Your own refund id, where one was supplied.",
             "type": "string"
           },
           "chargeId": {
-            "type": "string"
+            "type": "string",
+            "description": "The charge that was refunded."
           },
           "subscriptionId": {
+            "description": "The subscription the charge belongs to.",
             "type": "string"
           },
           "status": {
+            "description": "Normalised refund status.",
             "$ref": "#/components/schemas/RefundStatus"
           },
           "providerStatus": {
+            "description": "The gateway's own status, verbatim.",
             "type": "string"
           },
           "amount": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Amount refunded, in paise."
           },
           "currency": {
+            "description": "Currency of the refund.",
             "$ref": "#/components/schemas/Currency"
           },
           "createdAt": {
+            "description": "When the refund was created.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
-          "raw": {}
+          "raw": {
+            "description": "The gateway's response, untouched. Absent when the gateway returned no body."
+          }
         },
         "required": [
           "provider",
           "id",
           "chargeId",
           "status",
-          "amount",
-          "raw"
+          "amount"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "A refund of a charge."
       },
       "CheckoutResult": {
         "type": "object",
         "propertyNames": {
           "type": "string"
         },
-        "additionalProperties": {}
+        "additionalProperties": {},
+        "description": "The data the gateway hands back to the browser or return URL after the customer authorises: Razorpay's checkout handler response, the parameters PayU posts to `surl`/`furl`, or the Cashfree return URL query. Pass it on untouched."
+      },
+      "VerifyCheckoutInput": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "description": "The fields the gateway handed back to the browser or return URL, untouched.",
+            "$ref": "#/components/schemas/CheckoutResult"
+          },
+          "expectedSubscriptionId": {
+            "description": "The subscription id (or your reference) that your server stored when it created the subscription. When given, a result that verifies but belongs to a different subscription is rejected, so a customer cannot replay the authorisation of one subscription to unlock another.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "description": "What the HTTP service and the facade accept when verifying a checkout result."
       },
       "CheckoutVerification": {
         "type": "object",
         "properties": {
           "provider": {
+            "description": "The gateway that issued the result.",
             "$ref": "#/components/schemas/Provider"
           },
           "subscriptionId": {
-            "type": "string"
+            "type": "string",
+            "description": "The subscription id to store and use for later calls."
           },
           "reference": {
+            "description": "Your own reference for the subscription, where known.",
             "type": "string"
           },
           "authorized": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "True when the customer's authorisation succeeded."
           },
           "status": {
+            "description": "The subscription status the result implies, where known.",
             "$ref": "#/components/schemas/SubscriptionStatus"
           },
           "charge": {
+            "description": "The authorisation or upfront charge, where the result carries one.",
             "$ref": "#/components/schemas/Charge"
           },
-          "raw": {}
+          "raw": {
+            "description": "The verified gateway data, untouched. Absent when there is none."
+          }
         },
         "required": [
           "provider",
           "subscriptionId",
-          "authorized",
-          "raw"
+          "authorized"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "The outcome of verifying a checkout result."
       },
       "WebhookRequest": {
         "type": "object",
         "properties": {
           "rawBody": {
-            "type": "string"
+            "type": "string",
+            "description": "The exact bytes of the request body as a string. Do not re-serialise parsed JSON."
           },
           "headers": {
             "type": "object",
@@ -3849,61 +4075,75 @@
                   }
                 }
               ]
-            }
+            },
+            "description": "The request headers, with lower-case names."
           }
         },
         "required": [
           "rawBody",
           "headers"
-        ]
+        ],
+        "description": "A webhook request as received from a gateway."
       },
       "SubscriptionEvent": {
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "Stable id for de-duplication: gateways deliver the same event more than once."
           },
           "provider": {
+            "description": "The gateway that sent the event.",
             "$ref": "#/components/schemas/Provider"
           },
           "type": {
+            "description": "Normalised event type.",
             "$ref": "#/components/schemas/EventType"
           },
           "providerEventType": {
-            "type": "string"
+            "type": "string",
+            "description": "The gateway's own event name, verbatim."
           },
           "occurredAt": {
+            "description": "When the event happened, where the gateway says.",
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           },
           "subscriptionId": {
+            "description": "The subscription the event is about.",
             "type": "string"
           },
           "subscription": {
+            "description": "The subscription, where the event carries it.",
             "$ref": "#/components/schemas/Subscription"
           },
           "charge": {
+            "description": "The charge, where the event carries it.",
             "$ref": "#/components/schemas/Charge"
           },
           "refund": {
+            "description": "The refund, where the event carries it.",
             "$ref": "#/components/schemas/Refund"
           },
-          "raw": {}
+          "raw": {
+            "description": "The gateway's webhook payload, untouched. Absent when there is none."
+          }
         },
         "required": [
           "id",
           "provider",
           "type",
-          "providerEventType",
-          "raw"
+          "providerEventType"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "A verified, normalised webhook event."
       },
       "Capabilities": {
         "type": "object",
         "properties": {
           "provider": {
+            "description": "The gateway these capabilities describe.",
             "$ref": "#/components/schemas/Provider"
           },
           "scheduling": {
@@ -3911,65 +4151,81 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SchedulingMode"
-            }
+            },
+            "description": "Scheduling modes available; the first is the default."
           },
           "gatewayPlans": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "The gateway stores plan objects (otherwise plans exist only in your code)."
           },
           "trial": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Free trials are supported."
           },
           "upfrontAmount": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "An upfront amount can be collected with the authorisation."
           },
           "quantity": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "A subscription can bill several units of a plan."
           },
           "pause": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "A subscription can be paused."
           },
           "resume": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "A paused subscription can be resumed."
           },
           "cancelAtPeriodEnd": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "A subscription can be cancelled at the end of the paid period."
           },
           "changePlan": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "A subscription can move to another plan."
           },
           "merchantCharges": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "The merchant can raise debits itself (`createCharge`)."
           },
           "merchantPreDebitNotification": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "The merchant must send the pre-debit notification itself (`notifyCharge`)."
           },
           "merchantChargeLeadHours": {
+            "description": "Hours before the debit date by which a merchant-raised charge must be created (with `scheduledAt` set), for gateways that send the pre-debit notification themselves once the charge exists. Absent or 0 means a charge can be raised on the due date itself.",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "merchantChargeMaxAheadHours": {
+            "description": "Furthest ahead, in hours, that a merchant-raised charge may be scheduled.",
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "exclusiveMinimum": 0
           },
           "listCharges": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "The charges of a subscription can be listed."
           },
           "refunds": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Charges can be refunded."
           },
           "signedWebhooks": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Webhooks carry a signature this library verifies."
           },
           "idempotencyKeys": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Create calls accept an idempotency key."
           },
           "paymentMethods": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PaymentMethod"
-            }
+            },
+            "description": "The payment methods mandates can be authorised with."
           }
         },
         "required": [
@@ -3991,99 +4247,111 @@
           "idempotencyKeys",
           "paymentMethods"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "What a gateway adapter can do, so callers never have to guess."
       },
       "ErrorResponse": {
         "type": "object",
         "properties": {
           "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string",
-                "enum": [
-                  "CONFIG",
-                  "VALIDATION",
-                  "UNSUPPORTED",
-                  "NOT_FOUND",
-                  "AUTH",
-                  "CONFLICT",
-                  "RATE_LIMITED",
-                  "PROVIDER_ERROR",
-                  "PROVIDER_UNAVAILABLE",
-                  "UNEXPECTED_RESPONSE",
-                  "NETWORK",
-                  "TIMEOUT",
-                  "OUTCOME_UNKNOWN",
-                  "SIGNATURE_INVALID",
-                  "INTERNAL_ERROR",
-                  "UNAUTHORIZED",
-                  "METHOD_NOT_ALLOWED",
-                  "PAYLOAD_TOO_LARGE"
-                ]
-              },
-              "message": {
-                "type": "string"
-              },
-              "provider": {
-                "type": "string",
-                "enum": [
-                  "razorpay",
-                  "cashfree",
-                  "payu"
-                ]
-              },
-              "httpStatus": {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
-              },
-              "providerCode": {
-                "type": "string"
-              },
-              "retryable": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "code",
-              "message",
-              "retryable"
-            ],
-            "additionalProperties": false
+            "description": "The error.",
+            "$ref": "#/components/schemas/ErrorDetail"
           }
         },
         "required": [
           "error"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "The body of every error response."
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "description": "What went wrong. Branch on this, never on `message`.",
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation. Do not branch on it."
+          },
+          "provider": {
+            "description": "The gateway involved, where one was.",
+            "$ref": "#/components/schemas/Provider"
+          },
+          "httpStatus": {
+            "description": "The gateway's HTTP status, when it answered. This is not the status of this response.",
+            "type": "integer"
+          },
+          "providerCode": {
+            "description": "The gateway's own error code, verbatim.",
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean",
+            "description": "True when repeating the same call later is safe and may succeed."
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "additionalProperties": false,
+        "description": "The error: a stable code, a message and, for gateway failures, what the gateway said."
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "CONFIG",
+          "VALIDATION",
+          "UNSUPPORTED",
+          "NOT_FOUND",
+          "AUTH",
+          "CONFLICT",
+          "RATE_LIMITED",
+          "PROVIDER_ERROR",
+          "PROVIDER_UNAVAILABLE",
+          "UNEXPECTED_RESPONSE",
+          "NETWORK",
+          "TIMEOUT",
+          "OUTCOME_UNKNOWN",
+          "SIGNATURE_INVALID",
+          "INTERNAL_ERROR",
+          "UNAUTHORIZED",
+          "METHOD_NOT_ALLOWED",
+          "PAYLOAD_TOO_LARGE"
+        ],
+        "description": "A stable error code: one of the library's `ErrorCode`s or one of the service's own (`UNAUTHORIZED`, `METHOD_NOT_ALLOWED`, `PAYLOAD_TOO_LARGE`). Branch on this, never on the message."
       },
       "Health": {
         "type": "object",
         "properties": {
           "status": {
-            "type": "string",
-            "enum": [
-              "ok"
-            ]
+            "description": "Service status.",
+            "$ref": "#/components/schemas/HealthStatus"
           },
           "providers": {
             "type": "array",
             "items": {
-              "type": "string",
-              "enum": [
-                "razorpay",
-                "cashfree",
-                "payu"
-              ]
-            }
+              "$ref": "#/components/schemas/Provider"
+            },
+            "description": "The gateways this service is configured with."
           }
         },
         "required": [
           "status",
           "providers"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "The service health."
+      },
+      "HealthStatus": {
+        "type": "string",
+        "enum": [
+          "ok"
+        ],
+        "description": "`ok` when the service is up."
       },
       "WebhookReceipt": {
         "type": "object",
@@ -4091,42 +4359,47 @@
           "received": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Number of events the gateway's webhook carried."
           }
         },
         "required": [
           "received"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Acknowledgement of a webhook the service verified."
       },
       "WebhookPayload": {
         "type": "object",
         "propertyNames": {
           "type": "string"
         },
-        "additionalProperties": {}
+        "additionalProperties": {},
+        "description": "The gateway's webhook body, exactly as the gateway sent it."
       },
       "TickRequest": {
         "type": "object",
         "properties": {
           "limit": {
+            "description": "Most schedules to process in this run.",
             "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+            "minimum": 1
           }
-        }
+        },
+        "description": "Options for one run of the billing scheduler."
       },
       "OpenApiDocument": {
         "type": "object",
         "properties": {
           "openapi": {
-            "type": "string"
+            "type": "string",
+            "description": "The OpenAPI version of the document."
           }
         },
         "required": [
           "openapi"
         ],
-        "additionalProperties": {}
+        "additionalProperties": {},
+        "description": "This API as an OpenAPI 3.1 document."
       },
       "TickResult": {
         "type": "object",
@@ -4134,62 +4407,63 @@
           "at": {
             "type": "string",
             "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "description": "The instant the tick ran at."
           },
           "due": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Schedules the store reported as due."
           },
           "locked": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Due schedules skipped because another worker held their lock."
           },
           "notified": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Pre-debit notifications accepted by the gateway."
           },
           "charged": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "`createCharge` calls made."
           },
           "reconciled": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "`getCharge` reconciliations made."
           },
           "succeeded": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Cycles that became collected."
           },
           "failed": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Debit attempts that failed."
           },
           "awaiting": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Cycles left waiting for the gateway's final answer."
           },
           "completed": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Schedules that finished their last cycle."
           },
           "halted": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Schedules halted because a cycle ran out of attempts."
           },
           "expired": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 9007199254740991
+            "description": "Pending-authorisation schedules cancelled by their timeout."
           },
           "errors": {
             "type": "array",
@@ -4197,30 +4471,16 @@
               "type": "object",
               "properties": {
                 "scheduleId": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "The schedule that failed; the other schedules of the tick are unaffected."
                 },
                 "code": {
-                  "type": "string",
-                  "enum": [
-                    "CONFIG",
-                    "VALIDATION",
-                    "UNSUPPORTED",
-                    "NOT_FOUND",
-                    "AUTH",
-                    "CONFLICT",
-                    "RATE_LIMITED",
-                    "PROVIDER_ERROR",
-                    "PROVIDER_UNAVAILABLE",
-                    "UNEXPECTED_RESPONSE",
-                    "NETWORK",
-                    "TIMEOUT",
-                    "OUTCOME_UNKNOWN",
-                    "SIGNATURE_INVALID",
-                    "INTERNAL_ERROR"
-                  ]
+                  "description": "Why it failed.",
+                  "$ref": "#/components/schemas/LibraryErrorCode"
                 },
                 "message": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Human-readable explanation. Do not branch on it."
                 }
               },
               "required": [
@@ -4228,8 +4488,10 @@
                 "code",
                 "message"
               ],
-              "additionalProperties": false
-            }
+              "additionalProperties": false,
+              "description": "A schedule that failed during a tick."
+            },
+            "description": "The schedules that failed, each with its error."
           }
         },
         "required": [
@@ -4247,7 +4509,29 @@
           "expired",
           "errors"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "What one `tick()` did. A failing schedule shows up in `errors`; the others are unaffected."
+      },
+      "LibraryErrorCode": {
+        "type": "string",
+        "enum": [
+          "CONFIG",
+          "VALIDATION",
+          "UNSUPPORTED",
+          "NOT_FOUND",
+          "AUTH",
+          "CONFLICT",
+          "RATE_LIMITED",
+          "PROVIDER_ERROR",
+          "PROVIDER_UNAVAILABLE",
+          "UNEXPECTED_RESPONSE",
+          "NETWORK",
+          "TIMEOUT",
+          "OUTCOME_UNKNOWN",
+          "SIGNATURE_INVALID",
+          "INTERNAL_ERROR"
+        ],
+        "description": "A stable error code of this library (`SubscriptionError.code`). Branch on this, never on the message."
       }
     },
     "securitySchemes": {

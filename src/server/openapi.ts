@@ -4,8 +4,8 @@
  */
 import { z } from 'zod';
 import { ContentType } from '../constants.js';
-import { SchemaName, exportJsonSchemas } from '../schema-registry.js';
-import { TickResultSchema } from '../scheduler/schemas.js';
+import { SchemaName, addDiscriminators, exportJsonSchemas, stripSafeIntegerBounds } from '../schema-registry.js';
+import { ErrorCodeSchema as LibraryErrorCodeSchema, TickErrorSchema, TickResultSchema } from '../scheduler/schemas.js';
 import {
   AuthMode,
   BEARER_SCHEME,
@@ -49,10 +49,10 @@ const IO = { Input: 'input', Output: 'output' } as const;
 type Io = (typeof IO)[keyof typeof IO];
 
 const PATH_PARAM_DESCRIPTIONS: Record<PathParam, string> = {
-  [PathParam.Provider]: 'The gateway.',
-  [PathParam.PlanId]: 'The plan id, as returned by the gateway.',
+  [PathParam.Provider]: 'The payment gateway to call. It must be configured on the service.',
+  [PathParam.PlanId]: 'The plan id, as returned when the plan was created.',
   [PathParam.SubscriptionId]: 'The subscription id returned when it was created or its checkout was verified.',
-  [PathParam.ChargeId]: 'The charge id.',
+  [PathParam.ChargeId]: 'The charge id, as returned by the gateway or when the charge was raised.',
 };
 
 const PATH_PLACEHOLDER = /\{([^}]+)\}/g;
@@ -68,19 +68,21 @@ function stripMeta(schema: JsonObject): JsonObject {
 
 /** The schemas this service adds to the unified model. */
 function serverSchemas(): Record<string, z.ZodType> {
-  return { ...SERVER_SCHEMAS, [ServerSchemaName.TickResult]: TickResultSchema };
+  return {
+    ...SERVER_SCHEMAS,
+    [ServerSchemaName.TickError]: TickErrorSchema,
+    [ServerSchemaName.TickResult]: TickResultSchema,
+    [ServerSchemaName.LibraryErrorCode]: LibraryErrorCodeSchema,
+  };
 }
 
-function exportServerSchemas(io: Io): Record<string, JsonObject> {
-  const registry = z.registry<{ id: string }>();
-  for (const [id, schema] of Object.entries(serverSchemas())) registry.add(schema, { id });
-  const result = z.toJSONSchema(registry, {
-    uri: (id) => `${SCHEMA_REF_PREFIX}${id}`,
-    io,
-    unrepresentable: 'any',
-  });
-  const schemas: Record<string, JsonObject> = {};
-  for (const [id, schema] of Object.entries(result.schemas)) schemas[id] = stripMeta(schema as JsonObject);
+/**
+ * Every published schema (unified model and service) in one `toJSONSchema` run, so that a schema used by both,
+ * such as `Provider`, is one named component referenced everywhere. The OpenAPI-only `discriminator` is added here.
+ */
+function exportAll(io: Io): Record<string, JsonObject> {
+  const { schemas } = exportJsonSchemas({ refPrefix: SCHEMA_REF_PREFIX, io, extra: serverSchemas() });
+  addDiscriminators(schemas, SCHEMA_REF_PREFIX);
   return schemas;
 }
 
@@ -107,15 +109,8 @@ let cachedComponents: Record<string, JsonObject> | undefined;
  */
 function componentSchemas(): Record<string, JsonObject> {
   if (cachedComponents) return cachedComponents;
-  const refPrefix = SCHEMA_REF_PREFIX;
-  const output: Record<string, JsonObject> = {
-    ...exportJsonSchemas({ refPrefix, io: IO.Output }).schemas,
-    ...exportServerSchemas(IO.Output),
-  };
-  const input: Record<string, JsonObject> = {
-    ...exportJsonSchemas({ refPrefix, io: IO.Input }).schemas,
-    ...exportServerSchemas(IO.Input),
-  };
+  const output = exportAll(IO.Output);
+  const input = exportAll(IO.Input);
 
   // A request body and everything it points at must use the input form.
   const pending = routes.flatMap((route) => (route.requestBody ? [route.requestBody.schema as string] : []));
@@ -157,7 +152,9 @@ function queryParameters(route: RouteDefinition): JsonObject[] {
     in: 'query',
     required: query.required,
     description: query.description,
-    schema: stripMeta(z.toJSONSchema(query.schema, { io: IO.Input, unrepresentable: 'any' }) as JsonObject),
+    schema: stripSafeIntegerBounds(
+      stripMeta(z.toJSONSchema(query.schema, { io: IO.Input, unrepresentable: 'any' }) as JsonObject),
+    ),
   }));
 }
 

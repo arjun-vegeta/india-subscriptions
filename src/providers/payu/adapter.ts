@@ -77,7 +77,6 @@ import {
   TXNID_MAX_LENGTH,
   TXNID_PATTERN,
   type ConsentHashLayout,
-  type PayUMandateMethod,
 } from './constants.js';
 import {
   cardMandateWebhookHash,

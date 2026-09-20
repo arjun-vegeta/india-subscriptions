@@ -12,7 +12,6 @@ import {
   ListChargesOptionsSchema,
   ProviderSchema,
   type CancelSubscriptionOptions,
-  type CheckoutResult,
   type CreateChargeInput,
   type CreatePlanInput,
   type CreateSubscriptionInput,
@@ -22,6 +21,7 @@ import {
   type ResumeSubscriptionOptions,
   type SubscriptionEvent,
   type UpdateSubscriptionInput,
+  type VerifyCheckoutInput,
   type WebhookRequest,
 } from '../schemas.js';
 import {
@@ -41,52 +41,79 @@ import {
 // Schemas that belong to the HTTP service (the unified model lives in schemas.ts)
 // ---------------------------------------------------------------------------
 
-export const ErrorResponseSchema = z.object({
-  error: z.object({
-    /** A library `ErrorCode`, or one of the service's own codes. Branch on this, never on `message`. */
-    code: z.enum({ ...ErrorCode, ...ServerErrorCode }),
-    message: z.string(),
-    provider: ProviderSchema.optional(),
-    /** The gateway's HTTP status, when it answered. This is not the status of this response. */
-    httpStatus: z.number().int().optional(),
-    /** The gateway's own error code, verbatim. */
-    providerCode: z.string().optional(),
-    /** True when repeating the same call later is safe and may succeed. */
-    retryable: z.boolean(),
-  }),
-});
+/** Every `code` a response can carry. A code both layers define (`INTERNAL_ERROR`) appears once. */
+export const ErrorCodeSchema = z
+  .enum({ ...ErrorCode, ...ServerErrorCode })
+  .describe(
+    'A stable error code: one of the library\'s `ErrorCode`s or one of the service\'s own (`UNAUTHORIZED`, ' +
+      '`METHOD_NOT_ALLOWED`, `PAYLOAD_TOO_LARGE`). Branch on this, never on the message.',
+  );
+
+export const ErrorDetailSchema = z
+  .object({
+    code: ErrorCodeSchema.describe('What went wrong. Branch on this, never on `message`.'),
+    message: z.string().describe('Human-readable explanation. Do not branch on it.'),
+    provider: ProviderSchema.optional().describe('The gateway involved, where one was.'),
+    httpStatus: z
+      .number()
+      .int()
+      .optional()
+      .describe('The gateway\'s HTTP status, when it answered. This is not the status of this response.'),
+    providerCode: z.string().optional().describe('The gateway\'s own error code, verbatim.'),
+    retryable: z
+      .boolean()
+      .describe('True when repeating the same call later is safe and may succeed.'),
+  })
+  .describe('The error: a stable code, a message and, for gateway failures, what the gateway said.');
+
+export const ErrorResponseSchema = z
+  .object({
+    error: ErrorDetailSchema.describe('The error.'),
+  })
+  .describe('The body of every error response.');
 export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
 
-export const HealthSchema = z.object({
-  status: z.enum(HealthStatus),
-  /** The gateways this service is configured with. */
-  providers: z.array(ProviderSchema),
-});
+export const HealthStatusSchema = z.enum(HealthStatus).describe('`ok` when the service is up.');
+
+export const HealthSchema = z
+  .object({
+    status: HealthStatusSchema.describe('Service status.'),
+    providers: z.array(ProviderSchema).describe('The gateways this service is configured with.'),
+  })
+  .describe('The service health.');
 export type Health = z.infer<typeof HealthSchema>;
 
-export const WebhookReceiptSchema = z.object({
-  /** Number of events the gateway's webhook carried. */
-  received: z.number().int().nonnegative(),
-});
+export const WebhookReceiptSchema = z
+  .object({
+    received: z.number().int().nonnegative().describe('Number of events the gateway\'s webhook carried.'),
+  })
+  .describe('Acknowledgement of a webhook the service verified.');
 export type WebhookReceipt = z.infer<typeof WebhookReceiptSchema>;
 
-/** The gateway's webhook body, exactly as the gateway sent it. */
-export const WebhookPayloadSchema = z.record(z.string(), z.unknown());
+export const WebhookPayloadSchema = z
+  .record(z.string(), z.unknown())
+  .describe('The gateway\'s webhook body, exactly as the gateway sent it.');
 
-export const TickRequestSchema = z.object({
-  /** Most schedules to process in this run. */
-  limit: z.number().int().min(1).optional(),
-});
+export const TickRequestSchema = z
+  .object({
+    limit: z.number().int().min(1).optional().describe('Most schedules to process in this run.'),
+  })
+  .describe('Options for one run of the billing scheduler.');
 export type TickRequest = z.infer<typeof TickRequestSchema>;
 
-export const OpenApiDocumentSchema = z.looseObject({
-  openapi: z.string(),
-});
+export const OpenApiDocumentSchema = z
+  .looseObject({
+    openapi: z.string().describe('The OpenAPI version of the document.'),
+  })
+  .describe('This API as an OpenAPI 3.1 document.');
 
-/** The schemas defined here, by published name. `TickResult` is added in `openapi.ts`. */
+/** The schemas defined here, by published name. `TickResult` and `LibraryErrorCode` are added in `openapi.ts`. */
 export const SERVER_SCHEMAS = {
   [ServerSchemaName.ErrorResponse]: ErrorResponseSchema,
+  [ServerSchemaName.ErrorDetail]: ErrorDetailSchema,
+  [ServerSchemaName.ErrorCode]: ErrorCodeSchema,
   [ServerSchemaName.Health]: HealthSchema,
+  [ServerSchemaName.HealthStatus]: HealthStatusSchema,
   [ServerSchemaName.WebhookReceipt]: WebhookReceiptSchema,
   [ServerSchemaName.WebhookPayload]: WebhookPayloadSchema,
   [ServerSchemaName.TickRequest]: TickRequestSchema,
@@ -170,7 +197,7 @@ interface BodyTypes {
   [SchemaName.CreateChargeInput]: CreateChargeInput;
   [SchemaName.NotifyChargeInput]: NotifyChargeInput;
   [SchemaName.RefundInput]: RefundInput;
-  [SchemaName.CheckoutResult]: CheckoutResult;
+  [SchemaName.VerifyCheckoutInput]: VerifyCheckoutInput;
   [SchemaName.WebhookRequest]: WebhookRequest;
   [ServerSchemaName.TickRequest]: TickRequest;
   [ServerSchemaName.WebhookPayload]: string;
@@ -252,7 +279,7 @@ function pathParam(context: { params: Readonly<Record<string, string>> }, name: 
 const LIMIT_QUERY: QueryParamDefinition = {
   name: QueryParam.Limit,
   schema: ListChargesOptionsSchema.shape.limit.unwrap(),
-  description: 'Most charges to return.',
+  description: 'Most charges to return, from 1 to 100.',
   required: false,
 };
 
@@ -497,12 +524,19 @@ export const routes: readonly RouteDefinition[] = [
     summary: 'Verify a checkout result',
     description:
       'Verifies what the gateway returned to the customer\'s browser after authorisation, and starts the billing ' +
-      'schedule for merchant-scheduled subscriptions. The body is the gateway\'s result, untouched.' +
+      'schedule for merchant-scheduled subscriptions. Pass the gateway\'s result untouched as `result`, and the ' +
+      'subscription id your server stored as `expectedSubscriptionId`: a genuine result that belongs to a ' +
+      'different subscription is then rejected like a forged one.' +
       GATEWAY_NOTE,
     gateway: true,
-    body: { schema: SchemaName.CheckoutResult },
+    body: { schema: SchemaName.VerifyCheckoutInput },
     response: { schema: SchemaName.CheckoutVerification },
-    handler: ({ client, provider, body }) => client.verifyCheckout(provider, body),
+    handler: ({ client, provider, body }) =>
+      client.verifyCheckout(
+        provider,
+        body.result,
+        body.expectedSubscriptionId === undefined ? {} : { expectedSubscriptionId: body.expectedSubscriptionId },
+      ),
   }),
 
   providerRoute({

@@ -214,10 +214,17 @@ export const HeaderValue = {
 /** Names of the schemas this service adds to `components.schemas`, beside the published unified model. */
 export const ServerSchemaName = {
   ErrorResponse: 'ErrorResponse',
+  ErrorDetail: 'ErrorDetail',
+  /** Every code a response can carry: the library's `ErrorCode`s and the service's own. */
+  ErrorCode: 'ErrorCode',
+  /** The codes of the library alone, as `TickResult.errors` carries them. */
+  LibraryErrorCode: 'LibraryErrorCode',
   Health: 'Health',
+  HealthStatus: 'HealthStatus',
   WebhookReceipt: 'WebhookReceipt',
   WebhookPayload: 'WebhookPayload',
   TickRequest: 'TickRequest',
+  TickError: 'TickError',
   TickResult: 'TickResult',
   OpenApiDocument: 'OpenApiDocument',
 } as const;

@@ -17,10 +17,18 @@ export const SchemaName = {
   SchedulingMode: 'SchedulingMode',
   EventType: 'EventType',
   Environment: 'Environment',
+  IntervalUnit: 'IntervalUnit',
+  CancelMode: 'CancelMode',
+  ChangeTiming: 'ChangeTiming',
+  CheckoutKind: 'CheckoutKind',
   BillingInterval: 'BillingInterval',
   Customer: 'Customer',
   CreatePlanInput: 'CreatePlanInput',
   Plan: 'Plan',
+  RedirectCheckout: 'RedirectCheckout',
+  FormPostCheckout: 'FormPostCheckout',
+  RazorpayCheckout: 'RazorpayCheckout',
+  CashfreeCheckout: 'CashfreeCheckout',
   CheckoutInstruction: 'CheckoutInstruction',
   Trial: 'Trial',
   CreateSubscriptionInput: 'CreateSubscriptionInput',
@@ -37,6 +45,7 @@ export const SchemaName = {
   RefundInput: 'RefundInput',
   Refund: 'Refund',
   CheckoutResult: 'CheckoutResult',
+  VerifyCheckoutInput: 'VerifyCheckoutInput',
   CheckoutVerification: 'CheckoutVerification',
   WebhookRequest: 'WebhookRequest',
   SubscriptionEvent: 'SubscriptionEvent',
@@ -58,10 +67,18 @@ const NAMED: Record<SchemaName, z.ZodType> = {
   [SchemaName.SchedulingMode]: s.SchedulingModeSchema,
   [SchemaName.EventType]: s.EventTypeSchema,
   [SchemaName.Environment]: s.EnvironmentSchema,
+  [SchemaName.IntervalUnit]: s.IntervalUnitSchema,
+  [SchemaName.CancelMode]: s.CancelModeSchema,
+  [SchemaName.ChangeTiming]: s.ChangeTimingSchema,
+  [SchemaName.CheckoutKind]: s.CheckoutKindSchema,
   [SchemaName.BillingInterval]: s.BillingIntervalSchema,
   [SchemaName.Customer]: s.CustomerSchema,
   [SchemaName.CreatePlanInput]: s.CreatePlanInputSchema,
   [SchemaName.Plan]: s.PlanSchema,
+  [SchemaName.RedirectCheckout]: s.RedirectCheckoutSchema,
+  [SchemaName.FormPostCheckout]: s.FormPostCheckoutSchema,
+  [SchemaName.RazorpayCheckout]: s.RazorpayCheckoutSchema,
+  [SchemaName.CashfreeCheckout]: s.CashfreeCheckoutSchema,
   [SchemaName.CheckoutInstruction]: s.CheckoutInstructionSchema,
   [SchemaName.Trial]: s.TrialSchema,
   [SchemaName.CreateSubscriptionInput]: s.CreateSubscriptionInputSchema,
@@ -78,6 +95,7 @@ const NAMED: Record<SchemaName, z.ZodType> = {
   [SchemaName.RefundInput]: s.RefundInputSchema,
   [SchemaName.Refund]: s.RefundSchema,
   [SchemaName.CheckoutResult]: s.CheckoutResultSchema,
+  [SchemaName.VerifyCheckoutInput]: s.VerifyCheckoutInputSchema,
   [SchemaName.CheckoutVerification]: s.CheckoutVerificationSchema,
   [SchemaName.WebhookRequest]: s.WebhookRequestSchema,
   [SchemaName.SubscriptionEvent]: s.SubscriptionEventSchema,
@@ -98,6 +116,76 @@ export interface JsonSchemaExport {
   schemas: Record<string, Record<string, unknown>>;
 }
 
+type JsonObject = Record<string, unknown>;
+
+/** Zod gives every integer these bounds; they only restate what a JavaScript number can hold. */
+const SAFE_INTEGER_BOUNDS: readonly number[] = [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
+const BOUND_KEYWORDS = ['minimum', 'maximum'] as const;
+
+/**
+ * Removes `minimum` / `maximum` keywords whose value is merely the JavaScript
+ * safe-integer limit (Zod adds them to every `z.number().int()`), in place.
+ * Real bounds such as `minimum: 1` or `maximum: 100` are kept. Generated
+ * clients otherwise carry meaningless range checks.
+ */
+export function stripSafeIntegerBounds<T>(node: T): T {
+  if (Array.isArray(node)) {
+    for (const item of node) stripSafeIntegerBounds(item);
+  } else if (node !== null && typeof node === 'object') {
+    const object = node as JsonObject;
+    for (const keyword of BOUND_KEYWORDS) {
+      const bound = object[keyword];
+      if (typeof bound === 'number' && SAFE_INTEGER_BOUNDS.includes(bound)) delete object[keyword];
+    }
+    for (const value of Object.values(object)) stripSafeIntegerBounds(value);
+  }
+  return node;
+}
+
+const REF = '$ref';
+
+function resolveComponent(schemas: Record<string, JsonObject>, refPrefix: string, ref: unknown): JsonObject | undefined {
+  return typeof ref === 'string' && ref.startsWith(refPrefix) ? schemas[ref.slice(refPrefix.length)] : undefined;
+}
+
+/** The string `const` a variant pins its property to, or undefined. */
+function constantOf(variant: JsonObject, property: string): string | undefined {
+  const properties = variant.properties as Record<string, JsonObject> | undefined;
+  const value = properties?.[property]?.const;
+  const required = Array.isArray(variant.required) && variant.required.includes(property);
+  return required && typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Adds an OpenAPI `discriminator` to every component that is a `oneOf` of
+ * `$ref`s to object components which all pin one required property to a
+ * distinct string `const` (what a Zod `discriminatedUnion` of named variants
+ * exports as). Zod 4 cannot express the keyword itself. The mapping goes from
+ * each constant to its variant component, so a generator can pick the class by
+ * `kind` instead of trying every variant. Done in place; schemas that do not
+ * fit the pattern are left untouched.
+ */
+export function addDiscriminators(schemas: Record<string, JsonObject>, refPrefix: string): void {
+  for (const schema of Object.values(schemas)) {
+    const variants = schema.oneOf;
+    if (!Array.isArray(variants) || variants.length === 0 || schema.discriminator !== undefined) continue;
+    const targets = variants.map((variant) => resolveComponent(schemas, refPrefix, (variant as JsonObject)[REF]));
+    const first = targets[0];
+    if (!first || targets.some((target) => target === undefined)) continue;
+    const candidates = Object.keys((first.properties as JsonObject | undefined) ?? {});
+    for (const propertyName of candidates) {
+      const values = targets.map((target) => constantOf(target as JsonObject, propertyName));
+      if (values.some((value) => value === undefined) || new Set(values).size !== values.length) continue;
+      const mapping: Record<string, string> = {};
+      variants.forEach((variant, index) => {
+        mapping[values[index] as string] = (variant as JsonObject)[REF] as string;
+      });
+      schema.discriminator = { propertyName, mapping };
+      break;
+    }
+  }
+}
+
 /**
  * Exports the unified model as JSON Schema. `refPrefix` controls how schemas
  * point at each other: `#/components/schemas/` for OpenAPI, `#/$defs/` for a
@@ -105,9 +193,23 @@ export interface JsonSchemaExport {
  *
  * `io: 'input'` describes what callers send (defaults are optional);
  * `io: 'output'` describes what they receive (defaults are always present).
+ *
+ * `extra` publishes further named schemas in the same document (the HTTP
+ * service's own). They share one registry with the unified model, so a schema
+ * that appears in both, such as `Provider`, is a `$ref` everywhere instead of
+ * being inlined.
  */
-export function exportJsonSchemas(options: { refPrefix: string; io: 'input' | 'output' }): JsonSchemaExport {
-  const result = z.toJSONSchema(schemaRegistry, {
+export function exportJsonSchemas(options: {
+  refPrefix: string;
+  io: 'input' | 'output';
+  extra?: Record<string, z.ZodType>;
+}): JsonSchemaExport {
+  let registry = schemaRegistry;
+  if (options.extra) {
+    registry = z.registry<{ id: string }>();
+    for (const [id, schema] of Object.entries({ ...NAMED, ...options.extra })) registry.add(schema, { id });
+  }
+  const result = z.toJSONSchema(registry, {
     uri: (id) => `${options.refPrefix}${id}`,
     io: options.io,
     unrepresentable: 'any',
@@ -115,7 +217,7 @@ export function exportJsonSchemas(options: { refPrefix: string; io: 'input' | 'o
   const schemas: Record<string, Record<string, unknown>> = {};
   for (const [id, schema] of Object.entries(result.schemas)) {
     const { $schema: _schema, $id: _id, ...rest } = schema as Record<string, unknown>;
-    schemas[id] = rest;
+    schemas[id] = stripSafeIntegerBounds(rest);
   }
   return { schemas };
 }

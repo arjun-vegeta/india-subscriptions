@@ -228,6 +228,7 @@ interface GatewaySubscription {
   metadata?: Record<string, string>;
   authorized: boolean;
   resumeAt?: string;
+  mandateEndsAt?: string;
 }
 
 interface RecordedNotification {
@@ -414,6 +415,7 @@ export class FakeGateway extends BaseProvider {
       customer: input.customer,
       metadata: input.metadata,
       authorized: false,
+      ...(input.mandateEndsAt !== undefined ? { mandateEndsAt: new Date(input.mandateEndsAt).toISOString() } : {}),
     };
     this.subscriptions.set(sub.id, sub);
     if (input.idempotencyKey !== undefined) this.byIdempotencyKey.set(input.idempotencyKey, sub);
@@ -633,7 +635,7 @@ export class FakeGateway extends BaseProvider {
   private resolve(id: string): GatewaySubscription {
     const sub = this.subscriptions.get(id) ?? this.subscriptions.get(this.aliases.get(id) ?? '');
     if (!sub) throw new SubscriptionError(ErrorCode.NotFound, `no subscription ${id}`, { provider: this.name });
-    return sub;
+    return this.expire(sub);
   }
 
   /** Money-moving calls are keyed strictly by the mandate's current id. */
@@ -644,6 +646,18 @@ export class FakeGateway extends BaseProvider {
         provider: this.name,
         providerCode: ProviderCode.UnknownMandate,
       });
+    }
+    return this.expire(sub);
+  }
+
+  /** A mandate stops being usable when its end date passes. */
+  private expire(sub: GatewaySubscription): GatewaySubscription {
+    if (
+      sub.status === SubscriptionStatus.Active &&
+      sub.mandateEndsAt !== undefined &&
+      this.now().getTime() >= Date.parse(sub.mandateEndsAt)
+    ) {
+      sub.status = SubscriptionStatus.Expired;
     }
     return sub;
   }
@@ -671,6 +685,7 @@ export class FakeGateway extends BaseProvider {
       ...(sub.totalCycles !== undefined ? { totalCycles: sub.totalCycles } : {}),
       createdAt: sub.createdAt,
       ...(omit.includes('startAt') ? {} : { startAt: sub.startAt }),
+      ...(sub.mandateEndsAt !== undefined ? { mandateEndsAt: sub.mandateEndsAt } : {}),
       ...(fresh ? { checkout: { kind: CheckoutKind.Redirect, url: CHECKOUT_URL } } : {}),
       ...(sub.metadata !== undefined ? { metadata: sub.metadata } : {}),
       raw: { fake: sub.id },

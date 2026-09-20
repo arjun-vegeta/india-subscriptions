@@ -24,7 +24,7 @@ function gatewaySubscription(overrides: Partial<Subscription> = {}): Subscriptio
     provider: PAYU,
     id: 'mandate_1',
     status: SubscriptionStatus.Active,
-    providerStatus: 'active',
+    providerStatus: SubscriptionStatus.Active,
     scheduling: SchedulingMode.Merchant,
     amount: 1,
     interval: { unit: IntervalUnit.Day, count: 1 },
