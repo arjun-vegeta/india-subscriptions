@@ -14,6 +14,7 @@ import {
   cyclesOf,
   makeWorld,
   plusHours,
+  scheduleIdOf,
   scheduleOf,
   trialInput,
 } from './helpers.js';
@@ -45,7 +46,7 @@ describe('merchant-scheduled (notify style): create', () => {
 
     const schedule = await scheduleOf(world);
     expect(schedule).toMatchObject({
-      id: REFERENCE,
+      id: scheduleIdOf(),
       provider: PAYU,
       subscriptionId: gatewaySub.id,
       reference: REFERENCE,
@@ -64,12 +65,12 @@ describe('merchant-scheduled (notify style): create', () => {
   it('keys the schedule by the subscription id when the caller gave no reference', async () => {
     const world = makeWorld();
     const created = await world.subs.create(PAYU, trialInput({ reference: undefined }));
-    const schedule = await world.scheduler?.get(created.id);
+    const schedule = await world.scheduler?.get(scheduleIdOf(created.id));
     expect(schedule?.status).toBe(ScheduleStatus.PendingAuthorization);
     expect(schedule?.reference).toBeUndefined();
 
     await world.subs.verifyCheckout(PAYU, world.gateway.authorize(created.id));
-    expect((await world.scheduler?.get(created.id))?.status).toBe(ScheduleStatus.Active);
+    expect((await world.scheduler?.get(scheduleIdOf(created.id)))?.status).toBe(ScheduleStatus.Active);
   });
 
   it('is idempotent when the same gateway subscription is created again (retry with an idempotency key)', async () => {
@@ -184,7 +185,7 @@ describe('merchant-scheduled (notify style): full lifecycle through the facade, 
       customer: trialInput().customer,
       metadata: {
         ...trialInput().metadata,
-        [ChargeMetadataKey.ScheduleId]: REFERENCE,
+        [ChargeMetadataKey.ScheduleId]: scheduleIdOf(),
         [ChargeMetadataKey.Cycle]: '1',
         [ChargeMetadataKey.Attempt]: '1',
       },

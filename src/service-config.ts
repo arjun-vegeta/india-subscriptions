@@ -1,0 +1,445 @@
+/**
+ * Configuration of the self-hosted service (`india-subscriptions serve`): every
+ * environment variable it reads, named once, and the Zod schemas that turn a
+ * process environment into a validated `ServiceConfig`.
+ *
+ * Rules:
+ * - A variable that is unset or blank counts as absent.
+ * - A gateway is enabled when its required variables are all present. Setting
+ *   only some of its variables (`RAZORPAY_KEY_ID` without `RAZORPAY_KEY_SECRET`)
+ *   is an error, never a silently disabled gateway.
+ * - Messages name the variable and the rule. They never contain a value, so a
+ *   mistyped secret cannot end up in a log.
+ */
+import { z } from 'zod';
+import { ErrorCode, Environment, Provider } from './constants.js';
+import { SubscriptionError } from './errors.js';
+import { CashfreeConfigSchema, type CashfreeConfig } from './providers/cashfree/schemas.js';
+import { ConsentHashLayout } from './providers/payu/constants.js';
+import { PayUConfigSchema, type PayUConfig } from './providers/payu/schemas.js';
+import { RAZORPAY_MAX_DURATION_YEARS } from './providers/razorpay/constants.js';
+import { RazorpayConfigSchema, type RazorpayConfig } from './providers/razorpay/schemas.js';
+
+/** Names of the environment variables the service reads. */
+export const EnvVar = {
+  ApiKey: 'INDIA_SUBSCRIPTIONS_API_KEY',
+  Host: 'HOST',
+  Port: 'PORT',
+
+  RazorpayKeyId: 'RAZORPAY_KEY_ID',
+  RazorpayKeySecret: 'RAZORPAY_KEY_SECRET',
+  RazorpayWebhookSecret: 'RAZORPAY_WEBHOOK_SECRET',
+  RazorpayDefaultDurationYears: 'RAZORPAY_DEFAULT_DURATION_YEARS',
+  RazorpayBaseUrl: 'RAZORPAY_BASE_URL',
+
+  CashfreeClientId: 'CASHFREE_CLIENT_ID',
+  CashfreeClientSecret: 'CASHFREE_CLIENT_SECRET',
+  CashfreeEnvironment: 'CASHFREE_ENVIRONMENT',
+  CashfreeWebhookSecret: 'CASHFREE_WEBHOOK_SECRET',
+  CashfreeApiVersion: 'CASHFREE_API_VERSION',
+  CashfreeBaseUrl: 'CASHFREE_BASE_URL',
+
+  PayuKey: 'PAYU_KEY',
+  PayuSalt: 'PAYU_SALT',
+  PayuEnvironment: 'PAYU_ENVIRONMENT',
+  PayuSuccessUrl: 'PAYU_SUCCESS_URL',
+  PayuFailureUrl: 'PAYU_FAILURE_URL',
+  PayuConsentHashLayout: 'PAYU_CONSENT_HASH_LAYOUT',
+  PayuAcceptUnsignedWebhooks: 'PAYU_ACCEPT_UNSIGNED_WEBHOOKS',
+  PayuPaymentUrl: 'PAYU_PAYMENT_URL',
+  PayuApiUrl: 'PAYU_API_URL',
+
+  SchedulerStoreFile: 'SCHEDULER_STORE_FILE',
+  SchedulerTickSeconds: 'SCHEDULER_TICK_SECONDS',
+
+  EventsWebhookUrl: 'EVENTS_WEBHOOK_URL',
+  EventsWebhookSecret: 'EVENTS_WEBHOOK_SECRET',
+} as const;
+export type EnvVar = (typeof EnvVar)[keyof typeof EnvVar];
+
+export const DEFAULT_HOST = '127.0.0.1';
+export const DEFAULT_PORT = 8787;
+export const DEFAULT_TICK_SECONDS = 300;
+/** Longest tick interval accepted: a day. */
+export const MAX_TICK_SECONDS = 86_400;
+/** Keys shorter than this still work but earn a warning. */
+export const MIN_RECOMMENDED_API_KEY_LENGTH = 16;
+const MAX_PORT = 65_535;
+const LOOPBACK_HOSTS: readonly string[] = [DEFAULT_HOST, 'localhost', '::1'];
+const WEBHOOK_PROTOCOLS: readonly string[] = ['http:', 'https:'];
+const INSECURE_PROTOCOL = 'http:';
+const WHOLE_NUMBER = /^\d+$/;
+
+/** Variables of each gateway. Any of them being set means the gateway is meant to be on. */
+const GATEWAY_VARS: Record<Provider, readonly EnvVar[]> = {
+  [Provider.Razorpay]: [
+    EnvVar.RazorpayKeyId,
+    EnvVar.RazorpayKeySecret,
+    EnvVar.RazorpayWebhookSecret,
+    EnvVar.RazorpayDefaultDurationYears,
+    EnvVar.RazorpayBaseUrl,
+  ],
+  [Provider.Cashfree]: [
+    EnvVar.CashfreeClientId,
+    EnvVar.CashfreeClientSecret,
+    EnvVar.CashfreeEnvironment,
+    EnvVar.CashfreeWebhookSecret,
+    EnvVar.CashfreeApiVersion,
+    EnvVar.CashfreeBaseUrl,
+  ],
+  [Provider.PayU]: [
+    EnvVar.PayuKey,
+    EnvVar.PayuSalt,
+    EnvVar.PayuEnvironment,
+    EnvVar.PayuSuccessUrl,
+    EnvVar.PayuFailureUrl,
+    EnvVar.PayuConsentHashLayout,
+    EnvVar.PayuAcceptUnsignedWebhooks,
+    EnvVar.PayuPaymentUrl,
+    EnvVar.PayuApiUrl,
+  ],
+};
+
+/** The variables a gateway cannot work without. */
+const GATEWAY_REQUIRED_VARS: Record<Provider, readonly EnvVar[]> = {
+  [Provider.Razorpay]: [EnvVar.RazorpayKeyId, EnvVar.RazorpayKeySecret],
+  [Provider.Cashfree]: [EnvVar.CashfreeClientId, EnvVar.CashfreeClientSecret, EnvVar.CashfreeEnvironment],
+  [Provider.PayU]: [EnvVar.PayuKey, EnvVar.PayuSalt, EnvVar.PayuEnvironment],
+};
+
+/** Which variable feeds which field of each adapter's config, to name the variable when the adapter's schema objects. */
+const CONFIG_FIELD_VARS: Record<Provider, Record<string, EnvVar>> = {
+  [Provider.Razorpay]: {
+    keyId: EnvVar.RazorpayKeyId,
+    keySecret: EnvVar.RazorpayKeySecret,
+    webhookSecret: EnvVar.RazorpayWebhookSecret,
+    baseUrl: EnvVar.RazorpayBaseUrl,
+    defaultDurationYears: EnvVar.RazorpayDefaultDurationYears,
+  },
+  [Provider.Cashfree]: {
+    clientId: EnvVar.CashfreeClientId,
+    clientSecret: EnvVar.CashfreeClientSecret,
+    environment: EnvVar.CashfreeEnvironment,
+    webhookSecret: EnvVar.CashfreeWebhookSecret,
+    apiVersion: EnvVar.CashfreeApiVersion,
+    baseUrl: EnvVar.CashfreeBaseUrl,
+  },
+  [Provider.PayU]: {
+    key: EnvVar.PayuKey,
+    salt: EnvVar.PayuSalt,
+    environment: EnvVar.PayuEnvironment,
+    successUrl: EnvVar.PayuSuccessUrl,
+    failureUrl: EnvVar.PayuFailureUrl,
+    consentHashLayout: EnvVar.PayuConsentHashLayout,
+    acceptUnsignedWebhooks: EnvVar.PayuAcceptUnsignedWebhooks,
+    paymentUrl: EnvVar.PayuPaymentUrl,
+    apiUrl: EnvVar.PayuApiUrl,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Field schemas (every environment value is a string)
+// ---------------------------------------------------------------------------
+
+const REQUIRED_MESSAGE = 'is required';
+
+function required(): z.ZodString {
+  return z.string({ error: (issue) => (issue.input === undefined ? REQUIRED_MESSAGE : 'must be text') });
+}
+
+function wholeNumber(min: number, max: number): z.ZodType<number, string> {
+  return z
+    .string()
+    .regex(WHOLE_NUMBER, { error: 'must be a whole number' })
+    .transform(Number)
+    .pipe(
+      z
+        .number()
+        .int()
+        .min(min, { error: `must be at least ${min}` })
+        .max(max, { error: `must be at most ${max}` }),
+    );
+}
+
+/** False for anything that does not parse as a URL too: refinements still run after `z.url` has failed. */
+function hasWebhookProtocol(value: string): boolean {
+  try {
+    return WEBHOOK_PROTOCOLS.includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+const urlText = z.url({ error: 'must be a valid URL' });
+const environmentText = z.enum(Environment, {
+  error: (issue) => (issue.input === undefined ? REQUIRED_MESSAGE : 'must be "test" or "live"'),
+});
+const flag = z.stringbool({ error: 'must be "true" or "false"' });
+
+const ServiceEnvSchema = z.object({
+  [EnvVar.ApiKey]: z.string().optional(),
+  [EnvVar.Host]: z.string().optional(),
+  [EnvVar.Port]: wholeNumber(0, MAX_PORT).optional(),
+  [EnvVar.SchedulerStoreFile]: z.string().optional(),
+  [EnvVar.SchedulerTickSeconds]: wholeNumber(1, MAX_TICK_SECONDS).optional(),
+  [EnvVar.EventsWebhookUrl]: urlText
+    .refine(hasWebhookProtocol, { error: 'must be an http or https URL' })
+    .optional(),
+  [EnvVar.EventsWebhookSecret]: z.string().optional(),
+});
+
+const RazorpayEnvSchema = z
+  .object({
+    [EnvVar.RazorpayKeyId]: required(),
+    [EnvVar.RazorpayKeySecret]: required(),
+    [EnvVar.RazorpayWebhookSecret]: z.string().optional(),
+    [EnvVar.RazorpayDefaultDurationYears]: wholeNumber(1, RAZORPAY_MAX_DURATION_YEARS).optional(),
+    [EnvVar.RazorpayBaseUrl]: urlText.optional(),
+  })
+  .transform(
+    (env): RazorpayConfig => ({
+      keyId: env[EnvVar.RazorpayKeyId],
+      keySecret: env[EnvVar.RazorpayKeySecret],
+      webhookSecret: env[EnvVar.RazorpayWebhookSecret],
+      defaultDurationYears: env[EnvVar.RazorpayDefaultDurationYears],
+      baseUrl: env[EnvVar.RazorpayBaseUrl],
+    }),
+  );
+
+const CashfreeEnvSchema = z
+  .object({
+    [EnvVar.CashfreeClientId]: required(),
+    [EnvVar.CashfreeClientSecret]: required(),
+    [EnvVar.CashfreeEnvironment]: environmentText,
+    [EnvVar.CashfreeWebhookSecret]: z.string().optional(),
+    [EnvVar.CashfreeApiVersion]: z.string().optional(),
+    [EnvVar.CashfreeBaseUrl]: urlText.optional(),
+  })
+  .transform(
+    (env): CashfreeConfig => ({
+      clientId: env[EnvVar.CashfreeClientId],
+      clientSecret: env[EnvVar.CashfreeClientSecret],
+      environment: env[EnvVar.CashfreeEnvironment],
+      webhookSecret: env[EnvVar.CashfreeWebhookSecret],
+      apiVersion: env[EnvVar.CashfreeApiVersion],
+      baseUrl: env[EnvVar.CashfreeBaseUrl],
+    }),
+  );
+
+const PayuEnvSchema = z
+  .object({
+    [EnvVar.PayuKey]: required(),
+    [EnvVar.PayuSalt]: required(),
+    [EnvVar.PayuEnvironment]: environmentText,
+    [EnvVar.PayuSuccessUrl]: urlText.optional(),
+    [EnvVar.PayuFailureUrl]: urlText.optional(),
+    [EnvVar.PayuConsentHashLayout]: z
+      .enum(ConsentHashLayout, { error: `must be one of ${Object.values(ConsentHashLayout).join(', ')}` })
+      .optional(),
+    [EnvVar.PayuAcceptUnsignedWebhooks]: flag.optional(),
+    [EnvVar.PayuPaymentUrl]: urlText.optional(),
+    [EnvVar.PayuApiUrl]: urlText.optional(),
+  })
+  .transform(
+    (env): PayUConfig => ({
+      key: env[EnvVar.PayuKey],
+      salt: env[EnvVar.PayuSalt],
+      environment: env[EnvVar.PayuEnvironment],
+      successUrl: env[EnvVar.PayuSuccessUrl],
+      failureUrl: env[EnvVar.PayuFailureUrl],
+      consentHashLayout: env[EnvVar.PayuConsentHashLayout],
+      acceptUnsignedWebhooks: env[EnvVar.PayuAcceptUnsignedWebhooks],
+      paymentUrl: env[EnvVar.PayuPaymentUrl],
+      apiUrl: env[EnvVar.PayuApiUrl],
+    }),
+  );
+
+// ---------------------------------------------------------------------------
+// Result
+// ---------------------------------------------------------------------------
+
+export interface EventsWebhookConfig {
+  url: string;
+  secret: string;
+}
+
+/** Validated configuration. It holds secrets: never log it. */
+export interface ServiceConfig {
+  host: string;
+  port: number;
+  /** Clients must send this as a bearer token. Absent only with `allowUnauthenticated`. */
+  apiKey?: string;
+  allowUnauthenticated: boolean;
+  gateways: {
+    [Provider.Razorpay]?: RazorpayConfig;
+    [Provider.Cashfree]?: CashfreeConfig;
+    [Provider.PayU]?: PayUConfig;
+  };
+  /** Path of the scheduler's `FileSchedulerStore`. Absent: the billing scheduler is off. */
+  schedulerStoreFile?: string;
+  tickSeconds: number;
+  eventsWebhook?: EventsWebhookConfig;
+  /** Things worth saying at startup that are not errors. Free of secrets. */
+  warnings: string[];
+}
+
+export interface ParseServiceEnvOptions {
+  /** The `--allow-unauthenticated` flag: serve the protected routes without an API key. */
+  allowUnauthenticated?: boolean;
+}
+
+export type EnvironmentVariables = Readonly<Record<string, string | undefined>>;
+
+/** The gateways, in the order they are tried and listed. */
+export const GATEWAY_ORDER: readonly Provider[] = [Provider.Razorpay, Provider.Cashfree, Provider.PayU];
+
+const GATEWAY_ENV_SCHEMAS = {
+  [Provider.Razorpay]: { env: RazorpayEnvSchema, config: RazorpayConfigSchema },
+  [Provider.Cashfree]: { env: CashfreeEnvSchema, config: CashfreeConfigSchema },
+  [Provider.PayU]: { env: PayuEnvSchema, config: PayUConfigSchema },
+} as const;
+
+type Values = Record<string, string>;
+
+/** Present, trimmed, non-blank values only. */
+function presentValues(env: EnvironmentVariables): Values {
+  const values: Values = {};
+  for (const [name, raw] of Object.entries(env)) {
+    const value = raw?.trim();
+    if (value) values[name] = value;
+  }
+  return values;
+}
+
+function describeIssues(error: z.ZodError, nameOf: (path: PropertyKey[]) => string): string[] {
+  return error.issues.map((issue) => `${nameOf(issue.path)}: ${issue.message}`);
+}
+
+function variableName(path: PropertyKey[]): string {
+  return path.length > 0 ? String(path[0]) : '(environment)';
+}
+
+function describeGatewayVars(provider: Provider): string {
+  return `${provider} (${GATEWAY_REQUIRED_VARS[provider].join(', ')})`;
+}
+
+/**
+ * Validates a process environment into a `ServiceConfig`. Throws one
+ * `SubscriptionError` (`CONFIG`) that lists every problem found, so a
+ * misconfigured deployment is fixed in one pass.
+ */
+export function parseServiceEnv(env: EnvironmentVariables, options: ParseServiceEnvOptions = {}): ServiceConfig {
+  const values = presentValues(env);
+  const problems: string[] = [];
+  const warnings: string[] = [];
+
+  const service = ServiceEnvSchema.safeParse(values);
+  if (!service.success) problems.push(...describeIssues(service.error, variableName));
+  const base = service.success ? service.data : undefined;
+
+  // Authentication.
+  const apiKey = base?.[EnvVar.ApiKey];
+  const allowUnauthenticated = options.allowUnauthenticated === true;
+  if (!apiKey && !allowUnauthenticated) {
+    problems.push(
+      `${EnvVar.ApiKey}: is required. It protects an API that holds your live gateway credentials; set a long random ` +
+        'value, or pass --allow-unauthenticated to serve without one (only behind something that authenticates for you).',
+    );
+  } else if (apiKey && allowUnauthenticated) {
+    warnings.push(`--allow-unauthenticated is ignored because ${EnvVar.ApiKey} is set: clients must send the key.`);
+  } else if (!apiKey) {
+    warnings.push('Running WITHOUT an API key: anyone who can reach this port can move money through your gateway accounts.');
+  }
+  if (apiKey && apiKey.length < MIN_RECOMMENDED_API_KEY_LENGTH) {
+    warnings.push(`${EnvVar.ApiKey} is shorter than ${MIN_RECOMMENDED_API_KEY_LENGTH} characters: use a long random value.`);
+  }
+
+  // Events webhook: both or neither.
+  const eventsUrl = base?.[EnvVar.EventsWebhookUrl];
+  const eventsSecret = base?.[EnvVar.EventsWebhookSecret];
+  let eventsWebhook: EventsWebhookConfig | undefined;
+  if (service.success && (values[EnvVar.EventsWebhookUrl] || eventsSecret)) {
+    if (!values[EnvVar.EventsWebhookUrl]) problems.push(`${EnvVar.EventsWebhookUrl}: is required when ${EnvVar.EventsWebhookSecret} is set`);
+    else if (!eventsSecret) problems.push(`${EnvVar.EventsWebhookSecret}: is required when ${EnvVar.EventsWebhookUrl} is set`);
+    else if (eventsUrl) eventsWebhook = { url: eventsUrl, secret: eventsSecret };
+  }
+  if (eventsWebhook && new URL(eventsWebhook.url).protocol === INSECURE_PROTOCOL) {
+    warnings.push(`${EnvVar.EventsWebhookUrl} is plain http: events travel unencrypted (they are signed, not secret-free).`);
+  }
+
+  // Gateways.
+  const gateways: ServiceConfig['gateways'] = {};
+  let anyGatewayVariable = false;
+  for (const provider of GATEWAY_ORDER) {
+    const present = GATEWAY_VARS[provider].filter((name) => values[name] !== undefined);
+    if (present.length === 0) continue;
+    anyGatewayVariable = true;
+    const { env: envSchema, config: configSchema } = GATEWAY_ENV_SCHEMAS[provider];
+    const fromEnv = envSchema.safeParse(values);
+    if (!fromEnv.success) {
+      const issues = describeIssues(fromEnv.error, variableName);
+      problems.push(
+        ...issues.map((issue) =>
+          issue.endsWith(REQUIRED_MESSAGE) ? `${issue} (${present[0]} is set, so ${provider} must be fully configured)` : issue,
+        ),
+      );
+      continue;
+    }
+    // The adapter's own schema has the last word (URL shapes, API version format, ...).
+    const checked = configSchema.safeParse(fromEnv.data);
+    if (!checked.success) {
+      const fields = CONFIG_FIELD_VARS[provider];
+      problems.push(
+        ...describeIssues(checked.error, (path) => fields[String(path[0])] ?? provider),
+      );
+      continue;
+    }
+    (gateways as Record<string, unknown>)[provider] = fromEnv.data;
+  }
+
+  if (!anyGatewayVariable) {
+    problems.push(
+      'No payment gateway is configured. Set the variables of at least one: ' +
+        GATEWAY_ORDER.map((provider) => describeGatewayVars(provider)).join('; '),
+    );
+  }
+
+  const { razorpay, cashfree, payu } = {
+    razorpay: gateways[Provider.Razorpay],
+    cashfree: gateways[Provider.Cashfree],
+    payu: gateways[Provider.PayU],
+  };
+  if (razorpay && !razorpay.webhookSecret) {
+    warnings.push(`${EnvVar.RazorpayWebhookSecret} is not set: webhooks from razorpay will be rejected.`);
+  }
+  if (cashfree && !cashfree.webhookSecret) {
+    warnings.push(`${EnvVar.CashfreeWebhookSecret} is not set: webhooks from cashfree are verified with ${EnvVar.CashfreeClientSecret}.`);
+  }
+  if (payu && !payu.successUrl) {
+    warnings.push(`${EnvVar.PayuSuccessUrl} is not set: every payu subscription must carry its own returnUrl.`);
+  }
+
+  const host = base?.[EnvVar.Host] ?? DEFAULT_HOST;
+  if (allowUnauthenticated && !apiKey && !LOOPBACK_HOSTS.includes(host)) {
+    warnings.push(`Listening on ${host} without an API key exposes the service to the network.`);
+  }
+
+  if (problems.length > 0) {
+    throw new SubscriptionError(
+      ErrorCode.Config,
+      `Invalid configuration:\n${problems.map((problem) => `  - ${problem}`).join('\n')}`,
+    );
+  }
+
+  return {
+    host,
+    port: base?.[EnvVar.Port] ?? DEFAULT_PORT,
+    apiKey,
+    allowUnauthenticated: !apiKey && allowUnauthenticated,
+    gateways,
+    schedulerStoreFile: base?.[EnvVar.SchedulerStoreFile],
+    tickSeconds: base?.[EnvVar.SchedulerTickSeconds] ?? DEFAULT_TICK_SECONDS,
+    eventsWebhook,
+    warnings,
+  };
+}

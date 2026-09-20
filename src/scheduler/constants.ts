@@ -96,6 +96,8 @@ export const SchedulerEventType = {
   ChargeFailed: 'charge.failed',
   /** A `createCharge`/`getCharge` call ended without a definite answer; it will be reconciled. */
   ChargeOutcomeUnknown: 'charge.outcome_unknown',
+  /** A debit whose outcome is still unknown after `unknownOutcomeGraceMinutes`: an operator should look at it. */
+  ChargeOutcomeOverdue: 'charge.outcome_overdue',
   CycleFailed: 'cycle.failed',
   CycleSkipped: 'cycle.skipped',
   /**
@@ -151,20 +153,28 @@ export const LOCK_POLL_INTERVAL_MS = 25;
 export const DEFAULT_TICK_LIMIT = 100;
 /** Schedules processed in parallel inside one `tick()`. */
 export const DEFAULT_TICK_CONCURRENCY = 5;
+/** Minutes after an attempt whose outcome is unknown before the same debit id may be submitted again. */
+export const DEFAULT_UNKNOWN_OUTCOME_GRACE_MINUTES = 30;
+export const MINUTE_MS = 60 * 1000;
 /** Safety cap on state transitions for one schedule in one tick. */
 export const MAX_STEPS_PER_SCHEDULE_PER_TICK = 16;
 
 export const HOUR_MS = 60 * 60 * 1000;
 
-/** Deterministic id prefixes sent to gateways (alphanumerics and underscores only). */
+/** Deterministic id prefixes sent to gateways: one letter, so the ids stay short (see `chargeIdFor`). */
 export const SchedulerIdPrefix = {
-  Charge: 'chg',
-  Notification: 'ntf',
+  Charge: 'c',
+  Notification: 'n',
 } as const;
 export type SchedulerIdPrefix = (typeof SchedulerIdPrefix)[keyof typeof SchedulerIdPrefix];
 export const ID_SEPARATOR = '_';
-/** Hex characters of the schedule-id hash used inside gateway ids (gateway ids are length-limited). */
-export const ID_HASH_LENGTH = 16;
+/** Base36 characters of the schedule-id digest inside gateway ids (about 62 bits: collisions between schedules are negligible). */
+export const ID_DIGEST_LENGTH = 12;
+/** Hex characters of the sha256 digest turned into the base36 digest (15 hex characters = 60 bits, which fit 12 base36 characters). */
+export const ID_DIGEST_HEX_LENGTH = 15;
+/** The longest charge or notification id the scheduler will send: PayU's transaction id limit. */
+export const MAX_GATEWAY_ID_LENGTH = 25;
+export const ID_RADIX = 36;
 
 /** Separator between the provider and the key in a schedule id (see `scheduleIdFor`). */
 export const SCHEDULE_ID_SEPARATOR = ':';

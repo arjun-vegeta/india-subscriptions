@@ -7,6 +7,7 @@ import {
   CYCLE_3,
   ChargeOutcome,
   GatewayMethod,
+  REFERENCE,
   T0,
   TRIAL_END,
   Style,
@@ -44,7 +45,7 @@ describe('merchant-scheduled, charge-ahead (merchantChargeLeadHours): lifecycle 
     }
     expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(0);
     expect(world.gateway.callsTo(GatewayMethod.NotifyCharge)).toHaveLength(0);
-    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.PendingAuthorization);
+    expect((await scheduleOf(world, REFERENCE, CASHFREE)).status).toBe(ScheduleStatus.PendingAuthorization);
   });
 
   it('trial -> charge raised 24h ahead -> status active once the debit date has passed -> completed after three cycles', async () => {
@@ -115,7 +116,7 @@ describe('merchant-scheduled, charge-ahead (merchantChargeLeadHours): lifecycle 
     const call = world.gateway.callsTo(GatewayMethod.CreateCharge)[0];
     expect(call?.args[0]).toMatchObject({ scheduledAt: plusHours(lateAt, 24) });
     // The contractual due date is unchanged; only the debit moved.
-    const cycle = (await cyclesOf(world))[0];
+    const cycle = (await cyclesOf(world, REFERENCE, CASHFREE))[0];
     expect(cycle?.dueAt).toBe(TRIAL_END);
     expect(cycle?.scheduledAt).toBe(plusHours(lateAt, 24));
   });
@@ -125,7 +126,7 @@ describe('merchant-scheduled, charge-ahead (merchantChargeLeadHours): lifecycle 
     const { created } = await createAndAuthorize(world);
     await world.at(raiseAt(TRIAL_END));
     const chargeId = (world.gateway.callsTo(GatewayMethod.CreateCharge)[0]?.args[0] as { chargeId: string }).chargeId;
-    expect((await cyclesOf(world))[0]?.status).toBe(CycleStatus.AwaitingConfirmation);
+    expect((await cyclesOf(world, REFERENCE, CASHFREE))[0]?.status).toBe(CycleStatus.AwaitingConfirmation);
 
     world.gateway.settle(chargeId, ChargeStatus.Succeeded);
     world.setClock(TRIAL_END);

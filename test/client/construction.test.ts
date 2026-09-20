@@ -82,10 +82,10 @@ describe('Subscriptions: construction', () => {
     });
   });
 
-  // DEFECT: plans.* and charges.* are typed `Promise<...>` but resolve the adapter eagerly, so an unknown
+  // Regression guard for a fixed defect: plans.* and charges.* are typed `Promise<...>` but resolve the adapter eagerly, so an unknown
   // gateway makes them THROW SYNCHRONOUSLY. `subs.charges.list(...).catch(handler)` never reaches the handler.
   // Every other async method (create/get/cancel/...) rejects instead.
-  it.fails('plans.* and charges.* reject instead of throwing synchronously for an unknown gateway', async () => {
+  it('plans.* and charges.* reject instead of throwing synchronously for an unknown gateway', async () => {
     const subs = createSubscriptions({ providers: [gateway(Style.Gateway)] });
     const calls: Array<() => Promise<unknown>> = [
       () => subs.plans.get(Provider.PayU, 'plan_1'),

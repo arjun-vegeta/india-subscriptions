@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { ErrorCode, EventType, Provider, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
 import {
   GatewayMethod,
+  REFERENCE,
   Style,
   gatewayInput,
   makeWorld,
+  scheduleIdOf,
   scheduleOf,
   trialInput,
   type GatewayOptions,
@@ -30,19 +32,19 @@ describe('creating a merchant-scheduled subscription with no scheduler configure
     expect((error as Error).message).toContain('scheduler');
   });
 
-  // DEFECT: the facade calls the gateway first and only then discovers there is nowhere to schedule the debits, so
+  // Regression guard for a fixed defect: the facade calls the gateway first and only then discovers there is nowhere to schedule the debits, so
   // CONFIG is thrown AFTER a real subscription (and its authorisation link) exists at the gateway, with its id lost
   // to the caller. For a gateway whose only scheduling mode is merchant, this is knowable up front from
   // capabilities, and nothing at the gateway should happen.
-  it.fails('does not call the gateway at all when the provider can only be merchant-scheduled', async () => {
+  it('does not call the gateway at all when the provider can only be merchant-scheduled', async () => {
     const world = noScheduler({ style: Style.Notify });
     await world.subs.create(PAYU, trialInput()).catch(() => undefined);
     expect(world.gateway.callsTo(GatewayMethod.CreateSubscription)).toHaveLength(0);
   });
 
-  // DEFECT (same cause): the caller asked explicitly for a merchant-scheduled plan on a gateway that also offers
+  // Regression guard (fixed; same cause): the caller asked explicitly for a merchant-scheduled plan on a gateway that also offers
   // gateway scheduling, and the input says so, yet the gateway is called before the facade refuses.
-  it.fails('does not call the gateway when the input explicitly asks for a merchant-scheduled plan', async () => {
+  it('does not call the gateway when the input explicitly asks for a merchant-scheduled plan', async () => {
     const world = noScheduler({ style: Style.Dual });
     await world.subs.create(CASHFREE, trialInput()).catch(() => undefined);
     expect(world.gateway.callsTo(GatewayMethod.CreateSubscription)).toHaveLength(0);
@@ -70,7 +72,7 @@ describe('creating a merchant-scheduled subscription with no scheduler configure
 
     const merchant = await world.subs.create(CASHFREE, trialInput());
     expect(merchant.scheduling).toBe(SchedulingMode.Merchant);
-    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.PendingAuthorization);
+    expect((await scheduleOf(world, REFERENCE, CASHFREE)).status).toBe(ScheduleStatus.PendingAuthorization);
   });
 
   it('other operations on a merchant-scheduled provider do not need a scheduler: they go straight to the gateway', async () => {
@@ -92,7 +94,7 @@ describe('a merchant-scheduled subscription the gateway returns without amount, 
         code: ErrorCode.UnexpectedResponse,
         provider: PAYU,
       });
-      expect(await world.scheduler?.get(trialInput().reference as string)).toBeUndefined();
+      expect(await world.scheduler?.get(scheduleIdOf())).toBeUndefined();
       expect(world.store.writes()).toStrictEqual([]);
     },
   );
@@ -108,9 +110,9 @@ describe('a merchant-scheduled subscription the gateway returns without amount, 
     expect(created.scheduling).toBe(SchedulingMode.Gateway);
   });
 
-  // DEFECT (low): same shape as the missing-scheduler case. The gateway subscription exists and is neither
+  // Regression guard (fixed): same shape as the missing-scheduler case. The gateway subscription exists and is neither
   // cancelled nor reported to the caller: the thrown error does not carry its id.
-  it.fails('does not leave a live, untracked subscription at the gateway', async () => {
+  it('does not leave a live, untracked subscription at the gateway', async () => {
     const world = makeWorld({ gateways: [{ style: Style.Notify, omit: ['startAt'] }] });
     await world.subs.create(PAYU, trialInput()).catch(() => undefined);
     const orphan = world.gateway.last();

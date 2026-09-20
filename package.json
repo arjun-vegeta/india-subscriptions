@@ -4,7 +4,10 @@
   "description": "One headless API for subscriptions on Indian payment gateways (Razorpay, Cashfree, PayU): plans, trials, mandates, recurring charges and webhooks. Bring your own gateway keys.",
   "license": "MIT",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/esm/schema-registry.js",
+    "./dist/cjs/schema-registry.js"
+  ],
   "engines": {
     "node": ">=18.17"
   },
@@ -22,6 +25,16 @@
         "default": "./dist/cjs/index.js"
       }
     },
+    "./server": {
+      "import": {
+        "types": "./dist/esm/server-entry.d.ts",
+        "default": "./dist/esm/server-entry.js"
+      },
+      "require": {
+        "types": "./dist/cjs/server-entry.d.ts",
+        "default": "./dist/cjs/server-entry.js"
+      }
+    },
     "./checkout": {
       "import": {
         "types": "./dist/esm/checkout/index.d.ts",
@@ -34,6 +47,19 @@
     },
     "./package.json": "./package.json"
   },
+  "typesVersions": {
+    "*": {
+      "server": [
+        "dist/cjs/server-entry.d.ts"
+      ],
+      "checkout": [
+        "dist/cjs/checkout/index.d.ts"
+      ]
+    }
+  },
+  "bin": {
+    "india-subscriptions": "./dist/esm/bin.js"
+  },
   "files": [
     "dist",
     "README.md",
@@ -45,7 +71,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
-    "openapi": "tsx scripts/export-openapi.ts"
+    "openapi": "tsx scripts/export-openapi.ts",
+    "check:package": "node scripts/check-package.mjs"
   },
   "keywords": [
     "subscriptions",

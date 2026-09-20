@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ErrorCode, EventType, Provider, SubscriptionStatus, ChangeTiming } from '../../src/constants.js';
+import { ChangeTiming, ErrorCode, EventType, Provider, SubscriptionStatus } from '../../src/constants.js';
 import { CycleStatus, ScheduleStatus, ScheduleStatusReason } from '../../src/scheduler/index.js';
 import {
   AMOUNT,
@@ -85,19 +85,27 @@ describe('update on a merchant-scheduled subscription', () => {
     expect(chargeAmounts(world)).toStrictEqual([NEW_AMOUNT]);
   });
 
-  it('an update without an amount reaches the gateway and leaves the schedule alone', async () => {
+  it('planId and quantity are refused as unsupported before anything is changed anywhere', async () => {
     const { world, id } = await afterFirstCharge();
     const before = await scheduleOf(world);
-    const updated = await world.subs.update(PAYU, id, { quantity: 2 });
-    expect(world.gateway.callsTo(GatewayMethod.UpdateSubscription)).toHaveLength(1);
-    expect(updated.amount).toBe(AMOUNT);
-    expect(updated.paidCycles).toBe(1);
+    await expect(world.subs.update(PAYU, id, { quantity: 2 })).rejects.toMatchObject({ code: ErrorCode.Unsupported });
+    await expect(world.subs.update(PAYU, id, { planId: 'plan_2', amount: 1000 })).rejects.toMatchObject({ code: ErrorCode.Unsupported });
+    expect(world.gateway.callsTo(GatewayMethod.UpdateSubscription)).toHaveLength(0);
     expect(await scheduleOf(world)).toStrictEqual(before);
   });
 
-  // DEFECT: update({ nextChargeAt }) is accepted and silently dropped for merchant-scheduled subscriptions. Only
-  // `amount` is mirrored into the scheduler, so the customer is still billed on the old date.
-  it.fails('update({ nextChargeAt }) moves the next debit', async () => {
+  it('schedule-only fields never reach the gateway; the gateway only gets what it holds', async () => {
+    const { world, id } = await afterFirstCharge();
+    await world.subs.update(PAYU, id, { amount: 59900, nextChargeAt: '2026-02-25T00:00:00.000Z', remainingCycles: 1 });
+    const sent = world.gateway.callsTo(GatewayMethod.UpdateSubscription);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.args[1]).toStrictEqual({ amount: 59900 });
+    // Nothing for the gateway to do: it is not called at all.
+    await world.subs.update(PAYU, id, { nextChargeAt: '2026-02-26T00:00:00.000Z' });
+    expect(world.gateway.callsTo(GatewayMethod.UpdateSubscription)).toHaveLength(1);
+  });
+
+  it('update(nextChargeAt) moves the next debit and the facade shows it', async () => {
     const { world, id } = await afterFirstCharge();
     const moved = '2026-02-25T00:00:00.000Z';
     const updated = await world.subs.update(PAYU, id, { nextChargeAt: moved });
@@ -105,27 +113,45 @@ describe('update on a merchant-scheduled subscription', () => {
     await world.at(notifyAt(CYCLE_2));
     await world.at(CYCLE_2);
     expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(1);
+    await world.at(notifyAt(moved));
+    await world.at(moved);
+    expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(2);
+    expect(world.gateway.callsTo(GatewayMethod.CreateCharge)[1]?.at).toBe(moved);
   });
 
-  // DEFECT: update({ remainingCycles }) is silently dropped as well: the customer keeps being billed for the
-  // cycles the merchant just removed (or stops early if it was increased).
-  it.fails('update({ remainingCycles }) changes how many more debits are raised', async () => {
+  it('update(remainingCycles) changes how many more debits are raised', async () => {
     const { world, id } = await afterFirstCharge();
     const updated = await world.subs.update(PAYU, id, { remainingCycles: 1 });
     expect(updated.remainingCycles).toBe(1);
+    expect(updated.totalCycles).toBe(2);
     for (const due of [CYCLE_2, CYCLE_3]) {
       await world.at(notifyAt(due));
       await world.at(due);
     }
     expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(2);
+    expect((await world.subs.get(PAYU, id)).status).toBe(SubscriptionStatus.Completed);
   });
 
-  it('an amount update on a cancelled subscription reaches the gateway first and is then refused with CONFLICT', async () => {
+  it('update(mandateEndsAt) is mirrored: no debit on or after the new end date', async () => {
+    const { world, id } = await afterFirstCharge();
+    const updated = await world.subs.update(PAYU, id, { mandateEndsAt: '2026-03-01T00:00:00.000Z' });
+    expect(updated.mandateEndsAt).toBeDefined();
+    expect(world.gateway.sub(id).mandateEndsAt).toBe('2026-03-01T00:00:00.000Z');
+    for (const due of [CYCLE_2, CYCLE_3]) {
+      await world.at(notifyAt(due));
+      await world.at(due);
+    }
+    expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(2);
+    const schedule = await scheduleOf(world);
+    expect(schedule).toMatchObject({ status: ScheduleStatus.Completed, statusReason: ScheduleStatusReason.MandateEnded });
+  });
+
+  it('an update on a cancelled subscription is refused with CONFLICT before the gateway is touched', async () => {
     const { world, id } = await afterFirstCharge();
     await world.subs.cancel(PAYU, id);
     await expect(world.subs.update(PAYU, id, { amount: NEW_AMOUNT })).rejects.toMatchObject({ code: ErrorCode.Conflict });
-    // Documented behaviour: the gateway already holds the new amount.
-    expect(world.gateway.sub(id).amount).toBe(NEW_AMOUNT);
+    expect(world.gateway.callsTo(GatewayMethod.UpdateSubscription)).toHaveLength(0);
+    expect(world.gateway.sub(id).amount).toBe(AMOUNT);
     expect((await scheduleOf(world)).amount).toBe(AMOUNT);
   });
 });
@@ -183,11 +209,7 @@ describe('failed charges, retries and halting', () => {
     expect((await world.subs.get(PAYU, id)).status).toBe(SubscriptionStatus.Halted);
   });
 
-  // DEFECT: SubscriptionStatus.PastDue ("a charge failed and is being retried; the subscription is still alive") is
-  // never produced for merchant-scheduled subscriptions. A failed FIRST debit reads `trialing` (with trialEndsAt
-  // moved to the retry time); a failed later debit reads `active`. The application cannot tell a paying customer
-  // from one whose card is bouncing, so it keeps granting full access and never nudges them to fix the mandate.
-  it.fails('a failed first debit that is being retried reads past_due', async () => {
+  it('a failed first debit that is being retried reads past_due', async () => {
     const { world, id } = await authorised();
     world.gateway.chargeScript = [ChargeOutcome.Fail];
     await world.at(notifyAt(TRIAL_END));
@@ -195,7 +217,7 @@ describe('failed charges, retries and halting', () => {
     expect((await world.subs.get(PAYU, id)).status).toBe(SubscriptionStatus.PastDue);
   });
 
-  it.fails('a failed later debit that is being retried reads past_due', async () => {
+  it('a failed later debit that is being retried reads past_due', async () => {
     const { world, id } = await afterFirstCharge();
     world.gateway.chargeScript = [ChargeOutcome.Fail];
     await world.at(notifyAt(CYCLE_2));
@@ -203,14 +225,17 @@ describe('failed charges, retries and halting', () => {
     expect((await world.subs.get(PAYU, id)).status).toBe(SubscriptionStatus.PastDue);
   });
 
-  it('documents the current reading of a first debit that failed: trialing, with trialEndsAt moved to the retry', async () => {
+  it('past_due ends with the payment: a retry that succeeds reads active again, and a halt reads halted', async () => {
     const { world, id } = await authorised();
-    world.gateway.chargeScript = [ChargeOutcome.Fail];
+    world.gateway.chargeScript = [ChargeOutcome.Fail, ChargeOutcome.Succeed];
     await world.at(notifyAt(TRIAL_END));
     await world.at(TRIAL_END);
-    const sub = await world.subs.get(PAYU, id);
-    expect(sub.status).toBe(SubscriptionStatus.Trialing);
-    expect(sub.trialEndsAt).toBe(plusHours(TRIAL_END, 24));
+    const failing = await world.subs.get(PAYU, id);
+    expect(failing.status).toBe(SubscriptionStatus.PastDue);
+    expect(failing.trialEndsAt).toBeUndefined();
+    expect(failing.nextChargeAt).toBe(plusHours(TRIAL_END, 24));
+    await world.at(plusHours(TRIAL_END, 24));
+    expect((await world.subs.get(PAYU, id)).status).toBe(SubscriptionStatus.Active);
   });
 
   it('resuming a halted subscription through the facade makes it bill again (when the scheduler supports it)', async () => {
@@ -233,32 +258,64 @@ describe('failed charges, retries and halting', () => {
 });
 
 describe('the gateway is the authority on a dead mandate', () => {
-  it.each([SubscriptionStatus.Cancelled, SubscriptionStatus.Expired, SubscriptionStatus.Failed])(
-    'get() follows the gateway when it reports %s even though the schedule still says active',
-    async (status) => {
-      const { world, id } = await afterFirstCharge();
-      world.gateway.setStatus(id, status);
-      const sub = await world.subs.get(PAYU, id);
-      expect(sub.status).toBe(status);
-      expect(sub.providerStatus).toBe(status);
-      // The schedule's own figures are still reported.
-      expect(sub.paidCycles).toBe(1);
-      expect(sub.amount).toBe(AMOUNT);
-      expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
-    },
-  );
+  it.each([
+    [SubscriptionStatus.Cancelled, ScheduleStatusReason.CancelledByGateway],
+    [SubscriptionStatus.Expired, ScheduleStatusReason.MandateExpired],
+    [SubscriptionStatus.Failed, ScheduleStatusReason.CancelledByGateway],
+  ] as const)('get() follows the gateway when it reports %s and stops the schedule', async (status, reason) => {
+    const { world, id } = await afterFirstCharge();
+    world.gateway.setStatus(id, status);
+    const sub = await world.subs.get(PAYU, id);
+    expect(sub.status).toBe(status);
+    expect(sub.providerStatus).toBe(status);
+    // The schedule's own figures are still reported.
+    expect(sub.paidCycles).toBe(1);
+    expect(sub.amount).toBe(AMOUNT);
+    const schedule = await scheduleOf(world);
+    expect(schedule.status).toBe(ScheduleStatus.Cancelled);
+    expect(schedule.statusReason).toBe(reason);
+  });
 
-  it('documents that nothing stops the scheduler when only get() has seen the dead mandate: every tick keeps trying', async () => {
+  it('once get() has seen the dead mandate the scheduler stops calling it: no notices, no debits, no errors', async () => {
     const { world, id } = await afterFirstCharge();
     world.gateway.setStatus(id, SubscriptionStatus.Cancelled);
     expect((await world.subs.get(PAYU, id)).status).toBe(SubscriptionStatus.Cancelled);
+    for (const probe of [notifyAt(CYCLE_2), plusHours(notifyAt(CYCLE_2), 1), CYCLE_2, CYCLE_3]) {
+      expect(await world.at(probe)).toMatchObject({ notified: 0, charged: 0, errors: [] });
+    }
+    expect(world.gateway.callsTo(GatewayMethod.NotifyCharge)).toHaveLength(1);
+    expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(1);
+  });
 
-    const first = await world.at(notifyAt(CYCLE_2));
-    const second = await world.at(plusHours(notifyAt(CYCLE_2), 1));
-    expect(first.errors.map((error) => error.code)).toStrictEqual([ErrorCode.ProviderError]);
-    expect(second.errors.map((error) => error.code)).toStrictEqual([ErrorCode.ProviderError]);
-    expect(world.gateway.callsTo(GatewayMethod.NotifyCharge)).toHaveLength(3);
+  it('reading a healthy subscription changes nothing in the scheduler', async () => {
+    const { world, id } = await afterFirstCharge();
+    world.store.calls.length = 0;
+    await world.subs.get(PAYU, id);
+    expect(world.store.writes()).toStrictEqual([]);
+  });
+
+  it('get() starts billing when the gateway already reports the mandate live (apps without webhooks)', async () => {
+    const world = makeWorld();
+    const created = await world.subs.create(PAYU, trialInput());
+    expect((await world.subs.get(PAYU, created.id)).status).toBe(SubscriptionStatus.Created);
+    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.PendingAuthorization);
+
+    world.gateway.authorize(created.id);
+    const sub = await world.subs.get(PAYU, created.id);
+    expect(sub.status).toBe(SubscriptionStatus.Trialing);
+    expect(sub.trialEndsAt).toBe(TRIAL_END);
     expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
+    await world.at(notifyAt(TRIAL_END));
+    await world.at(TRIAL_END);
+    expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(1);
+  });
+
+  it('get() cancels a pending schedule whose mandate the gateway reports dead', async () => {
+    const world = makeWorld();
+    const created = await world.subs.create(PAYU, trialInput());
+    world.gateway.setStatus(created.id, SubscriptionStatus.Failed);
+    expect((await world.subs.get(PAYU, created.id)).status).toBe(SubscriptionStatus.Failed);
+    expect((await scheduleOf(world)).statusReason).toBe(ScheduleStatusReason.AuthorizationFailed);
   });
 
   it('a cancelled webhook stops the scheduler: no more notices or debits, status cancelled', async () => {

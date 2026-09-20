@@ -25,7 +25,7 @@ import type {
 } from './schemas.js';
 import { ScheduleStatus, ScheduleStatusReason } from './scheduler/constants.js';
 import type { ScheduleRecord, TickResult, UpdateScheduleInput } from './scheduler/schemas.js';
-import { awaitsActivation, type BillingScheduler } from './scheduler/scheduler.js';
+import { BillingScheduler, awaitsActivation, type SchedulerSettings } from './scheduler/scheduler.js';
 
 export interface SubscriptionsOptions {
   /** Gateway adapters, built with `razorpay(...)`, `cashfree(...)`, `payu(...)`. */
@@ -34,8 +34,12 @@ export interface SubscriptionsOptions {
    * Billing engine for merchant-scheduled mandates (gateways that hold the
    * mandate but expect you to raise each debit). Required to create such
    * subscriptions through this client; call `tick()` from a cron job.
+   *
+   * Pass either a ready `BillingScheduler`, or just its options (a `store`, and
+   * optionally `onEvent`, `now` and policy defaults): the client then builds the
+   * scheduler itself, wired to exactly the `providers` above.
    */
-  scheduler?: BillingScheduler;
+  scheduler?: BillingScheduler | SchedulerSettings;
 }
 
 /**
@@ -101,7 +105,12 @@ export class Subscriptions {
       }
       this.registry.set(provider.name, provider);
     }
-    this.scheduler = options.scheduler;
+    const scheduler = options.scheduler;
+    this.scheduler = !scheduler
+      ? undefined
+      : isScheduler(scheduler)
+        ? scheduler
+        : new BillingScheduler({ ...scheduler, resolveProvider: (name) => this.provider(name) });
   }
 
   /** The configured gateways. */
@@ -349,7 +358,8 @@ export class Subscriptions {
         new SubscriptionError(ErrorCode.Config, 'tick() needs a scheduler: pass one to createSubscriptions'),
       );
     }
-    return this.scheduler.tick(options);
+    const scheduler = this.scheduler;
+    return guarded(undefined, 'running the billing scheduler', () => scheduler.tick(options));
   }
 
   /** The scheduler, when this gateway can be merchant-scheduled at all; otherwise the facade never reads it. */
@@ -386,6 +396,11 @@ export function createSubscriptions(options: SubscriptionsOptions): Subscription
   return new Subscriptions(options);
 }
 
+/** A ready scheduler (it has `tick`), as opposed to the options to build one from. */
+function isScheduler(value: BillingScheduler | SchedulerSettings): value is BillingScheduler {
+  return value instanceof BillingScheduler || typeof (value as { tick?: unknown }).tick === 'function';
+}
+
 /** Gateway statuses that mean the mandate is live. */
 const LIVE_GATEWAY_STATUSES: readonly SubscriptionStatus[] = [SubscriptionStatus.Active, SubscriptionStatus.Trialing];
 
@@ -410,12 +425,12 @@ function describe(error: unknown): string {
 }
 
 /** Runs a scheduler interaction; anything that is not already a `SubscriptionError` (a store failure) becomes `INTERNAL_ERROR`. */
-async function guarded<T>(provider: Provider, what: string, run: () => Promise<T>): Promise<T> {
+async function guarded<T>(provider: Provider | undefined, what: string, run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (error) {
     if (error instanceof SubscriptionError) throw error;
-    throw new SubscriptionError(ErrorCode.Internal, `${what} failed: ${describe(error)}`, { provider, cause: error });
+    throw new SubscriptionError(ErrorCode.Internal, `${what} failed: ${describe(error)}`, { ...(provider !== undefined ? { provider } : {}), cause: error });
   }
 }
 
@@ -491,6 +506,7 @@ export function overlaySchedule(subscription: Subscription, schedule: ScheduleRe
     totalCycles: schedule.totalCycles ?? subscription.totalCycles,
     paidCycles: schedule.paidCycles,
     nextChargeAt: schedule.nextChargeAt ?? undefined,
+    mandateEndsAt: schedule.mandateEndsAt ?? subscription.mandateEndsAt,
   };
   if (schedule.totalCycles !== undefined) {
     merged.remainingCycles = Math.max(schedule.totalCycles - schedule.paidCycles, 0);

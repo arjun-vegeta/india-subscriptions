@@ -29,7 +29,7 @@ const components = doc.components.schemas;
  * This is the ONE place the property-description guard is relaxed. It must shrink to empty: when the scheduler
  * schemas are described, delete the names here and the guard applies to them too.
  */
-const SCHEDULER_COMPONENTS_WITHOUT_DESCRIPTIONS: readonly string[] = [ServerSchemaName.TickResult, ServerSchemaName.TickError];
+const SCHEDULER_COMPONENTS_WITHOUT_DESCRIPTIONS: readonly string[] = [];
 
 /** Every schema object under `node`; the keys of a `properties` map are names, not keywords. */
 function* schemaNodes(node: unknown): Generator<Json> {

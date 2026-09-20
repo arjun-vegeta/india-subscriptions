@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Provider, SubscriptionStatus } from '../../src/constants.js';
+import { EventType, Provider, SubscriptionStatus } from '../../src/constants.js';
 import { ScheduleStatus, ScheduleStatusReason } from '../../src/scheduler/index.js';
 import {
   CYCLE_2,
@@ -31,36 +31,48 @@ describe('authorisation that never happens in time', () => {
     expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(0);
   });
 
-  it('a customer who authorises after the schedule expired: get() reads cancelled, and nothing is ever billed', async () => {
+  it('a customer who authorises after the schedule expired revives it: billing starts normally (the mandate is live)', async () => {
     const world = makeWorld({ scheduler: { authorizationTimeoutHours: 24 } });
     const created = await world.subs.create(PAYU, trialInput());
     await world.at(plusHours(T0, 25));
+    expect((await scheduleOf(world)).statusReason).toBe(ScheduleStatusReason.AuthorizationTimeout);
+
     world.setClock(plusHours(T0, 30));
-    await world.subs.verifyCheckout(PAYU, world.gateway.authorize(created.id));
-    expect((await world.subs.get(PAYU, created.id)).status).toBe(SubscriptionStatus.Cancelled);
+    const verification = await world.subs.verifyCheckout(PAYU, world.gateway.authorize(created.id));
+    expect(verification.authorized).toBe(true);
+    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
+    const sub = await world.subs.get(PAYU, created.id);
+    expect(sub.status).toBe(SubscriptionStatus.Trialing);
+    expect(sub.trialEndsAt).toBe(TRIAL_END);
     await world.at(notifyAt(TRIAL_END));
     await world.at(TRIAL_END);
-    expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(0);
+    expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(1);
+    expect((await world.subs.get(PAYU, created.id)).paidCycles).toBe(1);
   });
 
-  // DEFECT: the late customer's mandate is live at the gateway and verifyCheckout answers `authorized: true` as if all
-  // were well, while the billing schedule was cancelled by its timeout and will never debit. An application that
-  // grants access on `authorized` hands out the service for free; the facade neither refuses, nor says "not
-  // billable", nor cancels the orphaned mandate.
-  it.fails('verifyCheckout does not report a late authorisation as success when the schedule can no longer bill', async () => {
+  it('so does the authorisation webhook, and get() when the gateway already reports the mandate live', async () => {
+    const world = makeWorld({ scheduler: { authorizationTimeoutHours: 24 } });
+    const viaWebhook = await world.subs.create(PAYU, trialInput({ reference: 'w' }));
+    const viaRead = await world.subs.create(PAYU, trialInput({ reference: 'r' }));
+    await world.at(plusHours(T0, 25));
+    world.gateway.authorize(viaWebhook.id);
+    world.gateway.authorize(viaRead.id);
+    await world.subs.webhooks.handle(PAYU, world.gateway.webhook(EventType.SubscriptionAuthorized, viaWebhook.id));
+    expect((await scheduleOf(world, 'w')).status).toBe(ScheduleStatus.Active);
+    expect((await world.subs.get(PAYU, viaRead.id)).status).toBe(SubscriptionStatus.Trialing);
+    expect((await scheduleOf(world, 'r')).status).toBe(ScheduleStatus.Active);
+  });
+
+  it('a customer who authorises after the merchant cancelled is not revived: the verification is returned, nothing is billed', async () => {
     const world = makeWorld({ scheduler: { authorizationTimeoutHours: 24 } });
     const created = await world.subs.create(PAYU, trialInput());
-    await world.at(plusHours(T0, 25));
-    world.setClock(plusHours(T0, 30));
-    let acceptable = false;
-    try {
-      const verification = await world.subs.verifyCheckout(PAYU, world.gateway.authorize(created.id));
-      const mandateClosed = world.gateway.callsTo(GatewayMethod.CancelSubscription).length > 0;
-      acceptable = !verification.authorized || mandateClosed;
-    } catch {
-      acceptable = true;
-    }
-    expect(acceptable).toBe(true);
+    await world.subs.cancel(PAYU, created.id);
+    world.gateway.subscriptions.get(created.id)!.status = SubscriptionStatus.Created; // the customer got in first at the bank
+    const verification = await world.subs.verifyCheckout(PAYU, world.gateway.authorize(created.id));
+    expect(verification.authorized).toBe(true);
+    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Cancelled);
+    await world.at(TRIAL_END);
+    expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(0);
   });
 });
 
@@ -75,10 +87,10 @@ describe('mandate end date', () => {
     expect((await world.subs.get(PAYU, created.id)).status).toBe(SubscriptionStatus.Expired);
   });
 
-  // DEFECT: the facade registers the schedule without the mandate's end date. An open-ended subscription whose
+  // Regression guard for a fixed defect: the facade registers the schedule without the mandate's end date. An open-ended subscription whose
   // mandate lapses between two cycles keeps being scheduled: the scheduler sends the customer a pre-debit notice and
   // tries to debit a mandate that no longer exists, every tick, until a webhook happens to arrive.
-  it.fails('does not notify or debit after the mandate end date', async () => {
+  it('does not notify or debit after the mandate end date', async () => {
     const world = makeWorld();
     await createAndAuthorize(world, trialInput({ totalCycles: undefined, mandateEndsAt: MANDATE_ENDS }));
     for (const due of [TRIAL_END, CYCLE_2]) {

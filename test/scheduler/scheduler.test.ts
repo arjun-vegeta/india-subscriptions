@@ -24,7 +24,7 @@ import {
   SID,
 } from './helpers.js';
 
-const CHARGE_ID = /^chg_[0-9a-f]{16}_(\d+)_(\d+)$/;
+const CHARGE_ID = /^c_[0-9a-z]{12}_([0-9a-z]+)_([0-9a-z]+)$/;
 
 async function cycleOf(h: ReturnType<typeof makeHarness>, index = 0) {
   const cycle = await h.store.getCycle(SID, index);
@@ -727,7 +727,13 @@ describe('register', () => {
   it('applies defaults and per-schedule policy overrides to the stored policy', async () => {
     const h = makeHarness({ scheduler: { maxAttempts: 4 } });
     const schedule = await h.scheduler.register(registration({ retryIntervalHours: 6 }));
-    expect(schedule.policy).toEqual({ notifyLeadHours: 48, minNoticeHours: 24, maxAttempts: 4, retryIntervalHours: 6 });
+    expect(schedule.policy).toEqual({
+      notifyLeadHours: 48,
+      minNoticeHours: 24,
+      maxAttempts: 4,
+      retryIntervalHours: 6,
+      unknownOutcomeGraceMinutes: 30,
+    });
   });
 
   it('rejects invalid input and gateways that raise their own debits', async () => {

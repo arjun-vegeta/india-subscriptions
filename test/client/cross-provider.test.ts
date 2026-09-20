@@ -10,6 +10,7 @@ import {
   gatewayInput,
   makeWorld,
   plusHours,
+  scheduleIdOf,
   scheduleOf,
   trialInput,
   type World,
@@ -40,19 +41,19 @@ describe('the merchant reference is a per-gateway name, not a global one', () =>
     const payu = await world.subs.create(PAYU, trialInput({ reference: 'a' }));
     const cashfree = await world.subs.create(CASHFREE, trialInput({ reference: 'b' }));
     const razorpay = await world.subs.create(RAZORPAY, gatewayInput({ reference: 'c' }));
-    expect((await world.scheduler?.get('a'))?.provider).toBe(PAYU);
-    expect((await world.scheduler?.get('b'))?.provider).toBe(CASHFREE);
-    expect(await world.scheduler?.get('c')).toBeUndefined();
+    expect((await world.scheduler?.get(scheduleIdOf('a')))?.provider).toBe(PAYU);
+    expect((await world.scheduler?.get(scheduleIdOf('b', CASHFREE)))?.provider).toBe(CASHFREE);
+    expect(await world.scheduler?.get(scheduleIdOf('c', RAZORPAY))).toBeUndefined();
     await world.subs.cancel(RAZORPAY, razorpay.id);
     expect((await scheduleOf(world, 'a')).status).toBe(ScheduleStatus.PendingAuthorization);
-    expect((await scheduleOf(world, 'b')).status).toBe(ScheduleStatus.PendingAuthorization);
+    expect((await scheduleOf(world, 'b', CASHFREE)).status).toBe(ScheduleStatus.PendingAuthorization);
     expect(payu.id).not.toBe(cashfree.id);
   });
 
-  // DEFECT: schedules are keyed by the bare merchant reference, so two gateways cannot use the same reference.
+  // Regression guard for a fixed defect: schedules are keyed by the bare merchant reference, so two gateways cannot use the same reference.
   // Moving a customer from PayU to Cashfree under the same reference (the obvious migration) creates the Cashfree
   // subscription at the gateway and then fails with CONFLICT because the PayU schedule already owns the id.
-  it.fails('the same reference can be used on two different gateways', async () => {
+  it('the same reference can be used on two different gateways', async () => {
     const world = threeGateways();
     await world.subs.create(PAYU, trialInput({ reference: SHARED }));
     const second = await world.subs.create(CASHFREE, trialInput({ reference: SHARED }));
@@ -60,10 +61,10 @@ describe('the merchant reference is a per-gateway name, not a global one', () =>
     expect(world.gw(CASHFREE).callsTo(GatewayMethod.CreateSubscription)).toHaveLength(1);
   });
 
-  // DEFECT: cancel() looks the schedule up by the subscription's reference WITHOUT checking the provider, for every
+  // Regression guard for a fixed defect: cancel() looks the schedule up by the subscription's reference WITHOUT checking the provider, for every
   // gateway, merchant-scheduled or not. Cancelling a Razorpay subscription whose reference equals a PayU schedule's
   // id cancels the PayU schedule: the customer's live PayU billing stops, silently.
-  it.fails('cancelling a Razorpay subscription leaves a PayU schedule with the same reference alone', async () => {
+  it('cancelling a Razorpay subscription leaves a PayU schedule with the same reference alone', async () => {
     const world = threeGateways();
     await livePayU(world);
     const razorpay = await world.subs.create(RAZORPAY, gatewayInput({ reference: SHARED }));
@@ -71,8 +72,8 @@ describe('the merchant reference is a per-gateway name, not a global one', () =>
     expect((await scheduleOf(world, SHARED)).status).toBe(ScheduleStatus.Active);
   });
 
-  // DEFECT (same cause): the same happens for update({ amount }), which also rewrites the foreign schedule's amount.
-  it.fails('updating the amount of a Razorpay subscription leaves a PayU schedule with the same reference alone', async () => {
+  // Regression guard (fixed; same cause): the same happens for update({ amount }), which also rewrites the foreign schedule's amount.
+  it('updating the amount of a Razorpay subscription leaves a PayU schedule with the same reference alone', async () => {
     const world = threeGateways();
     await livePayU(world);
     const razorpay = await world.subs.create(RAZORPAY, gatewayInput({ reference: SHARED }));
@@ -80,10 +81,10 @@ describe('the merchant reference is a per-gateway name, not a global one', () =>
     expect((await scheduleOf(world, SHARED)).amount).toBe(AMOUNT);
   });
 
-  // DEFECT (same cause): verifyCheckout() activates whichever schedule carries the verification's reference, whatever
+  // Regression guard (fixed; same cause): verifyCheckout() activates whichever schedule carries the verification's reference, whatever
   // the gateway, and re-points it at the verifying gateway's subscription id: the PayU schedule would then raise its
   // debits against a Razorpay subscription id.
-  it.fails('a Razorpay checkout verification does not activate a pending PayU schedule with the same reference', async () => {
+  it('a Razorpay checkout verification does not activate a pending PayU schedule with the same reference', async () => {
     const world = threeGateways();
     await world.subs.create(PAYU, trialInput({ reference: SHARED }));
     const razorpay = await world.subs.create(RAZORPAY, gatewayInput({ reference: SHARED }));

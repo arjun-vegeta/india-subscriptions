@@ -136,7 +136,7 @@ describe('PayUProvider driven by the BillingScheduler', () => {
     expect((await tickAt('2026-01-13T04:30:00.000Z')).notified).toBe(1);
     const preDebit = fake.commands.find((entry) => entry.command === 'pre_debit_SI')!.var1 as Record<string, string>;
     expect(preDebit).toMatchObject({ authpayuid: '25511473084', amount: '499.00', debitDate: '2026-01-15' });
-    expect(preDebit.requestId).toMatch(/^ntf_/);
+    expect(preDebit.requestId).toMatch(/^n_/);
 
     // 6. The due date: the debit, with the invoice number the notification carried.
     const due = await tickAt(DUE);
@@ -144,7 +144,7 @@ describe('PayUProvider driven by the BillingScheduler', () => {
     const debit = fake.commands.find((entry) => entry.command === 'si_transaction')!.var1 as Record<string, string>;
     expect(debit).toMatchObject({ authpayuid: '25511473084', amount: '499.00' });
     expect(debit.invoiceDisplayNumber).toBe(preDebit.invoiceDisplayNumber);
-    expect(debit.txnid).toMatch(/^chg_/);
+    expect(debit.txnid).toMatch(/^c_/);
 
     // 7. Second cycle: the answer of the debit is lost before PayU sees it.
     await tickAt('2026-02-13T04:30:00.000Z');

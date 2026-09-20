@@ -47,6 +47,7 @@ import {
   type ScheduleRecord,
   type SchedulerConfigInput,
   type SchedulerEvent,
+  scheduleIdFor,
   type SchedulerStore,
   type TickResult,
 } from '../../src/scheduler/index.js';
@@ -263,6 +264,8 @@ export class FakeGateway extends BaseProvider {
   holdScheduled = false;
   /** Refuse every pre-debit notification (the gateway answers `accepted: false`). */
   rejectNotifications = false;
+  /** Overrides the status `verifyCheckout` reports (a mandate still pending at the bank). */
+  verifyStatus: SubscriptionStatus | undefined;
 
   private readonly options: GatewayOptions;
   private readonly aliases = new Map<string, string>();
@@ -456,6 +459,7 @@ export class FakeGateway extends BaseProvider {
     this.enter(GatewayMethod.UpdateSubscription, [subscriptionId, input]);
     const sub = this.resolve(subscriptionId);
     if (input.amount !== undefined) sub.amount = input.amount;
+    if (input.mandateEndsAt !== undefined) sub.mandateEndsAt = new Date(input.mandateEndsAt).toISOString();
     return this.view(sub, false);
   }
 
@@ -571,7 +575,7 @@ export class FakeGateway extends BaseProvider {
       subscriptionId: sub.id,
       reference: sub.reference ?? sub.preAuthId,
       authorized: sub.authorized,
-      status: sub.status,
+      status: this.verifyStatus ?? sub.status,
       raw: result,
     };
   }
@@ -731,6 +735,11 @@ export class InstrumentedStore implements SchedulerStore {
     });
   }
 
+  /** Forgets every pending injected failure. */
+  clearFaults(): void {
+    this.faults.length = 0;
+  }
+
   writes(): StoreMethod[] {
     return this.calls.filter((call) => STORE_WRITES.includes(call));
   }
@@ -796,6 +805,8 @@ export interface WorldOptions {
   /** `false` builds a client with no scheduler. */
   scheduler?: false | Omit<SchedulerConfigInput, never>;
   startAt?: string;
+  /** Hand the facade the scheduler's options and let it build the `BillingScheduler` (instead of passing one in). */
+  buildSchedulerInFacade?: boolean;
 }
 
 export interface World {
@@ -824,23 +835,31 @@ export function makeWorld(options: WorldOptions = {}): World {
     (spec) => new FakeGateway({ ...spec, clock: clock.now, log }),
   );
   const registry = new Map(gateways.map((gateway) => [gateway.name, gateway]));
-  const scheduler =
-    options.scheduler === false
-      ? undefined
-      : new BillingScheduler({
-          ...options.scheduler,
-          store,
-          resolveProvider: (name) => {
-            const gateway = registry.get(name);
-            if (!gateway) throw new Error(`no gateway ${name}`);
-            return gateway;
-          },
-          now: clock.now,
-          onEvent: (event) => {
-            events.push(event);
-          },
-        });
-  const subs = new Subscriptions({ providers: gateways, scheduler });
+  const schedulerOptions = options.scheduler === false ? undefined : options.scheduler;
+  const onEvent = (event: SchedulerEvent): void => {
+    events.push(event);
+  };
+  let scheduler: BillingScheduler | undefined;
+  let subs: Subscriptions;
+  if (options.scheduler === false) {
+    subs = new Subscriptions({ providers: gateways });
+  } else if (options.buildSchedulerInFacade) {
+    subs = new Subscriptions({ providers: gateways, scheduler: { ...schedulerOptions, store, now: clock.now, onEvent } });
+    scheduler = subs.scheduler;
+  } else {
+    scheduler = new BillingScheduler({
+      ...schedulerOptions,
+      store,
+      resolveProvider: (name) => {
+        const gateway = registry.get(name);
+        if (!gateway) throw new Error(`no gateway ${name}`);
+        return gateway;
+      },
+      now: clock.now,
+      onEvent,
+    });
+    subs = new Subscriptions({ providers: gateways, scheduler });
+  }
   const first = gateways[0];
   if (!first) throw new Error('a world needs a gateway');
   return {
@@ -915,14 +934,29 @@ export async function createAndAuthorize(
   return { created, verification };
 }
 
-export async function scheduleOf(world: World, id: string = REFERENCE): Promise<ScheduleRecord> {
+/** The provider-scoped id the facade gives the schedule of a merchant reference. */
+export function scheduleIdOf(reference: string = REFERENCE, provider: Provider = Provider.PayU): string {
+  return scheduleIdFor(provider, reference);
+}
+
+/** The schedule of `reference` on `provider` (default: the PayU-like first gateway). */
+export async function scheduleOf(
+  world: World,
+  reference: string = REFERENCE,
+  provider: Provider = Provider.PayU,
+): Promise<ScheduleRecord> {
+  const id = scheduleIdOf(reference, provider);
   const schedule = await world.scheduler?.get(id);
   if (!schedule) throw new Error(`no schedule ${id}`);
   return schedule;
 }
 
-export async function cyclesOf(world: World, id: string = REFERENCE): Promise<CycleRecord[]> {
-  return (await world.scheduler?.listCycles(id)) ?? [];
+export async function cyclesOf(
+  world: World,
+  reference: string = REFERENCE,
+  provider: Provider = Provider.PayU,
+): Promise<CycleRecord[]> {
+  return (await world.scheduler?.listCycles(scheduleIdOf(reference, provider))) ?? [];
 }
 
 // ---------------------------------------------------------------------------

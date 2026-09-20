@@ -21,6 +21,7 @@ import {
   DEFAULT_RETRY_INTERVAL_HOURS,
   DEFAULT_TICK_CONCURRENCY,
   DEFAULT_TICK_LIMIT,
+  DEFAULT_UNKNOWN_OUTCOME_GRACE_MINUTES,
   ScheduleStatus,
   ScheduleStatusReason,
   SchedulerEventType,
@@ -72,6 +73,15 @@ export const SchedulePolicySchema = z
       .min(1)
       .describe('Debit attempts per cycle before the cycle fails and the schedule halts.'),
     retryIntervalHours: HoursSchema.describe('Hours to wait between a failed attempt and the next one.'),
+    unknownOutcomeGraceMinutes: z
+      .number()
+      .nonnegative()
+      .optional()
+      .describe(
+        'After a debit whose outcome is unknown (no answer, a crash), the same debit id is not submitted again until this ' +
+          'many minutes after it was sent; a gateway that does not know the debit yet is asked again on later ticks. ' +
+          'Defaults to 30.',
+      ),
     chargeLeadHours: HoursSchema.optional().describe(
       'For gateways that want the charge raised days before the debit (Cashfree on-demand): raise it at least this many ' +
         "hours ahead. The effective lead is the larger of this and the gateway's own `merchantChargeLeadHours`.",
@@ -111,6 +121,11 @@ export const SchedulerConfigSchema = z
     retryIntervalHours: HoursSchema.default(DEFAULT_RETRY_INTERVAL_HOURS).describe(
       'Default hours between a failed attempt and the next one.',
     ),
+    unknownOutcomeGraceMinutes: z
+      .number()
+      .nonnegative()
+      .default(DEFAULT_UNKNOWN_OUTCOME_GRACE_MINUTES)
+      .describe('Default minutes to wait after a debit of unknown outcome before submitting the same debit id again.'),
     chargeLeadHours: HoursSchema.optional().describe('Default charge lead for charge-ahead gateways, in hours.'),
     authorizationTimeoutHours: z
       .number()
@@ -211,7 +226,10 @@ export const CycleRecordSchema = z
       .optional()
       .describe('Deterministic per (schedule, cycle, attempt); set together with status `charging`.'),
     providerChargeId: z.string().optional().describe("The gateway's own id for the debit, once known."),
-    chargeRequestedAt: IsoDateTimeSchema.optional().describe('When the debit was requested from the gateway.'),
+    chargeRequestedAt: IsoDateTimeSchema.optional().describe('When the debit was first requested from the gateway.'),
+    chargeSentAt: IsoDateTimeSchema.optional().describe(
+      'When the debit was last sent to the gateway. A debit of unknown outcome is not sent again until `unknownOutcomeGraceMinutes` after this.',
+    ),
     scheduledAt: IsoDateTimeSchema.optional().describe(
       'For gateways that take the charge in advance: the debit date sent to the gateway. Equals `attemptDueAt`, or a ' +
         'later instant when the charge was raised too late to make it. `dueAt` always stays the contractual date.',

@@ -4407,13 +4407,16 @@
         "type": "object",
         "properties": {
           "scheduleId": {
-            "type": "string"
+            "type": "string",
+            "description": "The schedule that failed."
           },
           "code": {
+            "description": "Error code of the failure.",
             "$ref": "#/components/schemas/LibraryErrorCode"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "Human-readable explanation of the failure."
           }
         },
         "required": [
@@ -4421,7 +4424,8 @@
           "code",
           "message"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "A failure of one schedule during a tick."
       },
       "TickResult": {
         "type": "object",
@@ -4430,57 +4434,69 @@
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-            "description": "An ISO-8601 instant with a timezone offset or `Z`."
+            "description": "The instant the tick ran."
           },
           "due": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Schedules the store reported as due."
           },
           "locked": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Due schedules skipped because another worker held their lock."
           },
           "notified": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Pre-debit notifications accepted by the gateway."
           },
           "charged": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "`createCharge` calls made."
           },
           "reconciled": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "`getCharge` reconciliations made."
           },
           "succeeded": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Cycles that became collected."
           },
           "failed": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Debit attempts that failed."
           },
           "awaiting": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Cycles left waiting for the gateway's final answer."
           },
           "completed": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Schedules that completed."
           },
           "halted": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Schedules halted because a cycle exhausted its attempts."
           },
           "expired": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Pending-authorisation schedules cancelled by their timeout."
           },
           "errors": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TickError"
-            }
+            },
+            "description": "Schedules that failed during this tick; the others are unaffected."
           }
         },
         "required": [
@@ -4498,7 +4514,8 @@
           "expired",
           "errors"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "What one run of the billing scheduler did. A failing schedule shows up in `errors`; the others are unaffected."
       },
       "LibraryErrorCode": {
         "type": "string",
@@ -4518,7 +4535,8 @@
           "OUTCOME_UNKNOWN",
           "SIGNATURE_INVALID",
           "INTERNAL_ERROR"
-        ]
+        ],
+        "description": "Stable error code of this library. Branch on it, never on the message."
       }
     },
     "securitySchemes": {

@@ -12,6 +12,7 @@ import {
   cyclesOf,
   makeWorld,
   plusHours,
+  scheduleIdOf,
   scheduleOf,
   trialInput,
   type World,
@@ -49,7 +50,7 @@ describe('id-changing gateway: schedule keyed by reference', () => {
     const created = await world.subs.create(PAYU, trialInput());
     expect(created.id).toBe(REFERENCE);
     const schedule = await scheduleOf(world);
-    expect(schedule.id).toBe(REFERENCE);
+    expect(schedule.id).toBe(scheduleIdOf());
     expect(schedule.subscriptionId).toBe(REFERENCE);
     expect(schedule.status).toBe(ScheduleStatus.PendingAuthorization);
   });
@@ -60,10 +61,10 @@ describe('id-changing gateway: schedule keyed by reference', () => {
     expect(newId).not.toBe(REFERENCE);
     expect(verification.reference).toBe(REFERENCE);
     const schedule = await scheduleOf(world);
-    expect(schedule.id).toBe(REFERENCE);
+    expect(schedule.id).toBe(scheduleIdOf());
     expect(schedule.subscriptionId).toBe(newId);
     expect(schedule.status).toBe(ScheduleStatus.Active);
-    expect((await world.scheduler?.findBySubscriptionId(PAYU, newId))?.id).toBe(REFERENCE);
+    expect((await world.scheduler?.findBySubscriptionId(PAYU, newId))?.id).toBe(scheduleIdOf());
     expect(await world.scheduler?.findBySubscriptionId(PAYU, REFERENCE)).toBeUndefined();
   });
 
@@ -145,12 +146,13 @@ describe('id-changing gateway: schedule keyed by reference', () => {
       expect((await world.subs.get(PAYU, newId)).paidCycles).toBe(2);
     });
 
-    it('pause also works when the gateway has its own pause: the gateway is told the new id', async () => {
+    it('pause and resume use the scheduler only, even when the gateway has its own pause', async () => {
       const { world, newId } = await authorizedWorld({ pause: true });
       await world.subs.pause(PAYU, newId);
-      expect(world.gateway.callsTo(GatewayMethod.PauseSubscription)[0]?.args[0]).toBe(newId);
       await world.subs.resume(PAYU, newId);
-      expect(world.gateway.callsTo(GatewayMethod.ResumeSubscription)[0]?.args[0]).toBe(newId);
+      expect(world.gateway.callsTo(GatewayMethod.PauseSubscription)).toHaveLength(0);
+      expect(world.gateway.callsTo(GatewayMethod.ResumeSubscription)).toHaveLength(0);
+      expect(world.gateway.callsTo(GatewayMethod.GetSubscription).every((call) => call.args[0] === newId)).toBe(true);
       expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
     });
 
@@ -169,20 +171,20 @@ describe('id-changing gateway: schedule keyed by reference', () => {
       expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Cancelled);
     });
 
-    // DEFECT: Subscriptions.cancel() finds the schedule with findSchedule(subscription), i.e. by the reference
+    // Regression guard for a fixed defect: Subscriptions.cancel() finds the schedule with findSchedule(subscription), i.e. by the reference
     // the GATEWAY echoes on its response, or by the subscription id used as a schedule id. After an id change the
     // schedule is keyed by the merchant reference and the mandate id is only known to findBySubscriptionId, which
     // get()/pause()/resume() use (findScheduleById) but cancel()/update() do not. A gateway that does not repeat the
     // reference on the mandate (PayU's mandate id) leaves the schedule Active after the mandate is cancelled.
-    it.fails('cancel(newId) cancels the schedule when the gateway does not echo the reference', async () => {
+    it('cancel(newId) cancels the schedule when the gateway does not echo the reference', async () => {
       const { world, newId } = await authorizedWorld();
       const cancelled = await world.subs.cancel(PAYU, newId);
       expect(cancelled.status).toBe(SubscriptionStatus.Cancelled);
       expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Cancelled);
     });
 
-    // DEFECT (same cause): cancelling with the old reference after authorisation has the same problem.
-    it.fails('cancel(reference) after authorisation cancels the schedule when the gateway does not echo the reference', async () => {
+    // Regression guard (fixed; same cause): cancelling with the old reference after authorisation has the same problem.
+    it('cancel(reference) after authorisation cancels the schedule when the gateway does not echo the reference', async () => {
       const { world } = await authorizedWorld();
       await world.subs.cancel(PAYU, REFERENCE);
       expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Cancelled);
@@ -199,9 +201,9 @@ describe('id-changing gateway: schedule keyed by reference', () => {
   describe('update by the new id', () => {
     const NEW_AMOUNT = 59900;
 
-    // DEFECT (same cause as cancel): the gateway is told the new amount and the caller is shown it, but the schedule,
+    // Regression guard (fixed; same cause as cancel): the gateway is told the new amount and the caller is shown it, but the schedule,
     // which decides what is actually debited, is not found and keeps the old amount.
-    it.fails('update(newId, { amount }) changes what is debited for future cycles', async () => {
+    it('update(newId, { amount }) changes what is debited for future cycles', async () => {
       const { world, newId } = await authorizedWorld();
       const updated = await world.subs.update(PAYU, newId, { amount: NEW_AMOUNT });
       expect(updated.amount).toBe(NEW_AMOUNT);

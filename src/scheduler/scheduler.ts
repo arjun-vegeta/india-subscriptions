@@ -9,9 +9,13 @@ import {
   ChargeMetadataKey,
   ChargeTiming,
   CycleStatus,
+  DEFAULT_UNKNOWN_OUTCOME_GRACE_MINUTES,
   HOUR_MS,
-  ID_HASH_LENGTH,
+  ID_DIGEST_HEX_LENGTH,
+  ID_DIGEST_LENGTH,
+  ID_RADIX,
   ID_SEPARATOR,
+  MINUTE_MS,
   IN_FLIGHT_CYCLE_STATUSES,
   LOCK_POLL_INTERVAL_MS,
   MAX_STEPS_PER_SCHEDULE_PER_TICK,
@@ -61,6 +65,13 @@ export interface SchedulerOptions extends SchedulerConfigInput {
    */
   onEvent?: (event: SchedulerEvent) => void | Promise<void>;
 }
+
+/**
+ * The scheduler's constructor options without `resolveProvider`: what to pass as
+ * `createSubscriptions({ scheduler })`, which builds the `BillingScheduler` itself
+ * with `resolveProvider` bound to its own gateways.
+ */
+export type SchedulerSettings = Omit<SchedulerOptions, 'resolveProvider'>;
 
 /** How a gateway wants debits raised (see `ChargeTiming`). */
 interface Timing {
@@ -234,6 +245,7 @@ export class BillingScheduler {
         minNoticeHours: parsed.minNoticeHours ?? this.config.minNoticeHours,
         maxAttempts: parsed.maxAttempts ?? this.config.maxAttempts,
         retryIntervalHours: parsed.retryIntervalHours ?? this.config.retryIntervalHours,
+        unknownOutcomeGraceMinutes: parsed.unknownOutcomeGraceMinutes ?? this.config.unknownOutcomeGraceMinutes,
       };
       const chargeLeadHours = parsed.chargeLeadHours ?? this.config.chargeLeadHours;
       if (chargeLeadHours !== undefined) policy.chargeLeadHours = chargeLeadHours;
@@ -593,6 +605,7 @@ export class BillingScheduler {
     cycle.chargeId = this.chargeId(schedule, cycle);
     cycle.status = CycleStatus.Charging;
     cycle.chargeRequestedAt = nowIso;
+    cycle.chargeSentAt = nowIso;
     if (timing.kind === ChargeTiming.ChargeInAdvance) {
       // The debit date: the due date, or the earliest legal one when we are already too close to it.
       cycle.scheduledAt = toIso(new Date(Math.max(Date.parse(cycle.attemptDueAt), now.getTime() + timing.leadMs)));
@@ -667,15 +680,31 @@ export class BillingScheduler {
       charge = await provider.getCharge(schedule.subscriptionId, chargeId);
     } catch (error) {
       const failure = asSubscriptionError(error, ErrorCode.Internal);
+      const overdue = cycle.status === CycleStatus.Charging && this.graceElapsed(schedule, cycle);
       if (failure.code === ErrorCode.NotFound && cycle.status === CycleStatus.Charging) {
-        // The gateway has never seen this debit, so asking again with the same id cannot double-debit.
-        if (schedule.status === ScheduleStatus.Active) return this.submitCharge(schedule, cycle, result);
+        // Not found is only proof that the debit never reached the gateway once the gateway has had time to
+        // register it (its status API may lag, or the answer to the first request may still be on its way).
+        if (!overdue) return false;
+        await this.emit(SchedulerEventType.ChargeOutcomeOverdue, schedule, this.cycleFields(cycle));
+        if (schedule.status === ScheduleStatus.Active) {
+          cycle.chargeSentAt = toIso(this.now());
+          await this.store.saveCycle(cycle);
+          return this.submitCharge(schedule, cycle, result);
+        }
         return this.dropUnsentCharge(schedule, cycle);
       }
       await this.recordError(schedule, cycle, failure, SchedulerEventType.ChargeOutcomeUnknown, result);
+      if (overdue) await this.emit(SchedulerEventType.ChargeOutcomeOverdue, schedule, this.cycleFields(cycle));
       return false;
     }
     return this.applyCharge(schedule, cycle, charge, result);
+  }
+
+  /** True once `unknownOutcomeGraceMinutes` have passed since the debit was last sent. */
+  private graceElapsed(schedule: ScheduleRecord, cycle: CycleRecord): boolean {
+    const grace = schedule.policy.unknownOutcomeGraceMinutes ?? DEFAULT_UNKNOWN_OUTCOME_GRACE_MINUTES;
+    const sentAt = Date.parse(cycle.chargeSentAt ?? cycle.chargeRequestedAt ?? cycle.updatedAt);
+    return this.now().getTime() >= sentAt + grace * MINUTE_MS;
   }
 
   /** A `charging` cycle that never reached the gateway, on a schedule that must not debit any more. */
@@ -1365,19 +1394,23 @@ export class BillingScheduler {
     const now = this.now();
     const nowIso = toIso(now);
     const cycle = await this.store.getCycle(schedule.id, schedule.cycleIndex);
-    if (cycle && (cycle.status === CycleStatus.Pending || cycle.status === CycleStatus.Notified)) {
+    const unbilled = cycle !== undefined && (cycle.status === CycleStatus.Pending || cycle.status === CycleStatus.Notified);
+    if (cycle && unbilled) {
       cycle.status = CycleStatus.Skipped;
       cycle.completedAt = nowIso;
       cycle.updatedAt = nowIso;
-      await this.store.saveCycle(cycle);
     }
     schedule.status = ScheduleStatus.Cancelled;
     schedule.statusReason = reason;
     schedule.endedAt = nowIso;
     schedule.updatedAt = nowIso;
+    delete schedule.resumeAt;
     // A debit in flight keeps being reconciled so its outcome is recorded.
     this.plan(schedule, cycle, now);
+    // The schedule first: once it is cancelled nothing is billed, whether or not the cycle's own record catches up
+    // (a failure between the two writes can leave a pending cycle behind, never a billable schedule).
     await this.store.saveSchedule(schedule);
+    if (cycle && unbilled) await this.store.saveCycle(cycle);
     await this.emit(SchedulerEventType.ScheduleCancelled, schedule, { reason });
     await this.emitInFlight(schedule, cycle);
     return schedule;
@@ -1506,6 +1539,7 @@ export class BillingScheduler {
     delete cycle.chargeId;
     delete cycle.providerChargeId;
     delete cycle.chargeRequestedAt;
+    delete cycle.chargeSentAt;
     delete cycle.scheduledAt;
     delete cycle.lastError;
   }
@@ -1520,18 +1554,12 @@ export class BillingScheduler {
 
   /** Deterministic per (schedule, cycle, attempt): the same debit always carries the same id. */
   private chargeId(schedule: ScheduleRecord, cycle: CycleRecord): string {
-    return [SchedulerIdPrefix.Charge, idHash(schedule.id), cycle.index, cycle.attempt].join(ID_SEPARATOR);
+    return chargeIdFor(schedule.id, cycle.index, cycle.attempt);
   }
 
   /** Deterministic per (schedule, cycle, attempt, round). */
   private notificationId(schedule: ScheduleRecord, cycle: CycleRecord): string {
-    return [
-      SchedulerIdPrefix.Notification,
-      idHash(schedule.id),
-      cycle.index,
-      cycle.attempt,
-      cycle.notificationRound,
-    ].join(ID_SEPARATOR);
+    return notificationIdFor(schedule.id, cycle.index, cycle.attempt, cycle.notificationRound);
   }
 
   private cycleFields(cycle: CycleRecord): Partial<SchedulerEvent> {
@@ -1692,9 +1720,33 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Short stable hash of a schedule id, so gateway ids stay within their length limits. */
-function idHash(scheduleId: string): string {
-  return hash(HashAlgorithm.Sha256, scheduleId, DigestEncoding.Hex).slice(0, ID_HASH_LENGTH);
+/** A fixed-length base36 digest of the schedule id: unique across schedules, and free of any character a gateway might refuse. */
+function idDigest(scheduleId: string): string {
+  const hex = hash(HashAlgorithm.Sha256, scheduleId, DigestEncoding.Hex).slice(0, ID_DIGEST_HEX_LENGTH);
+  return BigInt(`0x${hex}`).toString(ID_RADIX).padStart(ID_DIGEST_LENGTH, '0');
+}
+
+function base36(value: number): string {
+  return value.toString(ID_RADIX);
+}
+
+/**
+ * The id of one debit attempt, sent to the gateway: `c_<digest>_<cycle>_<attempt>`, with the cycle and attempt in
+ * base36. Deterministic, at most 25 characters (cycle 99,999 and attempt 999 give 22), only `[A-Za-z0-9_]`.
+ */
+export function chargeIdFor(scheduleId: string, cycleIndex: number, attempt: number): string {
+  return [SchedulerIdPrefix.Charge, idDigest(scheduleId), base36(cycleIndex), base36(attempt)].join(ID_SEPARATOR);
+}
+
+/** The id of one pre-debit notification: `n_<digest>_<cycle>_<attempt>_<round>`. At most 25 characters up to round 1,295. */
+export function notificationIdFor(scheduleId: string, cycleIndex: number, attempt: number, round: number): string {
+  return [
+    SchedulerIdPrefix.Notification,
+    idDigest(scheduleId),
+    base36(cycleIndex),
+    base36(attempt),
+    base36(round),
+  ].join(ID_SEPARATOR);
 }
 
 /** Wraps anything that is not already a `SubscriptionError`, keeping the original as `cause`. */

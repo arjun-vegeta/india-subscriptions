@@ -147,96 +147,80 @@ describe('pause / resume: provider WITHOUT a gateway pause operation', () => {
 describe('pause / resume: provider WITH a gateway pause operation', () => {
   const spec: Spec = { style: Style.Notify, pause: true, resume: true };
 
-  it('pause tells the scheduler and the gateway; options reach the gateway; status paused; no debits', async () => {
+  it('the scheduler alone pauses: the gateway pause is never used, so the mandate stays usable', async () => {
     const { world, id } = await afterFirstCharge(spec);
-    const options = { resumeAt: '2026-06-01T00:00:00.000Z' };
-    const paused = await world.subs.pause(PAYU, id, options);
+    const paused = await world.subs.pause(PAYU, id);
     expect(paused.status).toBe(SubscriptionStatus.Paused);
-    expect(world.gateway.callsTo(GatewayMethod.PauseSubscription)).toHaveLength(1);
-    expect(world.gateway.callsTo(GatewayMethod.PauseSubscription)[0]?.args).toStrictEqual([id, options]);
-    expect(world.gateway.callsTo(GatewayMethod.GetSubscription)).toHaveLength(0);
+    expect(world.gateway.callsTo(GatewayMethod.PauseSubscription)).toHaveLength(0);
+    expect(world.gateway.sub(id).status).toBe(SubscriptionStatus.Active);
     expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Paused);
     for (const probe of [notifyAt(CYCLE_2), CYCLE_2, CYCLE_3]) await world.at(probe);
     expect(debits(world)).toBe(1);
     expect(notices(world)).toBe(1);
   });
 
-  it('resume tells the gateway and the scheduler and billing continues', async () => {
+  it('the scheduler alone resumes, and billing continues', async () => {
     const { world, id } = await afterFirstCharge(spec);
     await world.subs.pause(PAYU, id);
     world.setClock(LATE);
-    const resumed = await world.subs.resume(PAYU, id, { nextChargeAt: '2026-04-01T00:00:00.000Z' });
+    const nextChargeAt = '2026-04-01T00:00:00.000Z';
+    const resumed = await world.subs.resume(PAYU, id, { nextChargeAt });
     expect(resumed.status).toBe(SubscriptionStatus.Active);
-    expect(world.gateway.callsTo(GatewayMethod.ResumeSubscription)).toHaveLength(1);
-    expect(world.gateway.callsTo(GatewayMethod.ResumeSubscription)[0]?.args).toStrictEqual([
-      id,
-      { nextChargeAt: '2026-04-01T00:00:00.000Z' },
-    ]);
-    expect(world.gateway.sub(id).status).toBe(SubscriptionStatus.Active);
-    await world.at(notifyAt('2026-04-01T00:00:00.000Z'));
-    await world.at('2026-04-01T00:00:00.000Z');
+    expect(resumed.nextChargeAt).toBe(nextChargeAt);
+    expect(world.gateway.callsTo(GatewayMethod.ResumeSubscription)).toHaveLength(0);
+    await world.at(notifyAt(nextChargeAt));
+    await world.at(nextChargeAt);
     expect(debits(world)).toBe(2);
   });
 
-  it('stops the scheduler before telling the gateway to pause (the safe order), and the reverse on resume', async () => {
+  it('a gateway that has paused the mandate itself is never asked to resume it either', async () => {
     const { world, id } = await afterFirstCharge(spec);
-    world.log.length = 0;
     await world.subs.pause(PAYU, id);
-    const pauseLog = world.log.filter((entry) => entry.startsWith('store.saveSchedule') || entry.includes(GatewayMethod.PauseSubscription));
-    expect(pauseLog[0]).toBe('store.saveSchedule');
-    expect(pauseLog.at(-1)).toBe(`${PAYU}.${GatewayMethod.PauseSubscription}`);
-
-    world.log.length = 0;
+    world.gateway.failOnce(GatewayMethod.PauseSubscription);
+    world.gateway.failOnce(GatewayMethod.ResumeSubscription);
     await world.subs.resume(PAYU, id);
-    const resumeLog = world.log.filter((entry) => entry.startsWith('store.saveSchedule') || entry.includes(GatewayMethod.ResumeSubscription));
-    expect(resumeLog[0]).toBe(`${PAYU}.${GatewayMethod.ResumeSubscription}`);
-    expect(resumeLog.at(-1)).toBe('store.saveSchedule');
+    expect(world.gateway.callsTo(GatewayMethod.PauseSubscription)).toHaveLength(0);
+    expect(world.gateway.callsTo(GatewayMethod.ResumeSubscription)).toHaveLength(0);
   });
 
-  // DEFECT: pause({ resumeAt }) is forwarded to the gateway, which resumes the mandate by itself at that instant, but
-  // the billing scheduler has no auto-resume and stays paused for ever. The caller asked for "pause until X" and
-  // gets "pause until someone remembers": no debit is ever raised again, and get() keeps saying paused.
-  it.fails('pause({ resumeAt }) on a provider with gateway pause resumes billing at resumeAt', async () => {
+  it('pause({ resumeAt }) is honoured by the scheduler: no debits before it, billing continues at it', async () => {
     const { world, id } = await afterFirstCharge(spec);
     const resumeAt = '2026-02-20T00:00:00.000Z';
-    await world.subs.pause(PAYU, id, { resumeAt });
-    for (const probe of [CYCLE_2, resumeAt, plusHours(resumeAt, 24), notifyAt(CYCLE_3), CYCLE_3, plusHours(CYCLE_3, 24)]) {
-      await world.at(probe);
-    }
-    expect(debits(world)).toBeGreaterThan(1);
+    const paused = await world.subs.pause(PAYU, id, { resumeAt });
+    expect(paused.status).toBe(SubscriptionStatus.Paused);
+    expect((await scheduleOf(world)).resumeAt).toBe(resumeAt);
+    for (const probe of [CYCLE_2, plusHours(resumeAt, -1)]) await world.at(probe);
+    expect(debits(world)).toBe(1);
+    expect(world.gateway.callsTo(GatewayMethod.PauseSubscription)).toHaveLength(0);
+
+    await world.at(resumeAt);
+    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
+    await world.at(plusHours(resumeAt, 24));
+    expect(debits(world)).toBe(2);
+    expect((await world.subs.get(PAYU, id)).paidCycles).toBe(2);
   });
 
-  // DEFECT (same cause, silent variant): without a gateway pause the option is dropped without a word.
-  it.fails('pause({ resumeAt }) without a gateway pause resumes billing at resumeAt (or is refused)', async () => {
+  it('pause({ resumeAt }) works the same on a provider without a gateway pause', async () => {
     const { world, id } = await afterFirstCharge();
     const resumeAt = '2026-02-20T00:00:00.000Z';
-    let refused = false;
-    try {
-      await world.subs.pause(PAYU, id, { resumeAt });
-    } catch {
-      refused = true;
-    }
-    if (!refused) {
-      // Accepted: then it has to honour it.
-      for (const probe of [CYCLE_2, resumeAt, plusHours(resumeAt, 24), notifyAt(CYCLE_3), CYCLE_3, plusHours(CYCLE_3, 24)]) {
-        await world.at(probe);
-      }
-      expect(debits(world)).toBeGreaterThan(1);
-    }
-    expect(refused || debits(world) > 1).toBe(true);
+    await world.subs.pause(PAYU, id, { resumeAt });
+    for (const probe of [CYCLE_2, resumeAt, plusHours(resumeAt, 24)]) await world.at(probe);
+    expect(debits(world)).toBe(2);
   });
 
-  it('a gateway pause that fails after the scheduler was paused leaves billing stopped and surfaces the error', async () => {
+  it('a resumeAt in the past is refused and nothing is paused', async () => {
+    const { world, id } = await afterFirstCharge();
+    await expect(world.subs.pause(PAYU, id, { resumeAt: plusHours(TRIAL_END, -1) })).rejects.toMatchObject({ code: ErrorCode.Validation });
+    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
+  });
+
+  it('a gateway outage does not stop a pause: the scheduler pauses and only the final read fails (retry is harmless)', async () => {
     const { world, id } = await afterFirstCharge(spec);
-    world.gateway.failOnce(GatewayMethod.PauseSubscription);
+    world.gateway.failOnce(GatewayMethod.GetSubscription);
     await expect(world.subs.pause(PAYU, id)).rejects.toMatchObject({ code: ErrorCode.ProviderUnavailable });
-    // Documented behaviour: the scheduler is already paused (safe direction: no debits), the gateway is not.
     expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Paused);
-    expect(world.gateway.sub(id).status).toBe(SubscriptionStatus.Active);
     expect(await world.at(CYCLE_2)).toMatchObject({ charged: 0 });
-    // Retrying finishes the job.
     expect((await world.subs.pause(PAYU, id)).status).toBe(SubscriptionStatus.Paused);
-    expect(world.gateway.sub(id).status).toBe(SubscriptionStatus.Paused);
   });
 });
 
@@ -321,19 +305,39 @@ describe('cancel', () => {
     expect(world.gateway.callsTo(GatewayMethod.CancelSubscription)[0]?.args).toStrictEqual([created.id, { mode: CancelMode.Immediately }]);
   });
 
-  it('cancel after the subscription completed: the gateway is cancelled first, then the scheduler refuses with CONFLICT', async () => {
+  it('cancel after the subscription completed does not throw: the schedule stays completed and the mandate is cancelled', async () => {
     const { world, id } = await afterFirstCharge();
     for (const due of [CYCLE_2, CYCLE_3]) {
       await world.at(notifyAt(due));
       await world.at(due);
     }
     expect((await world.subs.get(PAYU, id)).status).toBe(SubscriptionStatus.Completed);
-    // Documented behaviour: the mandate of a completed subscription is still live at the gateway (the facade
-    // never closes it), and cancelling it reaches the gateway before the scheduler's refusal is raised.
+    // The mandate of a completed subscription is still live at the gateway (the facade never closes it by itself).
     expect(world.gateway.callsTo(GatewayMethod.CancelSubscription)).toHaveLength(0);
     expect(world.gateway.sub(id).status).toBe(SubscriptionStatus.Active);
-    await expect(world.subs.cancel(PAYU, id)).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    const cancelled = await world.subs.cancel(PAYU, id);
+    expect(cancelled.status).toBe(SubscriptionStatus.Cancelled);
     expect(world.gateway.callsTo(GatewayMethod.CancelSubscription)).toHaveLength(1);
     expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Completed);
+    expect(cancelled.paidCycles).toBe(3);
+  });
+
+  it('cancel stops billing before the gateway is asked (the schedule is already cancelled when the gateway call happens)', async () => {
+    const { world, id } = await afterFirstCharge();
+    let scheduleWhenGatewayAsked: ScheduleStatus | undefined;
+    const original = world.gateway.cancelSubscription.bind(world.gateway);
+    world.gateway.cancelSubscription = async (...args) => {
+      scheduleWhenGatewayAsked = (await scheduleOf(world)).status;
+      return original(...args);
+    };
+    await world.subs.cancel(PAYU, id);
+    expect(scheduleWhenGatewayAsked).toBe(ScheduleStatus.Cancelled);
+  });
+
+  it('cancelling at the end of the period is refused up front on a merchant-scheduled subscription, and nothing is stopped', async () => {
+    const { world, id } = await afterFirstCharge();
+    await expect(world.subs.cancel(PAYU, id, { mode: CancelMode.AtPeriodEnd })).rejects.toMatchObject({ code: ErrorCode.Unsupported });
+    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
+    expect(world.gateway.callsTo(GatewayMethod.CancelSubscription)).toHaveLength(0);
   });
 });
