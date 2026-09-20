@@ -204,9 +204,27 @@ export class Subscriptions {
    * authorised, and starts the billing schedule for merchant-scheduled
    * subscriptions. Store `subscriptionId` from the result: on some gateways it
    * only exists from this point.
+   *
+   * Always pass `expectedSubscriptionId` (the id or reference your server
+   * stored at creation): the browser supplies `result`, so without it a
+   * customer could present a genuine result from a different subscription.
    */
-  async verifyCheckout(provider: Provider, result: CheckoutResult): Promise<CheckoutVerification> {
+  async verifyCheckout(
+    provider: Provider,
+    result: CheckoutResult,
+    options: { expectedSubscriptionId?: string } = {},
+  ): Promise<CheckoutVerification> {
     const verification = await this.provider(provider).verifyCheckout(result);
+    const expected = options.expectedSubscriptionId;
+    if (expected !== undefined && expected !== verification.subscriptionId && expected !== verification.reference) {
+      // The signature is genuine but it is for another subscription: treat it
+      // exactly like a forged result.
+      throw new SubscriptionError(
+        ErrorCode.SignatureInvalid,
+        `${provider} checkout result is for a different subscription than expected`,
+        { provider },
+      );
+    }
     if (!this.scheduler || !verification.authorized) return verification;
     const schedule =
       (verification.reference ? await this.scheduler.get(verification.reference) : undefined) ??

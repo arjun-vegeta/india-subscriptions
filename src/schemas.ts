@@ -450,6 +450,20 @@ export type Refund = z.infer<typeof RefundSchema>;
 export const CheckoutResultSchema = z.record(z.string(), z.unknown());
 export type CheckoutResult = z.infer<typeof CheckoutResultSchema>;
 
+/** What the HTTP service and the facade accept when verifying a checkout result. */
+export const VerifyCheckoutInputSchema = z.object({
+  /** The fields the gateway handed back to the browser or return URL, untouched. */
+  result: CheckoutResultSchema,
+  /**
+   * The subscription id (or your reference) that your server stored when it
+   * created the subscription. When given, a result that verifies but belongs
+   * to a different subscription is rejected, so a customer cannot replay the
+   * authorisation of one subscription to unlock another.
+   */
+  expectedSubscriptionId: z.string().min(1).optional(),
+});
+export type VerifyCheckoutInput = z.infer<typeof VerifyCheckoutInputSchema>;
+
 export const CheckoutVerificationSchema = z.object({
   provider: ProviderSchema,
   /** The subscription id to store and use for later calls. */
