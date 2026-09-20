@@ -64,7 +64,9 @@ import {
   PAYU_PAYMENT_URLS,
   PAYU_PRE_DEBIT_NOT_REQUIRED,
   PAYU_REFUND_ACTION,
+  PAYU_MIN_CONSENT_PAISE,
   PAYU_SI_CONSENT,
+  PAYU_STATUS_OK,
   PAYU_FREE_TRIAL_FLAG,
   PHONE_MAX_LENGTH,
   PRE_DEBIT_METHODS,
@@ -139,9 +141,11 @@ import {
   PayUUpiMandateWebhookSchema,
   PayUUpiModifyVar1Schema,
   PayUVerifyPaymentResponseSchema,
+  PayUWebhookSniffSchema,
   type ParsedPayUConfig,
   type PayUConfig,
   type PayUPaymentResponse,
+  type PayUWebhookSniff,
 } from './schemas.js';
 
 const ERROR_TEXT_PREVIEW_CHARS = 200;
@@ -363,6 +367,16 @@ export class PayUProvider extends BaseProvider {
     }
     if (input.quantity !== undefined && input.quantity !== 1) {
       throw unsupported(this.name, 'quantity', 'multiply the plan amount yourself');
+    }
+    // `paymentMethods` cannot be enforced (see the class comment), but a list PayU cannot serve at all is refused.
+    if (input.paymentMethods !== undefined && !input.paymentMethods.some((method) => this.capabilities.paymentMethods.includes(method))) {
+      throw invalid(
+        `PayU recurring payments support ${this.capabilities.paymentMethods.join(', ')}; none of the requested paymentMethods is one of them`,
+        this.name,
+      );
+    }
+    if (input.upfrontAmount !== undefined && input.upfrontAmount < PAYU_MIN_CONSENT_PAISE) {
+      throw invalid('upfrontAmount must be at least INR 1: it is charged by the consent transaction, whose minimum PayU documents as INR 1', this.name);
     }
 
     const customer = input.customer;
@@ -612,7 +626,7 @@ export class PayUProvider extends BaseProvider {
   }
 
   private requireOk(status: string | number | null | undefined, body: unknown, what: string): void {
-    if (status === null || status === undefined || String(status) !== '1') {
+    if (status === null || status === undefined || String(status) !== String(PAYU_STATUS_OK)) {
       throw new SubscriptionError(
         ErrorCode.UnexpectedResponse,
         `${this.name} ${what} answered without a success status; fetch the mandate's state before retrying`,
@@ -948,7 +962,7 @@ export class PayUProvider extends BaseProvider {
       });
     }
     const record = parseResponse(PayULooseRecordSchema, json, 'webhook body', this.name);
-    switch (this.webhookKind(record)) {
+    switch (this.webhookKind(parseResponse(PayUWebhookSniffSchema, record, 'webhook body', this.name))) {
       case PayUWebhookKind.UpiMandate:
         return [this.upiMandateWebhook(record)];
       case PayUWebhookKind.Refund:
@@ -965,16 +979,21 @@ export class PayUProvider extends BaseProvider {
     }
   }
 
-  private webhookKind(record: Record<string, unknown>): PayUWebhookKind | undefined {
-    const action = typeof record.action === 'string' ? record.action : undefined;
+  /**
+   * Which documented body this is. The eNACH cancellation is the one JSON body
+   * with a `notificationType` and no `hash` that is accepted without one; a
+   * card-style body that lacks its hash is a card webhook and fails verification.
+   */
+  private webhookKind(sniff: PayUWebhookSniff): PayUWebhookKind | undefined {
     const upiActions: readonly string[] = Object.values(PayUUpiMandateAction);
-    if (action !== undefined && upiActions.includes(action)) return PayUWebhookKind.UpiMandate;
-    if (action !== undefined && action.toLowerCase() === PAYU_REFUND_ACTION) return PayUWebhookKind.Refund;
-    if (typeof record.notificationType === 'string') {
+    if (sniff.action && upiActions.includes(sniff.action)) return PayUWebhookKind.UpiMandate;
+    if (sniff.action && sniff.action.toLowerCase() === PAYU_REFUND_ACTION) return PayUWebhookKind.Refund;
+    if (sniff.notificationType) {
       const unsignedCancellation =
-        record.notificationType === PAYU_ENACH_CANCELLATION_NOTIFICATION &&
-        record.statusCode !== undefined &&
-        record.hash === undefined;
+        sniff.notificationType === PAYU_ENACH_CANCELLATION_NOTIFICATION &&
+        sniff.statusCode !== undefined &&
+        sniff.statusCode !== null &&
+        sniff.hash === undefined;
       return unsignedCancellation ? PayUWebhookKind.EnachCancellation : PayUWebhookKind.CardMandate;
     }
     return undefined;
@@ -988,19 +1007,19 @@ export class PayUProvider extends BaseProvider {
 
   private cardMandateWebhook(record: Record<string, unknown>): SubscriptionEvent {
     const body = parseResponse(PayUCardMandateWebhookSchema, record, 'card mandate webhook', this.name);
-    const details = typeof record.si_details === 'object' && record.si_details !== null ? (record.si_details as Record<string, unknown>) : {};
+    const details = body.si_details;
     const mandateId = pickAuthPayuId(body.authPayuId, body.authpayuid, body.authpayuId) ?? '';
     // PayU prints billingAmount as a number (101) in its samples; hash the text it may have signed.
     this.assertAnyHash(
-      amountCandidates(details.billingAmount).map((billingAmount) =>
+      amountCandidates(details?.billingAmount).map((billingAmount) =>
         cardMandateWebhookHash({
           salt: this.#salt,
           status: body.status,
           authpayuid: mandateId,
           notificationType: body.notificationType,
           billingAmount,
-          paymentStartDate: text(details.paymentStartDate),
-          paymentEndDate: text(details.paymentEndDate),
+          paymentStartDate: details?.paymentStartDate ?? '',
+          paymentEndDate: details?.paymentEndDate ?? '',
           message: body.message ?? '',
           eventDate: body.eventDate ?? '',
           key: body.key ?? '',
@@ -1020,7 +1039,7 @@ export class PayUProvider extends BaseProvider {
     const body = parseResponse(PayUUpiMandateWebhookSchema, record, 'UPI mandate webhook', this.name);
     const mandateId = pickAuthPayuId(body.authpayuid, body.authPayuId) ?? '';
     this.assertAnyHash(
-      amountCandidates(record.amount).map((amount) =>
+      amountCandidates(body.amount).map((amount) =>
         upiMandateWebhookHash({
           salt: this.#salt,
           status: body.status,
@@ -1066,10 +1085,6 @@ export class PayUProvider extends BaseProvider {
       });
     }
   }
-}
-
-function text(value: unknown): string {
-  return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '';
 }
 
 /** A JSON amount as the text PayU may have hashed: a string as is; a number as `101` and `101.00`. */

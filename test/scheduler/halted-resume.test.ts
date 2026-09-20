@@ -15,6 +15,7 @@ import {
   plusHours,
   registration,
   type Harness,
+  SID,
 } from './helpers.js';
 
 const CHARGE_SUFFIX = /_(\d+)_(\d+)$/;
@@ -28,7 +29,7 @@ async function haltedSchedule(h: Harness) {
   await h.tickAt(DUE);
   await h.tickAt(plusHours(DUE, 24));
   await h.tickAt(plusHours(DUE, 48));
-  expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Halted);
+  expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Halted);
 }
 
 describe('resume of a halted schedule', () => {
@@ -38,11 +39,11 @@ describe('resume of a halted schedule', () => {
     const resumeAt = plusHours(DUE, 60);
     h.clock.set(resumeAt);
 
-    const resumed = await h.scheduler.resume('sub_1');
+    const resumed = await h.scheduler.resume(SID);
     expect(resumed.status).toBe(ScheduleStatus.Active);
     expect(resumed.statusReason).toBeUndefined();
     expect(resumed.endedAt).toBeUndefined();
-    const cycle = await h.store.getCycle('sub_1', 0);
+    const cycle = await h.store.getCycle(SID, 0);
     expect(cycle).toMatchObject({ status: CycleStatus.Pending, attempt: 4, attemptDueAt: resumeAt });
     expect(cycle?.attempts).toHaveLength(3); // history kept
     expect(resumed.nextChargeAt).toBe(resumeAt);
@@ -59,9 +60,9 @@ describe('resume of a halted schedule', () => {
     expect(attemptOf(h.provider.createCalls[3]!.chargeId)).toBe(4);
     expect(new Set(h.provider.createCalls.map((c) => c.chargeId)).size).toBe(4);
 
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ status: ScheduleStatus.Active, paidCycles: 1, cycleIndex: 1 });
+    expect(await h.scheduler.get(SID)).toMatchObject({ status: ScheduleStatus.Active, paidCycles: 1, cycleIndex: 1 });
     // The following cycle keeps its original date: nothing was swallowed.
-    expect((await h.store.getCycle('sub_1', 1))?.dueAt).toBe('2026-02-15T04:30:00.000Z');
+    expect((await h.store.getCycle(SID, 1))?.dueAt).toBe('2026-02-15T04:30:00.000Z');
     expect(h.events.some((e) => e.type === SchedulerEventType.ScheduleResumed)).toBe(true);
   });
 
@@ -71,19 +72,19 @@ describe('resume of a halted schedule', () => {
     await h.scheduler.register(registration());
     await h.tickAt(DUE);
     await h.tickAt(plusHours(DUE, 24));
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Halted);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Halted);
 
     h.clock.set(plusHours(DUE, 25));
-    await h.scheduler.resume('sub_1');
+    await h.scheduler.resume(SID);
     // Style C: due now, so the next tick debits straight away.
     await h.tickAt(plusHours(DUE, 25));
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Active);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Active);
     await h.tickAt(plusHours(DUE, 49));
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Halted);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Halted);
 
     expect(h.provider.createCalls.map((c) => attemptOf(c.chargeId))).toEqual([1, 2, 3, 4]);
     expect(new Set(h.provider.createCalls.map((c) => c.chargeId)).size).toBe(4);
-    expect(await h.store.getCycle('sub_1', 0)).toMatchObject({ status: CycleStatus.Failed, roundStartAttempt: 3 });
+    expect(await h.store.getCycle(SID, 0)).toMatchObject({ status: CycleStatus.Failed, roundStartAttempt: 3 });
   });
 
   it('re-opens the cycle at nextChargeAt when given, and re-anchors later cycles from it', async () => {
@@ -91,14 +92,14 @@ describe('resume of a halted schedule', () => {
     await haltedSchedule(h);
     const target = '2026-02-20T04:30:00.000Z';
     h.clock.set(plusHours(DUE, 60));
-    const resumed = await h.scheduler.resume('sub_1', { nextChargeAt: target });
+    const resumed = await h.scheduler.resume(SID, { nextChargeAt: target });
     expect(resumed).toMatchObject({ anchorAt: target, anchorIndex: 0, nextChargeAt: target });
-    expect(await h.store.getCycle('sub_1', 0)).toMatchObject({ status: CycleStatus.Pending, dueAt: target, attemptDueAt: target });
+    expect(await h.store.getCycle(SID, 0)).toMatchObject({ status: CycleStatus.Pending, dueAt: target, attemptDueAt: target });
 
     await h.tickAt(plusHours(target, -48));
     await h.tickAt(target);
     expect(h.provider.createCalls).toHaveLength(4);
-    expect((await h.store.getCycle('sub_1', 1))?.dueAt).toBe('2026-03-20T04:30:00.000Z');
+    expect((await h.store.getCycle(SID, 1))?.dueAt).toBe('2026-03-20T04:30:00.000Z');
   });
 
   it('re-anchors later cycles from now when the halt lasted past the next cycle date', async () => {
@@ -106,24 +107,24 @@ describe('resume of a halted schedule', () => {
     await haltedSchedule(h);
     const resumeAt = '2026-03-10T04:30:00.000Z'; // the Feb 15 cycle date has passed
     h.clock.set(resumeAt);
-    const resumed = await h.scheduler.resume('sub_1');
+    const resumed = await h.scheduler.resume(SID);
     expect(resumed.anchorAt).toBe(resumeAt);
     await h.tickAt(resumeAt);
     await h.tickAt(plusHours(resumeAt, 24));
     // The missed February cycle is not billed on top of the re-opened one.
-    expect(await h.store.getCycle('sub_1', 1)).toMatchObject({ dueAt: '2026-04-10T04:30:00.000Z', status: CycleStatus.Pending });
-    expect(await h.scheduler.listCycles('sub_1')).toHaveLength(2);
+    expect(await h.store.getCycle(SID, 1)).toMatchObject({ dueAt: '2026-04-10T04:30:00.000Z', status: CycleStatus.Pending });
+    expect(await h.scheduler.listCycles(SID)).toHaveLength(2);
   });
 
   it('skipFailedCycle skips the failed cycle and continues from the next cycle date', async () => {
     const h = makeHarness();
     await haltedSchedule(h);
     h.clock.set(plusHours(DUE, 60));
-    const resumed = await h.scheduler.resume('sub_1', { skipFailedCycle: true });
+    const resumed = await h.scheduler.resume(SID, { skipFailedCycle: true });
 
     expect(resumed).toMatchObject({ status: ScheduleStatus.Active, cycleIndex: 1, paidCycles: 0, nextChargeAt: '2026-02-15T04:30:00.000Z' });
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.Skipped);
-    expect((await h.store.getCycle('sub_1', 1))).toMatchObject({ status: CycleStatus.Pending, dueAt: '2026-02-15T04:30:00.000Z' });
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.Skipped);
+    expect((await h.store.getCycle(SID, 1))).toMatchObject({ status: CycleStatus.Pending, dueAt: '2026-02-15T04:30:00.000Z' });
     expect(h.events.some((e) => e.type === SchedulerEventType.CycleSkipped)).toBe(true);
 
     const callsBefore = h.provider.createCalls.length;
@@ -139,7 +140,7 @@ describe('resume of a halted schedule', () => {
     await haltedSchedule(late);
     const resumeAt = '2026-03-10T04:30:00.000Z';
     late.clock.set(resumeAt);
-    expect(await late.scheduler.resume('sub_1', { skipFailedCycle: true })).toMatchObject({
+    expect(await late.scheduler.resume(SID, { skipFailedCycle: true })).toMatchObject({
       anchorAt: resumeAt,
       anchorIndex: 1,
       nextChargeAt: resumeAt,
@@ -148,7 +149,7 @@ describe('resume of a halted schedule', () => {
     const dated = makeHarness();
     await haltedSchedule(dated);
     dated.clock.set(plusHours(DUE, 60));
-    const resumed = await dated.scheduler.resume('sub_1', { skipFailedCycle: true, nextChargeAt: '2026-02-20T04:30:00.000Z' });
+    const resumed = await dated.scheduler.resume(SID, { skipFailedCycle: true, nextChargeAt: '2026-02-20T04:30:00.000Z' });
     expect(resumed.nextChargeAt).toBe('2026-02-20T04:30:00.000Z');
   });
 
@@ -157,9 +158,9 @@ describe('resume of a halted schedule', () => {
     h.provider.createScript = [CreateBehaviour.Fail];
     await h.scheduler.register(registration({ totalCycles: 1 }));
     await h.tickAt(DUE);
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Halted);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Halted);
 
-    const resumed = await h.scheduler.resume('sub_1', { skipFailedCycle: true });
+    const resumed = await h.scheduler.resume(SID, { skipFailedCycle: true });
     expect(resumed).toMatchObject({ status: ScheduleStatus.Completed, statusReason: ScheduleStatusReason.FinalCycleSkipped });
     expect(resumed.nextActionAt).toBeUndefined();
   });
@@ -169,11 +170,11 @@ describe('resume of a halted schedule', () => {
     h.provider.createScript = [CreateBehaviour.Fail, CreateBehaviour.Scheduled];
     await h.scheduler.register(registration());
     await h.tickAt(plusHours(DUE, -24));
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Halted);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Halted);
 
     const resumeAt = plusHours(DUE, 5);
     h.clock.set(resumeAt);
-    await h.scheduler.resume('sub_1');
+    await h.scheduler.resume(SID);
     await h.tickAt(resumeAt);
     expect(h.provider.createCalls).toHaveLength(2);
     expect(h.provider.notifyCalls).toHaveLength(0);
@@ -185,11 +186,11 @@ describe('resume of a halted schedule', () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
     await h.scheduler.handleEvent(makeEvent({ type: EventType.SubscriptionHalted, subscriptionId: 'sub_1' }));
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Halted);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Halted);
 
-    const resumed = await h.scheduler.resume('sub_1');
+    const resumed = await h.scheduler.resume(SID);
     expect(resumed).toMatchObject({ status: ScheduleStatus.Active, cycleIndex: 0 });
-    expect((await h.store.getCycle('sub_1', 0))?.attempt).toBe(1);
+    expect((await h.store.getCycle(SID, 0))?.attempt).toBe(1);
     await h.tickAt(plusHours(DUE, -48));
     await h.tickAt(DUE);
     expect(h.provider.createCalls).toHaveLength(1);

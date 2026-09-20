@@ -39,6 +39,8 @@ export const ScheduleStatusReason = {
   AllCyclesCollected: 'all_cycles_collected',
   /** A halted schedule was resumed with `skipFailedCycle` and the skipped cycle was the last one. */
   FinalCycleSkipped: 'final_cycle_skipped',
+  /** The next due date falls on or after the mandate's end date, so there is nothing left to bill. */
+  MandateEnded: 'mandate_ended',
 } as const;
 export type ScheduleStatusReason = (typeof ScheduleStatusReason)[keyof typeof ScheduleStatusReason];
 
@@ -83,6 +85,7 @@ export const SchedulerEventType = {
   SchedulePaused: 'schedule.paused',
   ScheduleResumed: 'schedule.resumed',
   ScheduleCancelled: 'schedule.cancelled',
+  ScheduleUpdated: 'schedule.updated',
   ScheduleCompleted: 'schedule.completed',
   ScheduleHalted: 'schedule.halted',
   NotificationSent: 'notification.sent',
@@ -162,6 +165,9 @@ export type SchedulerIdPrefix = (typeof SchedulerIdPrefix)[keyof typeof Schedule
 export const ID_SEPARATOR = '_';
 /** Hex characters of the schedule-id hash used inside gateway ids (gateway ids are length-limited). */
 export const ID_HASH_LENGTH = 16;
+
+/** Separator between the provider and the key in a schedule id (see `scheduleIdFor`). */
+export const SCHEDULE_ID_SEPARATOR = ':';
 
 /** Keys the scheduler adds to the metadata of the charges it raises. */
 export const ChargeMetadataKey = {

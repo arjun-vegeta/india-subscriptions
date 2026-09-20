@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ChargeStatus, EventType } from '../../src/constants.js';
 import { CycleStatus, ScheduleStatus, SchedulerEventType } from '../../src/scheduler/index.js';
-import { CreateBehaviour, DUE, Style, T0, makeEvent, makeHarness, plusHours, registration } from './helpers.js';
+import { CreateBehaviour, DUE, Style, T0, makeEvent, makeHarness, plusHours, registration, SID} from './helpers.js';
 
 /**
  * Style B (Cashfree on-demand): the charge must be raised `leadHours` before the
@@ -26,7 +26,7 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     expect(h.provider.createCalls).toHaveLength(1);
     expect(h.provider.createCalls[0]).toMatchObject({ subscriptionId: 'sub_1', amount: 49900, scheduledAt: DUE });
 
-    const cycle = await h.store.getCycle('sub_1', 0);
+    const cycle = await h.store.getCycle(SID, 0);
     expect(cycle).toMatchObject({
       status: CycleStatus.AwaitingConfirmation,
       dueAt: DUE,
@@ -34,7 +34,7 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
       scheduledAt: DUE,
     });
     // The next debit date still reads as the due date while the charge waits at the gateway.
-    expect((await h.scheduler.get('sub_1'))?.nextChargeAt).toBe(DUE);
+    expect((await h.scheduler.get(SID))?.nextChargeAt).toBe(DUE);
   });
 
   it('pushes scheduledAt to now + lead when activated too late to make the due date', async () => {
@@ -47,7 +47,7 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     expect(h.provider.createCalls).toHaveLength(1);
     expect(h.provider.createCalls[0]!.scheduledAt).toBe(plusHours(lateStart, 24));
 
-    const cycle = await h.store.getCycle('sub_1', 0);
+    const cycle = await h.store.getCycle(SID, 0);
     // The contractual date is unchanged; the actual debit date is recorded separately.
     expect(cycle).toMatchObject({ dueAt: DUE, scheduledAt: plusHours(lateStart, 24) });
   });
@@ -71,7 +71,7 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
       expect(result.due).toBe(0);
     }
     expect(h.provider.getCalls).toHaveLength(0);
-    expect((await h.scheduler.get('sub_1'))?.nextActionAt).toBe(DUE);
+    expect((await h.scheduler.get(SID))?.nextActionAt).toBe(DUE);
 
     // On the debit date the gateway still says scheduled: ask again later, never re-charge.
     const onDue = await h.tickAt(DUE);
@@ -82,7 +82,7 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     const done = await h.tickAt(plusHours(DUE, 1));
     expect(done.succeeded).toBe(1);
     expect(h.provider.createCalls).toHaveLength(1);
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ paidCycles: 1, nextChargeAt: '2026-02-15T04:30:00.000Z' });
+    expect(await h.scheduler.get(SID)).toMatchObject({ paidCycles: 1, nextChargeAt: '2026-02-15T04:30:00.000Z' });
 
     // The next cycle is raised a day ahead of its own due date.
     await h.tickAt('2026-02-14T04:30:00.000Z');
@@ -100,9 +100,9 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     await h.scheduler.handleEvent(
       makeEvent({ type: EventType.SubscriptionCharged, subscriptionId: 'sub_1', charge: { chargeId, status: ChargeStatus.Succeeded } }),
     );
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
+    expect(await h.scheduler.get(SID)).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
     expect(h.provider.getCalls).toHaveLength(0);
-    expect((await h.store.getCycle('sub_1', 1))?.status).toBe(CycleStatus.Pending);
+    expect((await h.store.getCycle(SID, 1))?.status).toBe(CycleStatus.Pending);
   });
 
   it('retries after subscription.charge_failed with a new attempt id and scheduledAt = now + lead', async () => {
@@ -117,13 +117,13 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     await h.scheduler.handleEvent(
       makeEvent({ type: EventType.SubscriptionChargeFailed, subscriptionId: 'sub_1', charge: { chargeId: first, status: ChargeStatus.Failed } }),
     );
-    expect((await h.store.getCycle('sub_1', 0))).toMatchObject({ status: CycleStatus.Pending, attempt: 2 });
+    expect((await h.store.getCycle(SID, 0))).toMatchObject({ status: CycleStatus.Pending, attempt: 2 });
 
     await h.tickAt(failedAt);
     expect(h.provider.createCalls).toHaveLength(2);
     expect(h.provider.createCalls[1]!.chargeId).not.toBe(first);
     expect(h.provider.createCalls[1]!.scheduledAt).toBe(plusHours(failedAt, 24));
-    expect((await h.store.getCycle('sub_1', 0))).toMatchObject({ attempt: 2, dueAt: DUE, scheduledAt: plusHours(failedAt, 24) });
+    expect((await h.store.getCycle(SID, 0))).toMatchObject({ attempt: 2, dueAt: DUE, scheduledAt: plusHours(failedAt, 24) });
   });
 
   it('retries a charge the gateway fails when asked, through createCharge again', async () => {
@@ -147,7 +147,7 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     await h.scheduler.register(registration());
     await h.tickAt(plusHours(DUE, -24));
     expect(h.provider.createCalls).toHaveLength(2);
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Halted);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Halted);
   });
 
   it('keeps the in-flight charge when the schedule is cancelled, announces it, and records its outcome', async () => {
@@ -157,12 +157,12 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     await h.tickAt(plusHours(DUE, -24));
     const chargeId = h.provider.createCalls[0]!.chargeId;
 
-    const cancelled = await h.scheduler.cancel('sub_1');
+    const cancelled = await h.scheduler.cancel(SID);
     expect(cancelled.status).toBe(ScheduleStatus.Cancelled);
     expect(cancelled.nextActionAt).toBe(DUE); // still has a debit to look at
     const inFlight = h.events.find((e) => e.type === SchedulerEventType.ChargeInFlight);
-    expect(inFlight).toMatchObject({ scheduleId: 'sub_1', chargeId, cycleIndex: 0 });
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.AwaitingConfirmation);
+    expect(inFlight).toMatchObject({ scheduleId: SID, chargeId, cycleIndex: 0 });
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.AwaitingConfirmation);
 
     // Nothing is polled early, nothing new is raised.
     await h.tickAt(plusHours(DUE, -1));
@@ -172,9 +172,9 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     h.provider.settle(chargeId, ChargeStatus.Succeeded);
     await h.tickAt(DUE);
     expect(h.provider.getCalls).toHaveLength(1);
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ status: ScheduleStatus.Cancelled, paidCycles: 1 });
+    expect(await h.scheduler.get(SID)).toMatchObject({ status: ScheduleStatus.Cancelled, paidCycles: 1 });
     expect(h.events.some((e) => e.type === SchedulerEventType.ChargeSucceeded)).toBe(true);
-    expect(await h.scheduler.listCycles('sub_1')).toHaveLength(1);
+    expect(await h.scheduler.listCycles(SID)).toHaveLength(1);
     expect(h.provider.createCalls).toHaveLength(1);
   });
 
@@ -183,15 +183,15 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     h.provider.createScript = [CreateBehaviour.Scheduled];
     await h.scheduler.register(registration());
     await h.tickAt(plusHours(DUE, -24));
-    const paused = await h.scheduler.pause('sub_1');
+    const paused = await h.scheduler.pause(SID);
     expect(paused.status).toBe(ScheduleStatus.Paused);
     expect(h.events.some((e) => e.type === SchedulerEventType.ChargeInFlight)).toBe(true);
 
     h.provider.settle(h.provider.createCalls[0]!.chargeId, ChargeStatus.Succeeded);
     await h.tickAt(DUE);
     // Recorded, and the pointer moved on without creating a new cycle while paused.
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ status: ScheduleStatus.Paused, paidCycles: 1, cycleIndex: 1 });
-    expect(await h.scheduler.listCycles('sub_1')).toHaveLength(1);
+    expect(await h.scheduler.get(SID)).toMatchObject({ status: ScheduleStatus.Paused, paidCycles: 1, cycleIndex: 1 });
+    expect(await h.scheduler.listCycles(SID)).toHaveLength(1);
   });
 
   it('after a lost answer re-creates with the same charge id and never a date that is now too close', async () => {
@@ -216,7 +216,7 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     h.provider.createScript = [CreateBehaviour.Pending];
     await h.scheduler.register(registration());
     await h.tickAt(plusHours(DUE, -24));
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.AwaitingConfirmation);
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.AwaitingConfirmation);
   });
 
   it('a gateway with no lead raises the charge on the due date (style C), with no scheduledAt', async () => {
@@ -232,6 +232,6 @@ describe('charge raised in advance (Cashfree on-demand style)', () => {
     const h = advance({ startAt: T0 });
     h.provider.createScript = [CreateBehaviour.Scheduled];
     await h.scheduler.register(registration());
-    expect((await h.scheduler.get('sub_1'))?.nextActionAt).toBe(plusHours(DUE, -24));
+    expect((await h.scheduler.get(SID))?.nextActionAt).toBe(plusHours(DUE, -24));
   });
 });

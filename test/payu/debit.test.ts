@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ChargeKind, ChargeStatus, ErrorCode, PaymentMethod } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
-import { NOW, SALT, TEST_API_URL, apiRoute, expectedCommandHash, makeProvider, var1Of } from './helpers.js';
+import { SALT, TEST_API_URL, apiRoute, expectedCommandHash, makeProvider, var1Of } from './helpers.js';
 
 async function failure(run: () => Promise<unknown>): Promise<SubscriptionError> {
   try {
@@ -488,11 +488,5 @@ describe('getCharge', () => {
   it('a bad hash answer is AUTH', async () => {
     const { provider } = makeProvider([apiRoute({ status: 0, msg: 'Invalid Hash.' })]);
     expect((await failure(() => provider.getCharge(CARD_ID, 'chg_1'))).code).toBe(ErrorCode.Auth);
-  });
-});
-
-describe('time used by the debit mappings', () => {
-  it('the test clock is fixed', () => {
-    expect(NOW.toISOString()).toBe('2026-11-17T05:00:00.000Z');
   });
 });

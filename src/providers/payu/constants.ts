@@ -318,6 +318,18 @@ export const MANDATE_REVOKE_COMMAND: Record<PayUMandateMethod, PayUCommand> = {
   [PaymentMethod.Upi]: PayUCommand.UpiMandateRevoke,
 };
 
+/** `error` / `error_code` of a transaction without an error. */
+export const PAYU_NO_ERROR_CODE = 'E000';
+
+/** `error_Message` of a transaction without an error. */
+export const PAYU_NO_ERROR_MESSAGE = 'No Error';
+
+/** Stands in for a mandate or request id a webhook did not carry, inside a de-duplication id. */
+export const WEBHOOK_UNKNOWN_ID = 'unknown';
+
+/** The smallest consent amount PayU documents for cards and UPI: "min 1 INR (for Cards & UPI)" (paise). */
+export const PAYU_MIN_CONSENT_PAISE = 100;
+
 /** Envelope `status` of a successful postservice command. */
 export const PAYU_STATUS_OK = 1;
 export const PAYU_STATUS_FAILED = 0;

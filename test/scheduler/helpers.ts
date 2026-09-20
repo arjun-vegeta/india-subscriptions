@@ -23,9 +23,12 @@ import type {
   UpdateSubscriptionInput,
   WebhookRequest,
 } from '../../src/schemas.js';
-import { BillingScheduler, MemorySchedulerStore, type RegisterScheduleInput, type SchedulerEvent, type SchedulerOptions, type TickResult } from '../../src/scheduler/index.js';
+import { BillingScheduler, MemorySchedulerStore, scheduleIdFor, type RegisterScheduleInput, type SchedulerEvent, type SchedulerOptions, type TickResult } from '../../src/scheduler/index.js';
 
 export const HOUR = 60 * 60 * 1000;
+
+/** The default schedule id of `registration()`: the PayU subscription `sub_1`. */
+export const SID = scheduleIdFor(Provider.PayU, 'sub_1');
 
 /** The instant the fake clock starts at. */
 export const T0 = '2026-01-01T00:00:00.000Z';

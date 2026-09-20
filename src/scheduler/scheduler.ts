@@ -1,8 +1,8 @@
 import { ChargeStatus, DigestEncoding, ErrorCode, HashAlgorithm, type Provider } from '../constants.js';
 import { hash } from '../crypto.js';
-import { SubscriptionError, parseInput, unsupported } from '../errors.js';
+import { SubscriptionError, invalid, parseInput, unsupported } from '../errors.js';
 import type { SubscriptionProvider } from '../provider.js';
-import { PositivePaiseSchema, type Charge, type ChargeNotification, type SubscriptionEvent } from '../schemas.js';
+import { type Charge, type ChargeNotification, type SubscriptionEvent } from '../schemas.js';
 import { cycleStart, toDate, toIso } from '../time.js';
 import { EventType } from '../constants.js';
 import {
@@ -15,6 +15,7 @@ import {
   IN_FLIGHT_CYCLE_STATUSES,
   LOCK_POLL_INTERVAL_MS,
   MAX_STEPS_PER_SCHEDULE_PER_TICK,
+  SCHEDULE_ID_SEPARATOR,
   ScheduleStatus,
   ScheduleStatusReason,
   SchedulerEventType,
@@ -22,11 +23,17 @@ import {
 } from './constants.js';
 import {
   ActivateScheduleInputSchema,
+  CancelScheduleInputSchema,
+  PauseScheduleInputSchema,
   RegisterScheduleInputSchema,
   ResumeScheduleInputSchema,
   SchedulerConfigSchema,
   TickOptionsSchema,
+  UpdateScheduleInputSchema,
   type ActivateScheduleInput,
+  type CancelScheduleInput,
+  type PauseScheduleInput,
+  type UpdateScheduleInput,
   type CycleRecord,
   type RegisterScheduleInput,
   type ResumeScheduleInput,
@@ -141,6 +148,30 @@ export class BillingScheduler {
     return this.store.getSchedule(id);
   }
 
+  /**
+   * The one place that maps what a caller or a gateway event knows (a merchant
+   * reference, a gateway subscription id, in any order) to a schedule of THIS
+   * provider. Tries, for each key in turn: the provider-scoped schedule id
+   * (`scheduleIdFor`), then the stored gateway subscription id, then the bare key
+   * as a custom schedule id. A schedule of another provider is never returned.
+   */
+  async find(provider: Provider, ...keys: Array<string | undefined>): Promise<ScheduleRecord | undefined> {
+    const wanted = keys.filter((key): key is string => key !== undefined && key !== '');
+    for (const key of wanted) {
+      const scoped = await this.store.getSchedule(scheduleIdFor(provider, key));
+      if (scoped && scoped.provider === provider) return scoped;
+    }
+    for (const key of wanted) {
+      const bySubscription = await this.store.findBySubscriptionId(provider, key);
+      if (bySubscription && bySubscription.provider === provider) return bySubscription;
+    }
+    for (const key of wanted) {
+      const bare = await this.store.getSchedule(key);
+      if (bare && bare.provider === provider) return bare;
+    }
+    return undefined;
+  }
+
   /** The schedule currently using this gateway subscription id, or `undefined`. */
   findBySubscriptionId(provider: Provider, subscriptionId: string): Promise<ScheduleRecord | undefined> {
     return this.store.findBySubscriptionId(provider, subscriptionId);
@@ -156,7 +187,7 @@ export class BillingScheduler {
   // -------------------------------------------------------------------------
 
   /**
-   * Registers a schedule. The id defaults to `subscriptionId`. Registering the
+   * Registers a schedule. The id defaults to `scheduleIdFor(provider, reference ?? subscriptionId)`. Registering the
    * same id again with the same data returns the existing record; with different
    * data it throws `CONFLICT`. With `awaitingAuthorization` the schedule waits as
    * `pending_authorization` (ignored by `tick`) until {@link activate} or a
@@ -172,11 +203,16 @@ export class BillingScheduler {
         'the gateway raises the debits itself, so there is nothing for the scheduler to do',
       );
     }
-    const id = parsed.id ?? parsed.subscriptionId;
+    const id = parsed.id ?? scheduleIdFor(parsed.provider, parsed.reference ?? parsed.subscriptionId);
     const firstChargeAt = toIso(toDate(parsed.firstChargeAt, 'firstChargeAt'));
+    const mandateEndsAt =
+      parsed.mandateEndsAt !== undefined ? toIso(toDate(parsed.mandateEndsAt, 'mandateEndsAt')) : undefined;
+    if (mandateEndsAt !== undefined && Date.parse(mandateEndsAt) <= Date.parse(firstChargeAt)) {
+      throw invalid('mandateEndsAt must be after firstChargeAt: there would be nothing to bill', parsed.provider);
+    }
     const fingerprint = hash(
       HashAlgorithm.Sha256,
-      stableStringify({ ...parsed, id, firstChargeAt }),
+      stableStringify({ ...parsed, id, firstChargeAt, mandateEndsAt }),
       DigestEncoding.Hex,
     );
 
@@ -214,15 +250,18 @@ export class BillingScheduler {
         interval: parsed.interval,
         policy,
         fingerprint,
+        firstChargeAt,
         anchorAt: firstChargeAt,
         anchorIndex: 0,
         cycleIndex: 0,
         paidCycles: 0,
+        retrying: false,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
       if (parsed.reference !== undefined) schedule.reference = parsed.reference;
       if (parsed.totalCycles !== undefined) schedule.totalCycles = parsed.totalCycles;
+      if (mandateEndsAt !== undefined) schedule.mandateEndsAt = mandateEndsAt;
       if (parsed.customer !== undefined) schedule.customer = parsed.customer;
       if (parsed.metadata !== undefined) schedule.metadata = parsed.metadata;
 
@@ -244,16 +283,26 @@ export class BillingScheduler {
    * replaces the stored gateway id (the schedule's own `id` is unchanged);
    * `firstChargeAt` replaces the anchor, and without it a past anchor becomes
    * the activation instant. Activating an active schedule with the same data is
-   * a no-op; on any other status it throws `CONFLICT`.
+   * a no-op. A schedule cancelled by its authorisation timeout is revived (the
+   * customer authorised after all, so the mandate is live); on any other status
+   * it throws `CONFLICT`.
    */
   async activate(id: string, input: ActivateScheduleInput = {}): Promise<ScheduleRecord> {
     const parsed = parseInput(ActivateScheduleInputSchema, input, 'activation');
     return this.mutate(id, (schedule) => this.activateLocked(schedule, parsed));
   }
 
-  /** Stops billing without ending the schedule. A debit already in flight is still reconciled. */
-  pause(id: string): Promise<ScheduleRecord> {
-    return this.mutate(id, (schedule) => this.pauseLocked(schedule, ScheduleStatusReason.PausedByMerchant));
+  /**
+   * Stops billing without ending the schedule. A debit already in flight is
+   * still reconciled. With `resumeAt` the schedule resumes by itself on the first
+   * `tick()` at or after that instant; pausing an already paused schedule only
+   * replaces `resumeAt`.
+   */
+  async pause(id: string, input: PauseScheduleInput = {}): Promise<ScheduleRecord> {
+    const parsed = parseInput(PauseScheduleInputSchema, input, 'pause options');
+    return this.mutate(id, (schedule) =>
+      this.pauseLocked(schedule, ScheduleStatusReason.PausedByMerchant, parsed.resumeAt),
+    );
   }
 
   /**
@@ -276,24 +325,37 @@ export class BillingScheduler {
   /**
    * Cancels the schedule (also while it awaits authorisation). No further
    * notifications or debits; a debit already in flight is still reconciled.
-   * Idempotent. Throws `CONFLICT` for a completed schedule.
+   * Idempotent. Throws `CONFLICT` for a completed schedule. `reason` records why
+   * (default: cancelled by the merchant).
    */
-  cancel(id: string): Promise<ScheduleRecord> {
-    return this.mutate(id, (schedule) => this.cancelLocked(schedule, ScheduleStatusReason.CancelledByMerchant));
+  cancel(id: string, input: CancelScheduleInput = {}): Promise<ScheduleRecord> {
+    const parsed = parseInput(CancelScheduleInputSchema, input, 'cancel options');
+    return this.mutate(id, (schedule) =>
+      this.cancelLocked(schedule, parsed.reason ?? ScheduleStatusReason.CancelledByMerchant),
+    );
   }
 
-  /** Sets the amount (paise) for cycles that have not been notified yet. */
-  async updateAmount(id: string, amount: number): Promise<ScheduleRecord> {
-    const parsed = parseInput(PositivePaiseSchema, amount, 'amount');
-    return this.mutate(id, async (schedule) => {
-      if (this.isTerminal(schedule)) {
-        throw new SubscriptionError(ErrorCode.Conflict, `Schedule "${id}" is ${schedule.status}; its amount cannot change`);
-      }
-      schedule.amount = parsed;
-      schedule.updatedAt = toIso(this.now());
-      await this.store.saveSchedule(schedule);
-      return schedule;
-    });
+  /**
+   * Changes the billing terms of a live schedule; every field is applied or the
+   * call fails, nothing is ignored.
+   *
+   * - `amount`: for cycles that have not been notified yet.
+   * - `nextChargeAt`: moves the current cycle's debit (or the next one, when a
+   *   debit is already in flight); later cycles follow. A notice already sent for
+   *   the old date is redone.
+   * - `remainingCycles`: sets `totalCycles` to the cycles already paid plus this.
+   * - `mandateEndsAt`: nothing is notified or debited on or after it.
+   *
+   * Cancelled and completed schedules throw `CONFLICT`.
+   */
+  async update(id: string, input: UpdateScheduleInput): Promise<ScheduleRecord> {
+    const parsed = parseInput(UpdateScheduleInputSchema, input, 'schedule update');
+    return this.mutate(id, (schedule) => this.updateLocked(schedule, parsed));
+  }
+
+  /** Sets the amount (paise) for cycles that have not been notified yet. Same as `update(id, { amount })`. */
+  updateAmount(id: string, amount: number): Promise<ScheduleRecord> {
+    return this.update(id, { amount });
   }
 
   // -------------------------------------------------------------------------
@@ -355,6 +417,13 @@ export class BillingScheduler {
       await this.expireIfUnauthorized(schedule, result);
       return;
     }
+    if (
+      schedule.status === ScheduleStatus.Paused &&
+      schedule.resumeAt !== undefined &&
+      Date.parse(schedule.resumeAt) <= this.now().getTime()
+    ) {
+      await this.resumeLocked(schedule, {});
+    }
 
     for (let steps = 0; steps < MAX_STEPS_PER_SCHEDULE_PER_TICK; steps++) {
       const cycle = await this.currentCycle(schedule, schedule.status === ScheduleStatus.Active);
@@ -410,6 +479,9 @@ export class BillingScheduler {
     const now = this.now();
     const provider = this.providerFor(schedule.provider);
 
+    if (cycle.status === CycleStatus.Pending && this.mandateEnded(schedule, cycle.attemptDueAt)) {
+      return this.endAtMandate(schedule, cycle, result);
+    }
     if (cycle.status === CycleStatus.Pending) {
       const timing = this.timing(schedule, provider);
       if (now.getTime() < this.actionTime(cycle, schedule.policy, timing)) return false;
@@ -705,6 +777,8 @@ export class BillingScheduler {
     const nowIso = toIso(now);
     schedule.paidCycles += 1;
     schedule.cycleIndex = cycle.index + 1;
+    schedule.retrying = false;
+    delete schedule.lastFailure;
     schedule.updatedAt = nowIso;
 
     const open = schedule.status === ScheduleStatus.Active || schedule.status === ScheduleStatus.Paused;
@@ -724,11 +798,61 @@ export class BillingScheduler {
       await this.store.saveSchedule(schedule);
       return false;
     }
+    if (this.mandateEnded(schedule, toIso(this.dueAt(schedule, schedule.cycleIndex)))) {
+      await this.completeAtMandateEnd(schedule, undefined, result);
+      return false;
+    }
     const next = this.newCycle(schedule, schedule.cycleIndex, now);
     await this.store.saveCycle(next);
     this.plan(schedule, next, now);
     await this.store.saveSchedule(schedule);
     return true;
+  }
+
+  /** True when a due date falls on or after the mandate's end date: no notice and no debit may be made for it. */
+  private mandateEnded(schedule: ScheduleRecord, dueAt: string): boolean {
+    return schedule.mandateEndsAt !== undefined && Date.parse(dueAt) >= Date.parse(schedule.mandateEndsAt);
+  }
+
+  /** The schedule has nothing left to bill because the next due date is beyond the mandate. Skips an unbilled cycle. */
+  private async completeAtMandateEnd(
+    schedule: ScheduleRecord,
+    cycle: CycleRecord | undefined,
+    result?: TickResult,
+  ): Promise<void> {
+    const now = this.now();
+    const nowIso = toIso(now);
+    if (cycle && (cycle.status === CycleStatus.Pending || cycle.status === CycleStatus.Notified)) {
+      cycle.status = CycleStatus.Skipped;
+      cycle.completedAt = nowIso;
+      cycle.updatedAt = nowIso;
+      await this.store.saveCycle(cycle);
+    }
+    schedule.status = ScheduleStatus.Completed;
+    schedule.statusReason = ScheduleStatusReason.MandateEnded;
+    schedule.endedAt = nowIso;
+    schedule.updatedAt = nowIso;
+    delete schedule.resumeAt;
+    this.plan(schedule, undefined, now);
+    await this.store.saveSchedule(schedule);
+    if (result) result.completed += 1;
+    await this.emit(SchedulerEventType.ScheduleCompleted, schedule, { reason: ScheduleStatusReason.MandateEnded });
+  }
+
+  /** A pending cycle whose attempt would fall on or after the mandate end: complete, or halt when it was a retry. */
+  private async endAtMandate(schedule: ScheduleRecord, cycle: CycleRecord, result: TickResult): Promise<boolean> {
+    if (cycle.attempt > 1) {
+      const nowIso = toIso(this.now());
+      cycle.status = CycleStatus.Failed;
+      cycle.completedAt = nowIso;
+      cycle.updatedAt = nowIso;
+      await this.store.saveCycle(cycle);
+      await this.emit(SchedulerEventType.CycleFailed, schedule, this.cycleFields(cycle));
+      await this.halt(schedule, ScheduleStatusReason.RetriesExhausted, result);
+      return false;
+    }
+    await this.completeAtMandateEnd(schedule, cycle, result);
+    return false;
   }
 
   private async settleFailure(
@@ -748,6 +872,7 @@ export class BillingScheduler {
       ...(failure.reason !== undefined ? { failureReason: failure.reason } : {}),
     });
     result.failed += 1;
+    schedule.lastFailure = { code: failure.code, ...(failure.reason !== undefined ? { reason: failure.reason } : {}), at: nowIso };
     const failedAttempt = cycle.attempt;
     const failedChargeId = cycle.chargeId;
 
@@ -777,6 +902,7 @@ export class BillingScheduler {
 
     // Retry: a new attempt number (so a new charge id) after the retry interval, with a fresh notification.
     this.clearAttemptState(cycle, false);
+    schedule.retrying = true;
     cycle.status = CycleStatus.Pending;
     cycle.attempt = failedAttempt + 1;
     cycle.attemptDueAt = toIso(new Date(now.getTime() + schedule.policy.retryIntervalHours * HOUR_MS));
@@ -816,8 +942,8 @@ export class BillingScheduler {
    * same per-schedule lock, waiting up to `lockWaitMs` before throwing
    * `CONFLICT` so the gateway redelivers. Events that match no schedule are ignored.
    *
-   * The schedule is found by `event.subscription.reference` or `event.subscriptionId`
-   * as a schedule id, or by `event.subscriptionId` as a gateway subscription id.
+   * The schedule of the event's provider is found with {@link BillingScheduler.find}
+   * from `event.subscription.reference` and `event.subscriptionId`.
    * Handled: authorised/activated (activates a pending schedule, adopting the
    * event's subscription id), authorisation failed, expired, cancelled, paused,
    * halted, charged and charge failed (matched to the in-flight debit by
@@ -834,7 +960,7 @@ export class BillingScheduler {
       switch (event.type) {
         case EventType.SubscriptionAuthorized:
         case EventType.SubscriptionActivated:
-          if (schedule.status === ScheduleStatus.PendingAuthorization) {
+          if (awaitsActivation(schedule)) {
             const subscriptionId = event.subscriptionId ?? event.subscription?.id;
             await this.activateLocked(schedule, subscriptionId !== undefined ? { subscriptionId } : {});
           }
@@ -876,20 +1002,9 @@ export class BillingScheduler {
     });
   }
 
-  private async locate(event: SubscriptionEvent): Promise<ScheduleRecord | undefined> {
+  private locate(event: SubscriptionEvent): Promise<ScheduleRecord | undefined> {
     const subscriptionId = event.subscriptionId ?? event.subscription?.id ?? event.charge?.subscriptionId;
-    const byId = [event.subscription?.reference, subscriptionId];
-    for (const id of byId.slice(0, 1)) {
-      const schedule = id ? await this.store.getSchedule(id) : undefined;
-      if (schedule && schedule.provider === event.provider) return schedule;
-    }
-    if (subscriptionId) {
-      const bySubscription = await this.store.findBySubscriptionId(event.provider, subscriptionId);
-      if (bySubscription) return bySubscription;
-      const bySchedule = await this.store.getSchedule(subscriptionId);
-      if (bySchedule && bySchedule.provider === event.provider) return bySchedule;
-    }
-    return undefined;
+    return this.find(event.provider, event.subscription?.reference, subscriptionId);
   }
 
   private async applyChargeEvent(
@@ -936,7 +1051,7 @@ export class BillingScheduler {
         { provider: schedule.provider },
       );
     }
-    if (schedule.status !== ScheduleStatus.PendingAuthorization) {
+    if (!awaitsActivation(schedule)) {
       throw new SubscriptionError(
         ErrorCode.Conflict,
         `Schedule "${schedule.id}" is ${schedule.status} and cannot be activated`,
@@ -951,11 +1066,20 @@ export class BillingScheduler {
     else if (Date.parse(schedule.anchorAt) <= now.getTime()) schedule.anchorAt = nowIso;
     schedule.anchorIndex = 0;
     schedule.cycleIndex = 0;
+    schedule.firstChargeAt = schedule.anchorAt;
+    schedule.retrying = false;
+    delete schedule.lastFailure;
     schedule.status = ScheduleStatus.Active;
     delete schedule.statusReason;
+    delete schedule.endedAt;
     schedule.activatedAt = nowIso;
     schedule.updatedAt = nowIso;
 
+    if (this.mandateEnded(schedule, schedule.anchorAt)) {
+      // The customer authorised so late that the first debit would fall beyond the mandate: nothing to bill.
+      await this.completeAtMandateEnd(schedule, undefined);
+      return schedule;
+    }
     const cycle = this.newCycle(schedule, 0, now);
     await this.store.saveCycle(cycle);
     this.plan(schedule, cycle, now);
@@ -964,8 +1088,27 @@ export class BillingScheduler {
     return schedule;
   }
 
-  private async pauseLocked(schedule: ScheduleRecord, reason: ScheduleStatusReason): Promise<ScheduleRecord> {
-    if (schedule.status === ScheduleStatus.Paused) return schedule;
+  private async pauseLocked(
+    schedule: ScheduleRecord,
+    reason: ScheduleStatusReason,
+    resumeAt?: string,
+  ): Promise<ScheduleRecord> {
+    const now = this.now();
+    let resumeAtIso: string | undefined;
+    if (resumeAt !== undefined) {
+      const at = toDate(resumeAt, 'resumeAt');
+      if (at.getTime() <= now.getTime()) throw invalid('resumeAt must be in the future');
+      resumeAtIso = toIso(at);
+    }
+    if (schedule.status === ScheduleStatus.Paused) {
+      if (resumeAtIso !== undefined && resumeAtIso !== schedule.resumeAt) {
+        schedule.resumeAt = resumeAtIso;
+        schedule.updatedAt = toIso(now);
+        this.plan(schedule, await this.store.getCycle(schedule.id, schedule.cycleIndex), now);
+        await this.store.saveSchedule(schedule);
+      }
+      return schedule;
+    }
     if (schedule.status !== ScheduleStatus.Active) {
       throw new SubscriptionError(
         ErrorCode.Conflict,
@@ -973,9 +1116,10 @@ export class BillingScheduler {
         { provider: schedule.provider },
       );
     }
-    const now = this.now();
     schedule.status = ScheduleStatus.Paused;
     schedule.statusReason = reason;
+    if (resumeAtIso !== undefined) schedule.resumeAt = resumeAtIso;
+    else delete schedule.resumeAt;
     schedule.updatedAt = toIso(now);
     // A debit already in flight keeps being reconciled while paused.
     const cycle = await this.store.getCycle(schedule.id, schedule.cycleIndex);
@@ -1024,25 +1168,19 @@ export class BillingScheduler {
       }
     }
 
-    if (newDue) {
-      schedule.anchorAt = toIso(newDue);
-      schedule.anchorIndex = targetIndex;
-      if (cycle && !inFlight && (cycle.status === CycleStatus.Pending || cycle.status === CycleStatus.Notified)) {
-        cycle.dueAt = schedule.anchorAt;
-        cycle.attemptDueAt = schedule.anchorAt;
-        if (cycle.status === CycleStatus.Notified) {
-          // The customer was told another debit date: that notice no longer holds.
-          this.clearNotification(cycle, true);
-          cycle.status = CycleStatus.Pending;
-        }
-        cycle.updatedAt = nowIso;
-        await this.store.saveCycle(cycle);
-      }
-    }
+    if (newDue) await this.applyAnchor(schedule, cycle, targetIndex, inFlight, newDue, now);
     schedule.status = ScheduleStatus.Active;
     delete schedule.statusReason;
     delete schedule.endedAt;
+    delete schedule.resumeAt;
     schedule.updatedAt = nowIso;
+    if (!exhausted && !inFlight) {
+      const dueNow = cycle ? cycle.attemptDueAt : toIso(this.dueAt(schedule, targetIndex));
+      if (this.mandateEnded(schedule, dueNow)) {
+        await this.completeAtMandateEnd(schedule, cycle);
+        return schedule;
+      }
+    }
     if (!cycle) {
       cycle = this.newCycle(schedule, schedule.cycleIndex, now);
       await this.store.saveCycle(cycle);
@@ -1050,6 +1188,88 @@ export class BillingScheduler {
     this.plan(schedule, cycle, now);
     await this.store.saveSchedule(schedule);
     await this.emit(SchedulerEventType.ScheduleResumed, schedule);
+    return schedule;
+  }
+
+  /**
+   * Moves the debit date to `newDue`: the current cycle's, or the one after it when a debit is already in
+   * flight. A pre-debit notice already sent for the old date no longer holds and is redone.
+   */
+  private async applyAnchor(
+    schedule: ScheduleRecord,
+    cycle: CycleRecord | undefined,
+    targetIndex: number,
+    inFlight: boolean,
+    newDue: Date,
+    now: Date,
+  ): Promise<void> {
+    schedule.anchorAt = toIso(newDue);
+    schedule.anchorIndex = targetIndex;
+    if (targetIndex === 0) schedule.firstChargeAt = schedule.anchorAt;
+    if (cycle && !inFlight && (cycle.status === CycleStatus.Pending || cycle.status === CycleStatus.Notified)) {
+      cycle.dueAt = schedule.anchorAt;
+      cycle.attemptDueAt = schedule.anchorAt;
+      if (cycle.status === CycleStatus.Notified) {
+        this.clearNotification(cycle, true);
+        cycle.status = CycleStatus.Pending;
+      }
+      cycle.updatedAt = toIso(now);
+      await this.store.saveCycle(cycle);
+    }
+  }
+
+  private async updateLocked(schedule: ScheduleRecord, input: UpdateScheduleInput): Promise<ScheduleRecord> {
+    if (schedule.status === ScheduleStatus.Cancelled || schedule.status === ScheduleStatus.Completed) {
+      throw new SubscriptionError(
+        ErrorCode.Conflict,
+        `Schedule "${schedule.id}" is ${schedule.status}; its terms cannot change`,
+        { provider: schedule.provider },
+      );
+    }
+    const now = this.now();
+    const nowIso = toIso(now);
+    let cycle = await this.store.getCycle(schedule.id, schedule.cycleIndex);
+    const inFlight = cycle !== undefined && IN_FLIGHT_CYCLE_STATUSES.includes(cycle.status);
+
+    let newDue: Date | undefined;
+    let targetIndex = inFlight ? schedule.cycleIndex + 1 : schedule.cycleIndex;
+    if (input.nextChargeAt !== undefined) {
+      newDue = toDate(input.nextChargeAt, 'nextChargeAt');
+      if (schedule.status === ScheduleStatus.Halted || cycle?.status === CycleStatus.Failed) {
+        throw new SubscriptionError(
+          ErrorCode.Conflict,
+          `Schedule "${schedule.id}" is halted; resume it with the new nextChargeAt instead`,
+          { provider: schedule.provider },
+        );
+      }
+      const total = input.remainingCycles !== undefined ? schedule.cycleIndex + input.remainingCycles : schedule.totalCycles;
+      if (total !== undefined && targetIndex >= total) {
+        throw new SubscriptionError(
+          ErrorCode.Conflict,
+          `Schedule "${schedule.id}" has no further cycle to move: its last debit is already in flight`,
+          { provider: schedule.provider },
+        );
+      }
+    }
+    if (input.remainingCycles !== undefined && schedule.status === ScheduleStatus.Halted) {
+      // A halted schedule keeps its failed cycle as the current one; the count applies from there.
+      targetIndex = schedule.cycleIndex;
+    }
+
+    if (input.amount !== undefined) schedule.amount = input.amount;
+    if (input.remainingCycles !== undefined) schedule.totalCycles = schedule.cycleIndex + input.remainingCycles;
+    if (input.mandateEndsAt !== undefined) schedule.mandateEndsAt = toIso(toDate(input.mandateEndsAt, 'mandateEndsAt'));
+    if (newDue) await this.applyAnchor(schedule, cycle, targetIndex, inFlight, newDue, now);
+    schedule.updatedAt = nowIso;
+
+    if (schedule.status === ScheduleStatus.Active && cycle && !inFlight && this.mandateEnded(schedule, cycle.attemptDueAt)) {
+      await this.completeAtMandateEnd(schedule, cycle);
+      return schedule;
+    }
+    if (schedule.status === ScheduleStatus.PendingAuthorization) cycle = undefined;
+    this.plan(schedule, cycle, now);
+    await this.store.saveSchedule(schedule);
+    await this.emit(SchedulerEventType.ScheduleUpdated, schedule);
     return schedule;
   }
 
@@ -1097,6 +1317,8 @@ export class BillingScheduler {
         schedule.anchorAt = toIso(anchor);
         schedule.anchorIndex = nextIndex;
       }
+      schedule.retrying = false;
+      delete schedule.lastFailure;
       current = this.newCycle(schedule, nextIndex, now);
     } else {
       this.clearAttemptState(cycle, false);
@@ -1109,6 +1331,7 @@ export class BillingScheduler {
       if (anchor) {
         schedule.anchorAt = toIso(anchor);
         schedule.anchorIndex = cycle.index;
+        if (cycle.index === 0) schedule.firstChargeAt = schedule.anchorAt;
         cycle.dueAt = schedule.anchorAt;
         cycle.attemptDueAt = schedule.anchorAt;
       } else {
@@ -1192,6 +1415,8 @@ export class BillingScheduler {
         nextAction = cycle.scheduledAt;
       }
       if (schedule.status === ScheduleStatus.Active) nextCharge = cycle.attemptDueAt;
+    } else if (schedule.status === ScheduleStatus.Paused) {
+      if (schedule.resumeAt !== undefined) nextAction = schedule.resumeAt;
     } else if (schedule.status === ScheduleStatus.PendingAuthorization) {
       const timeout = schedule.policy.authorizationTimeoutHours;
       if (timeout !== undefined) nextAction = toIso(new Date(Date.parse(schedule.createdAt) + timeout * HOUR_MS));
@@ -1330,7 +1555,8 @@ export class BillingScheduler {
   // Plumbing
   // -------------------------------------------------------------------------
 
-  private now(): Date {
+  /** The scheduler's clock: the instant every decision in this scheduler is made against. */
+  now(): Date {
     return this.clock();
   }
 
@@ -1440,6 +1666,27 @@ export class BillingScheduler {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The default schedule id: provider-scoped, so two gateways can use the same
+ * merchant reference (or happen to issue the same subscription id) without their
+ * schedules ever colliding or being mistaken for one another.
+ */
+export function scheduleIdFor(provider: Provider, referenceOrSubscriptionId: string): string {
+  return `${provider}${SCHEDULE_ID_SEPARATOR}${referenceOrSubscriptionId}`;
+}
+
+/**
+ * True when activating the schedule is meaningful: it still awaits the
+ * customer's authorisation, or it was cancelled only because the authorisation
+ * timeout passed (the customer authorised after all, so the mandate is live).
+ */
+export function awaitsActivation(schedule: ScheduleRecord): boolean {
+  return (
+    schedule.status === ScheduleStatus.PendingAuthorization ||
+    (schedule.status === ScheduleStatus.Cancelled && schedule.statusReason === ScheduleStatusReason.AuthorizationTimeout)
+  );
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

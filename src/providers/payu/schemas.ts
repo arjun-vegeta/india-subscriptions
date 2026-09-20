@@ -312,8 +312,20 @@ export type PayURefundResponse = z.output<typeof PayURefundResponseSchema>;
 // Webhooks [§10]
 // ---------------------------------------------------------------------------
 
+/** A JSON scalar kept as PayU sent it: a hash may cover `101` or `101.00`, which only the original type tells apart. */
+const RawScalarSchema = z.union([z.string(), z.number()]);
+
+/** Just enough of a JSON webhook to tell which kind it is, before its own schema is applied. */
+export const PayUWebhookSniffSchema = z.looseObject({
+  action: z.string().nullish(),
+  notificationType: z.string().nullish(),
+  statusCode: z.union([z.number(), z.string()]).nullish(),
+  hash: z.unknown().optional(),
+});
+export type PayUWebhookSniff = z.output<typeof PayUWebhookSniffSchema>;
+
 const MandateSiDetailsSchema = z.looseObject({
-  billingAmount: OptionalTextSchema,
+  billingAmount: RawScalarSchema.nullish(),
   paymentStartDate: z.string().nullish(),
   paymentEndDate: z.string().nullish(),
 });
@@ -345,7 +357,7 @@ export const PayUUpiMandateWebhookSchema = z.looseObject({
   authPayuId: OptionalTextSchema,
   action: z.string(),
   dateTime: z.string().nullish(),
-  amount: OptionalTextSchema,
+  amount: RawScalarSchema.nullish(),
   endDate: z.string().nullish(),
   mandateNumber: z.string().nullish(),
   key: OptionalTextSchema,

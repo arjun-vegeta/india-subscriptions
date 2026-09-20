@@ -51,6 +51,8 @@ import {
   PAYU_FREE_TRIAL_CONSENT_PAISE,
   PAYU_MANDATE_METHODS,
   PAYU_NONE_FETCHED_PATTERN,
+  PAYU_NO_ERROR_CODE,
+  PAYU_NO_ERROR_MESSAGE,
   PAYU_NOT_FOUND,
   PAYU_STATUS_OK,
   PRODUCTINFO_MAX_LENGTH,
@@ -69,6 +71,7 @@ import {
   UNKNOWN_CHARGE_STATUS,
   UNKNOWN_MANDATE_STATUS,
   UPI_MANDATE_STATUS,
+  WEBHOOK_UNKNOWN_ID,
   type PayUMandateMethod,
 } from './constants.js';
 import type {
@@ -439,7 +442,7 @@ export function evaluateConsent(response: PayUPaymentResponse): ConsentOutcome {
     amount: amountPaise(response.amount, 'a consent amount'),
     currency: Currency.INR,
     ...(mapped.status === ChargeStatus.Succeeded ? paidAt(response.addedon) : {}),
-    ...(failed && errorCode !== undefined && errorCode !== 'E000' ? { failureCode: errorCode } : {}),
+    ...(failed && errorCode !== undefined && errorCode !== PAYU_NO_ERROR_CODE ? { failureCode: errorCode } : {}),
     ...(failed ? failureReason(response.error_Message, response.field9) : {}),
     ...(method !== undefined ? { paymentMethod: method } : {}),
     raw: response,
@@ -456,7 +459,7 @@ function paidAt(addedon: string | null | undefined): { paidAt?: string } {
 function failureReason(...candidates: (string | null | undefined)[]): { failureReason?: string } {
   for (const candidate of candidates) {
     const text = present(candidate);
-    if (text !== undefined && text.toLowerCase() !== 'no error') return { failureReason: text };
+    if (text !== undefined && text.toLowerCase() !== PAYU_NO_ERROR_MESSAGE.toLowerCase()) return { failureReason: text };
   }
   return {};
 }
@@ -638,7 +641,7 @@ export function mapVerifiedTransaction(input: {
     amount,
     currency: Currency.INR,
     ...(mapped.status === ChargeStatus.Succeeded ? paidAt(tx.addedon) : {}),
-    ...(failed && code !== undefined && code !== 'E000' ? { failureCode: code } : {}),
+    ...(failed && code !== undefined && code !== PAYU_NO_ERROR_CODE ? { failureCode: code } : {}),
     ...(failed ? failureReason(tx.error_Message, tx.field9) : {}),
     paymentMethod: input.method,
     raw: tx,
@@ -793,7 +796,7 @@ function recurringChargeFromWebhook(
     amount: amountPaise(response.amount, 'a debit amount'),
     currency: Currency.INR,
     ...(mapped.status === ChargeStatus.Succeeded ? paidAt(response.addedon) : {}),
-    ...(failed && code !== undefined && code !== 'E000' ? { failureCode: code } : {}),
+    ...(failed && code !== undefined && code !== PAYU_NO_ERROR_CODE ? { failureCode: code } : {}),
     ...(failed ? failureReason(response.error_Message, response.field9) : {}),
     raw: response,
   };
@@ -802,7 +805,7 @@ function recurringChargeFromWebhook(
 function mandateSubscription(
   method: PayUMandateMethod,
   mandateId: string,
-  fields: { status: string; ceiling?: string | null; end?: string | null; start?: string | null; reference?: undefined },
+  fields: { status: string; ceiling?: string | number | null; end?: string | null; start?: string | null },
   raw: unknown,
 ): Subscription {
   const ceiling = rupeesToPaise(fields.ceiling);
@@ -838,7 +841,7 @@ export function mapCardMandateWebhook(body: PayUCardMandateWebhook): Subscriptio
       : undefined;
   const occurredAt = parsePayUDate(body.eventDate);
   return baseEvent(
-    `${mandateId ?? 'unknown'}:${body.notificationType}:${body.eventDate ?? ''}`,
+    `${mandateId ?? WEBHOOK_UNKNOWN_ID}:${body.notificationType}:${body.eventDate ?? ''}`,
     type,
     body.notificationType,
     body,
@@ -863,7 +866,7 @@ export function mapUpiMandateWebhook(body: PayUUpiMandateWebhook): SubscriptionE
         )
       : undefined;
   const occurredAt = parsePayUDate(body.dateTime);
-  return baseEvent(`${mandateId ?? 'unknown'}:${body.action}:${body.dateTime ?? ''}`, type, body.action, body, {
+  return baseEvent(`${mandateId ?? WEBHOOK_UNKNOWN_ID}:${body.action}:${body.dateTime ?? ''}`, type, body.action, body, {
     ...(occurredAt !== undefined ? { occurredAt } : {}),
     ...(subscription ? { subscriptionId: subscription.id, subscription } : {}),
   });
@@ -882,7 +885,7 @@ export function mapEnachCancellationWebhook(body: PayUEnachCancellationWebhook, 
   const subscription =
     mandateId !== undefined ? mandateSubscription(PaymentMethod.ENach, mandateId, { status: body.status }, body) : undefined;
   return baseEvent(
-    `${mandateId ?? 'unknown'}:${body.notificationType}:${body.status}`,
+    `${mandateId ?? WEBHOOK_UNKNOWN_ID}:${body.notificationType}:${body.status}`,
     trusted && cancelled ? EventType.SubscriptionCancelled : EventType.Unknown,
     body.notificationType,
     body,
@@ -892,8 +895,8 @@ export function mapEnachCancellationWebhook(body: PayUEnachCancellationWebhook, 
 
 /** The refund callback. Unsigned, so only a `refund.*` event when the caller opted in. */
 export function mapRefundWebhook(body: PayURefundWebhook, trusted: boolean): SubscriptionEvent {
-  const requestId = present(body.request_id) ?? present(body.token) ?? 'unknown';
-  const chargeId = present(body.mihpayid) ?? present(body.merchantTxnId) ?? 'unknown';
+  const requestId = present(body.request_id) ?? present(body.token) ?? WEBHOOK_UNKNOWN_ID;
+  const chargeId = present(body.mihpayid) ?? present(body.merchantTxnId) ?? WEBHOOK_UNKNOWN_ID;
   const success = normalizeKey(body.status) === PayUWebhookRefundStatus.Success;
   const failure = normalizeKey(body.status) === PayUWebhookRefundStatus.Failure;
   const paise = rupeesToPaise(body.amt);

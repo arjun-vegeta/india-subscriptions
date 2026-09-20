@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ErrorCode, Provider, type ErrorCode as ErrorCodeType } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
-import { CycleStatus, MemorySchedulerStore } from '../../src/scheduler/index.js';
-import { CreateBehaviour, DUE, Style, makeHarness, plusHours, registration } from './helpers.js';
+import { CycleStatus, MemorySchedulerStore, scheduleIdFor } from '../../src/scheduler/index.js';
+import { CreateBehaviour, DUE, Style, makeHarness, plusHours, registration, SID} from './helpers.js';
 
 const onDue = () => makeHarness({ style: Style.OnDue });
 
@@ -16,7 +16,7 @@ describe('unknown exceptions are never a definite failure', () => {
     expect(first.failed).toBe(0);
     expect(first.errors).toHaveLength(1);
     expect(first.errors[0]?.code).toBe(ErrorCode.Internal);
-    const cycle = await h.store.getCycle('sub_1', 0);
+    const cycle = await h.store.getCycle(SID, 0);
     expect(cycle).toMatchObject({ status: CycleStatus.Charging, attempt: 1, attempts: [] });
     expect(cycle?.lastError?.code).toBe(ErrorCode.Internal);
 
@@ -26,7 +26,7 @@ describe('unknown exceptions are never a definite failure', () => {
     expect(h.provider.getCalls).toHaveLength(1);
     expect(h.provider.createCalls).toHaveLength(1);
     expect(h.provider.gateway.size).toBe(1);
-    expect((await h.store.getCycle('sub_1', 0))?.attempt).toBe(1);
+    expect((await h.store.getCycle(SID, 0))?.attempt).toBe(1);
   });
 
   it('a foreign exception the gateway never saw is re-created with the same charge id', async () => {
@@ -39,7 +39,7 @@ describe('unknown exceptions are never a definite failure', () => {
     expect(h.provider.getCalls).toHaveLength(1);
     expect(h.provider.createCalls).toHaveLength(2);
     expect(h.provider.createCalls[1]!.chargeId).toBe(h.provider.createCalls[0]!.chargeId);
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.Succeeded);
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.Succeeded);
   });
 
   it('a foreign exception from getCharge leaves the cycle charging and raises nothing new', async () => {
@@ -53,7 +53,7 @@ describe('unknown exceptions are never a definite failure', () => {
     const result = await h.tickAt(plusHours(DUE, 1));
     expect(result.errors[0]?.code).toBe(ErrorCode.Internal);
     expect(h.provider.createCalls).toHaveLength(1);
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.Charging);
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.Charging);
   });
 
   it('a foreign exception from notifyCharge is recorded and retried', async () => {
@@ -65,7 +65,7 @@ describe('unknown exceptions are never a definite failure', () => {
     };
     const failed = await h.tickAt(plusHours(DUE, -48));
     expect(failed.errors[0]?.code).toBe(ErrorCode.Internal);
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.Pending);
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.Pending);
 
     h.provider.notifyCharge = real;
     expect((await h.tickAt(plusHours(DUE, -47))).notified).toBe(1);
@@ -88,7 +88,7 @@ describe('unknown exceptions are never a definite failure', () => {
     const result = await h.tickAt(DUE);
     expect(result.failed).toBe(1);
     expect(result.errors).toHaveLength(0);
-    const cycle = await h.store.getCycle('sub_1', 0);
+    const cycle = await h.store.getCycle(SID, 0);
     expect(cycle).toMatchObject({ status: CycleStatus.Pending, attempt: 2 });
     expect(cycle?.attempts[0]?.failureCode).toBe(code);
   });
@@ -114,7 +114,7 @@ describe('unknown exceptions are never a definite failure', () => {
     expect(result.failed).toBe(0);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]?.code).toBe(code);
-    expect(await h.store.getCycle('sub_1', 0)).toMatchObject({ status: CycleStatus.Charging, attempt: 1, attempts: [] });
+    expect(await h.store.getCycle(SID, 0)).toMatchObject({ status: CycleStatus.Charging, attempt: 1, attempts: [] });
 
     // Next tick asks the gateway first.
     await h.tickAt(plusHours(DUE, 1));
@@ -136,10 +136,10 @@ describe('store failures', () => {
     const h = makeHarness({ style: Style.OnDue, store });
     await h.scheduler.register(registration({ subscriptionId: 'bad' }));
     await h.scheduler.register(registration({ subscriptionId: 'good' }));
-    store.broken.add('bad');
+    store.broken.add(scheduleIdFor(Provider.PayU, 'bad'));
 
     const result = await h.tickAt(DUE);
-    expect(result.errors).toEqual([expect.objectContaining({ scheduleId: 'bad', code: ErrorCode.Internal })]);
+    expect(result.errors).toEqual([expect.objectContaining({ scheduleId: scheduleIdFor(Provider.PayU, 'bad'), code: ErrorCode.Internal })]);
     expect(result.succeeded).toBe(1);
     expect(h.provider.createCalls.map((c) => c.subscriptionId)).toEqual(['good']);
   });

@@ -10,6 +10,7 @@ import {
   makeHarness,
   plusHours,
   registration,
+  SID,
 } from './helpers.js';
 
 describe('schedules awaiting authorisation', () => {
@@ -19,7 +20,7 @@ describe('schedules awaiting authorisation', () => {
     expect(schedule.status).toBe(ScheduleStatus.PendingAuthorization);
     expect(schedule.nextActionAt).toBeUndefined();
     expect(schedule.nextChargeAt).toBeUndefined();
-    expect(await h.scheduler.listCycles('sub_1')).toHaveLength(0);
+    expect(await h.scheduler.listCycles(SID)).toHaveLength(0);
 
     // Long past the due date, and past the notification time.
     for (const at of [plusHours(DUE, -48), DUE, plusHours(DUE, 24 * 60)]) {
@@ -29,7 +30,7 @@ describe('schedules awaiting authorisation', () => {
     expect(h.provider.notifyCalls).toHaveLength(0);
     expect(h.provider.createCalls).toHaveLength(0);
     expect(h.provider.getCalls).toHaveLength(0);
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.PendingAuthorization);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.PendingAuthorization);
   });
 
   it('registering the same pending schedule twice is a no-op', async () => {
@@ -63,10 +64,10 @@ describe('schedules awaiting authorisation', () => {
     const h = makeHarness({ startAt: T0 });
     await h.scheduler.register(registration({ awaitingAuthorization: true, firstChargeAt: plusHours(T0, 1) }));
     h.clock.set(plusHours(T0, 5));
-    const activated = await h.scheduler.activate('sub_1');
+    const activated = await h.scheduler.activate(SID);
     expect(activated.anchorAt).toBe(plusHours(T0, 5));
     expect(activated.nextChargeAt).toBe(plusHours(T0, 5));
-    expect((await h.store.getCycle('sub_1', 0))?.dueAt).toBe(plusHours(T0, 5));
+    expect((await h.store.getCycle(SID, 0))?.dueAt).toBe(plusHours(T0, 5));
   });
 
   it('keeps a future anchor, and replaces it when firstChargeAt is given', async () => {
@@ -83,31 +84,31 @@ describe('schedules awaiting authorisation', () => {
   it('activating an active schedule with the same data is a no-op; different data or other statuses conflict', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration({ awaitingAuthorization: true }));
-    const first = await h.scheduler.activate('sub_1', { subscriptionId: 'mandate_1' });
-    expect(await h.scheduler.activate('sub_1', { subscriptionId: 'mandate_1' })).toEqual(first);
-    expect(await h.scheduler.activate('sub_1')).toEqual(first);
-    await expect(h.scheduler.activate('sub_1', { subscriptionId: 'mandate_2' })).rejects.toMatchObject({
+    const first = await h.scheduler.activate(SID, { subscriptionId: 'mandate_1' });
+    expect(await h.scheduler.activate(SID, { subscriptionId: 'mandate_1' })).toEqual(first);
+    expect(await h.scheduler.activate(SID)).toEqual(first);
+    await expect(h.scheduler.activate(SID, { subscriptionId: 'mandate_2' })).rejects.toMatchObject({
       code: ErrorCode.Conflict,
     });
 
-    await h.scheduler.cancel('sub_1');
-    await expect(h.scheduler.activate('sub_1')).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    await h.scheduler.cancel(SID);
+    await expect(h.scheduler.activate(SID)).rejects.toMatchObject({ code: ErrorCode.Conflict });
     await expect(h.scheduler.activate('missing')).rejects.toMatchObject({ code: ErrorCode.NotFound });
   });
 
   it('cancel works on a pending schedule', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration({ awaitingAuthorization: true }));
-    const cancelled = await h.scheduler.cancel('sub_1');
+    const cancelled = await h.scheduler.cancel(SID);
     expect(cancelled).toMatchObject({ status: ScheduleStatus.Cancelled, statusReason: ScheduleStatusReason.CancelledByMerchant });
-    await expect(h.scheduler.activate('sub_1')).rejects.toMatchObject({ code: ErrorCode.Conflict });
-    await expect(h.scheduler.pause('sub_1')).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    await expect(h.scheduler.activate(SID)).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    await expect(h.scheduler.pause(SID)).rejects.toMatchObject({ code: ErrorCode.Conflict });
   });
 
   it('pausing a pending schedule is a conflict', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration({ awaitingAuthorization: true }));
-    await expect(h.scheduler.pause('sub_1')).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    await expect(h.scheduler.pause(SID)).rejects.toMatchObject({ code: ErrorCode.Conflict });
   });
 });
 
@@ -177,7 +178,7 @@ describe('authorisation via webhook events', () => {
     await h.scheduler.handleEvent(
       makeEvent({ type: EventType.SubscriptionCharged, subscriptionId: 'sub_1', charge: { chargeId: 'x', status: ChargeStatus.Succeeded } }),
     );
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.PendingAuthorization);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.PendingAuthorization);
   });
 });
 
@@ -189,11 +190,11 @@ describe('authorisation timeout', () => {
 
     const early = await h.tickAt(plusHours(T0, 23.99));
     expect(early.due).toBe(0);
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.PendingAuthorization);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.PendingAuthorization);
 
     const expired = await h.tickAt(plusHours(T0, 24));
     expect(expired.expired).toBe(1);
-    expect(await h.scheduler.get('sub_1')).toMatchObject({
+    expect(await h.scheduler.get(SID)).toMatchObject({
       status: ScheduleStatus.Cancelled,
       statusReason: ScheduleStatusReason.AuthorizationTimeout,
     });
@@ -211,22 +212,22 @@ describe('authorisation timeout', () => {
     const h = makeHarness({ scheduler: { authorizationTimeoutHours: 1 } });
     await h.scheduler.register(registration({ awaitingAuthorization: true }));
     await h.tickAt(plusHours(T0, 1));
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Cancelled);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Cancelled);
   });
 
   it('does not expire a schedule that was activated in time', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration({ awaitingAuthorization: true, authorizationTimeoutHours: 24 }));
     h.clock.set(plusHours(T0, 2));
-    await h.scheduler.activate('sub_1');
+    await h.scheduler.activate(SID);
     await h.tickAt(plusHours(T0, 30));
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Active);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Active);
   });
 
   it('has no timeout by default', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration({ awaitingAuthorization: true }));
     await h.tickAt(plusHours(T0, 24 * 365));
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.PendingAuthorization);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.PendingAuthorization);
   });
 });

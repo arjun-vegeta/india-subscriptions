@@ -353,6 +353,26 @@ describe('createSubscription: rejected input', () => {
     );
   });
 
+  it('an upfront amount below the INR 1 consent minimum is VALIDATION', async () => {
+    const error = await failure(() =>
+      makeProvider().provider.createSubscription({ plan: { ...MONTHLY_PLAN }, customer: CUSTOMER, upfrontAmount: 99 }),
+    );
+    expect(error.code).toBe(ErrorCode.Validation);
+    expect(error.message).toContain('upfrontAmount');
+  });
+
+  it('paymentMethods PayU cannot serve (physical NACH only) is VALIDATION; supported ones are accepted and not sent', async () => {
+    const { provider } = makeProvider();
+    const error = await failure(() =>
+      provider.createSubscription({ plan: { ...MONTHLY_PLAN }, customer: CUSTOMER, paymentMethods: ['physical_nach'] }),
+    );
+    expect(error.code).toBe(ErrorCode.Validation);
+    const ok = await provider.createSubscription({ plan: { ...MONTHLY_PLAN }, customer: CUSTOMER, paymentMethods: ['upi'] });
+    if (ok.checkout?.kind !== CheckoutKind.FormPost) throw new Error('form post');
+    expect(Object.keys(ok.checkout.fields)).not.toContain('pg');
+    expect(Object.keys(ok.checkout.fields)).not.toContain('bankcode');
+  });
+
   it('shared input rules still apply: trial and startAt together are VALIDATION', async () => {
     const error = await failure(() =>
       makeProvider().provider.createSubscription({

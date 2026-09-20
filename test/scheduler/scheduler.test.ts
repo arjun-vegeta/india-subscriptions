@@ -8,6 +8,7 @@ import {
   ScheduleStatus,
   ScheduleStatusReason,
   SchedulerEventType,
+  scheduleIdFor,
 } from '../../src/scheduler/index.js';
 import {
   CreateBehaviour,
@@ -20,12 +21,13 @@ import {
   plusHours,
   registration,
   sleep,
+  SID,
 } from './helpers.js';
 
 const CHARGE_ID = /^chg_[0-9a-f]{16}_(\d+)_(\d+)$/;
 
 async function cycleOf(h: ReturnType<typeof makeHarness>, index = 0) {
-  const cycle = await h.store.getCycle('sub_1', index);
+  const cycle = await h.store.getCycle(SID, index);
   if (!cycle) throw new Error(`no cycle ${index}`);
   return cycle;
 }
@@ -73,7 +75,7 @@ describe('free trial and first charge', () => {
     expect(call.subscriptionId).toBe('sub_1');
     expect(call.invoiceNumber).toBe(`INV-${h.provider.notifyCalls[0]!.notificationId}`);
 
-    const schedule = await h.scheduler.get('sub_1');
+    const schedule = await h.scheduler.get(SID);
     expect(schedule).toMatchObject({ status: ScheduleStatus.Active, paidCycles: 1, cycleIndex: 1 });
     // The next cycle is a month later.
     expect(schedule?.nextChargeAt).toBe('2026-02-15T04:30:00.000Z');
@@ -115,7 +117,7 @@ describe('billing cycles', () => {
     await runCycle(h, due1);
     await runCycle(h, due2);
 
-    const cycles = await h.scheduler.listCycles('sub_1');
+    const cycles = await h.scheduler.listCycles(SID);
     expect(cycles.map((c) => c.dueAt)).toEqual([due0, due1, due2, '2026-04-30T04:30:00.000Z']);
     expect(cycles.slice(0, 3).every((c) => c.status === CycleStatus.Succeeded)).toBe(true);
     expect(h.provider.createCalls).toHaveLength(3);
@@ -128,11 +130,11 @@ describe('billing cycles', () => {
     const h = makeHarness();
     await h.scheduler.register(registration({ totalCycles: 2 }));
     await runCycle(h, DUE);
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Active);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Active);
     const second = '2026-02-15T04:30:00.000Z';
     await runCycle(h, second);
 
-    const schedule = await h.scheduler.get('sub_1');
+    const schedule = await h.scheduler.get(SID);
     expect(schedule).toMatchObject({
       status: ScheduleStatus.Completed,
       statusReason: ScheduleStatusReason.AllCyclesCollected,
@@ -145,7 +147,7 @@ describe('billing cycles', () => {
     const later = await h.tickAt('2026-06-01T00:00:00.000Z');
     expect(later.due).toBe(0);
     expect(h.provider.createCalls).toHaveLength(2);
-    expect(await h.scheduler.listCycles('sub_1')).toHaveLength(2);
+    expect(await h.scheduler.listCycles(SID)).toHaveLength(2);
   });
 
   it('uses per-schedule policy overrides', async () => {
@@ -252,7 +254,7 @@ describe('failed charges', () => {
     // Each retry debit carries the invoice of its own notification.
     expect(h.provider.createCalls[1]!.invoiceNumber).toBe(`INV-${h.provider.notifyCalls[1]!.notificationId}`);
 
-    const schedule = await h.scheduler.get('sub_1');
+    const schedule = await h.scheduler.get(SID);
     expect(schedule).toMatchObject({ status: ScheduleStatus.Halted, statusReason: ScheduleStatusReason.RetriesExhausted });
     expect(schedule?.nextActionAt).toBeUndefined();
     expect(h.events.map((e) => e.type)).toEqual(
@@ -270,9 +272,9 @@ describe('failed charges', () => {
     await runCycle(h, DUE);
     await h.tickAt(plusHours(DUE, 24));
 
-    const schedule = await h.scheduler.get('sub_1');
+    const schedule = await h.scheduler.get(SID);
     expect(schedule).toMatchObject({ status: ScheduleStatus.Active, paidCycles: 1, cycleIndex: 1 });
-    expect((await h.scheduler.listCycles('sub_1'))[1]?.dueAt).toBe('2026-02-15T04:30:00.000Z');
+    expect((await h.scheduler.listCycles(SID))[1]?.dueAt).toBe('2026-02-15T04:30:00.000Z');
   });
 
   it('counts a gateway refusal as a failed attempt', async () => {
@@ -309,7 +311,7 @@ describe('never double-debit', () => {
     const done = await h.tickAt(plusHours(DUE, 2));
     expect(done.succeeded).toBe(1);
     expect(h.provider.createCalls).toHaveLength(1);
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
+    expect(await h.scheduler.get(SID)).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
   });
 
   it('reconciles a pending charge that the bank then fails, and retries under a new id', async () => {
@@ -388,7 +390,7 @@ describe('never double-debit', () => {
 
     let persistedBeforeCall: { status: string; chargeId?: string } | undefined;
     h.provider.onCreate = async (input) => {
-      const cycle = await h.store.getCycle('sub_1', 0);
+      const cycle = await h.store.getCycle(SID, 0);
       persistedBeforeCall = { status: cycle?.status ?? 'missing', ...(cycle?.chargeId ? { chargeId: cycle.chargeId } : {}) };
       expect(input.chargeId).toBe(cycle?.chargeId);
       throw new Error('process crashed before reaching the gateway');
@@ -415,12 +417,12 @@ describe('never double-debit', () => {
     await h.scheduler.register(registration());
     // Simulate: cycle saved as succeeded, schedule not advanced.
     await h.tickAt(DUE);
-    const schedule = (await h.scheduler.get('sub_1'))!;
-    const cycle = (await h.store.getCycle('sub_1', 0))!;
+    const schedule = (await h.scheduler.get(SID))!;
+    const cycle = (await h.store.getCycle(SID, 0))!;
     await h.store.saveSchedule({ ...schedule, cycleIndex: 0, paidCycles: 0, nextActionAt: DUE });
     await h.store.saveCycle(cycle);
     await h.tickAt(plusHours(DUE, 1));
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ cycleIndex: 1, paidCycles: 1 });
+    expect(await h.scheduler.get(SID)).toMatchObject({ cycleIndex: 1, paidCycles: 1 });
     expect(h.provider.createCalls).toHaveLength(1);
   });
 
@@ -435,7 +437,7 @@ describe('never double-debit', () => {
     expect(h.provider.gateway.size).toBe(1);
     expect(a.locked + b.locked).toBe(1);
     expect(a.succeeded + b.succeeded).toBe(1);
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ paidCycles: 1 });
+    expect(await h.scheduler.get(SID)).toMatchObject({ paidCycles: 1 });
   });
 
   it('two workers (separate scheduler instances) debit once', async () => {
@@ -487,9 +489,9 @@ describe('never double-debit', () => {
     };
     const result = await h.tickAt(DUE);
     expect(result.due).toBe(2);
-    expect(result.errors.map((e) => e.scheduleId)).toEqual(['bad']);
+    expect(result.errors.map((e) => e.scheduleId)).toEqual([scheduleIdFor(Provider.PayU, 'bad')]);
     expect(result.succeeded).toBe(1);
-    expect(await h.scheduler.get('good')).toMatchObject({ paidCycles: 1 });
+    expect(await h.scheduler.get(scheduleIdFor(Provider.PayU, 'good'))).toMatchObject({ paidCycles: 1 });
   });
 
   it('respects the tick limit', async () => {
@@ -508,7 +510,7 @@ describe('pause, resume, cancel', () => {
   it('does nothing while paused, and re-anchors from now if the pause swallowed the due date', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
-    const paused = await h.scheduler.pause('sub_1');
+    const paused = await h.scheduler.pause(SID);
     expect(paused.status).toBe(ScheduleStatus.Paused);
     expect(paused.nextActionAt).toBeUndefined();
     expect(paused.nextChargeAt).toBeUndefined();
@@ -521,7 +523,7 @@ describe('pause, resume, cancel', () => {
     expect(h.provider.createCalls).toHaveLength(0);
 
     h.clock.set(swallowedUntil);
-    const resumed = await h.scheduler.resume('sub_1');
+    const resumed = await h.scheduler.resume(SID);
     expect(resumed).toMatchObject({ status: ScheduleStatus.Active, anchorAt: swallowedUntil, nextChargeAt: swallowedUntil });
 
     // Notified straight away, debited once the 24h notice has passed.
@@ -531,7 +533,7 @@ describe('pause, resume, cancel', () => {
     expect(h.provider.createCalls).toHaveLength(1);
 
     // The missed cycle is not billed again; later cycles follow from the new anchor.
-    const cycles = await h.scheduler.listCycles('sub_1');
+    const cycles = await h.scheduler.listCycles(SID);
     expect(cycles).toHaveLength(2);
     expect(cycles[1]!.dueAt).toBe('2026-02-18T04:30:00.000Z');
   });
@@ -539,8 +541,8 @@ describe('pause, resume, cancel', () => {
   it('resumes at a given nextChargeAt', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
-    await h.scheduler.pause('sub_1');
-    const resumed = await h.scheduler.resume('sub_1', { nextChargeAt: '2026-02-01T00:00:00.000Z' });
+    await h.scheduler.pause(SID);
+    const resumed = await h.scheduler.resume(SID, { nextChargeAt: '2026-02-01T00:00:00.000Z' });
     expect(resumed.nextChargeAt).toBe('2026-02-01T00:00:00.000Z');
     expect((await cycleOf(h)).dueAt).toBe('2026-02-01T00:00:00.000Z');
 
@@ -553,9 +555,9 @@ describe('pause, resume, cancel', () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
     await h.tickAt('2026-01-02T00:00:00.000Z');
-    await h.scheduler.pause('sub_1');
+    await h.scheduler.pause(SID);
     h.clock.set('2026-01-03T00:00:00.000Z');
-    const resumed = await h.scheduler.resume('sub_1');
+    const resumed = await h.scheduler.resume(SID);
     expect(resumed.anchorAt).toBe(DUE);
     expect((await cycleOf(h)).dueAt).toBe(DUE);
   });
@@ -566,9 +568,9 @@ describe('pause, resume, cancel', () => {
     await h.tickAt(plusHours(DUE, -48));
     expect(h.provider.notifyCalls).toHaveLength(1);
 
-    await h.scheduler.pause('sub_1');
+    await h.scheduler.pause(SID);
     const newDue = plusHours(DUE, 24 * 30);
-    await h.scheduler.resume('sub_1', { nextChargeAt: newDue });
+    await h.scheduler.resume(SID, { nextChargeAt: newDue });
     expect((await cycleOf(h)).status).toBe(CycleStatus.Pending);
 
     // The old due date passes: no debit on the stale notice.
@@ -586,12 +588,12 @@ describe('pause, resume, cancel', () => {
   it('is idempotent for pause/resume and rejects invalid transitions', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
-    expect((await h.scheduler.resume('sub_1')).status).toBe(ScheduleStatus.Active);
-    await h.scheduler.pause('sub_1');
-    expect((await h.scheduler.pause('sub_1')).status).toBe(ScheduleStatus.Paused);
-    await h.scheduler.cancel('sub_1');
-    await expect(h.scheduler.resume('sub_1')).rejects.toMatchObject({ code: ErrorCode.Conflict });
-    await expect(h.scheduler.pause('sub_1')).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    expect((await h.scheduler.resume(SID)).status).toBe(ScheduleStatus.Active);
+    await h.scheduler.pause(SID);
+    expect((await h.scheduler.pause(SID)).status).toBe(ScheduleStatus.Paused);
+    await h.scheduler.cancel(SID);
+    await expect(h.scheduler.resume(SID)).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    await expect(h.scheduler.pause(SID)).rejects.toMatchObject({ code: ErrorCode.Conflict });
     await expect(h.scheduler.pause('missing')).rejects.toMatchObject({ code: ErrorCode.NotFound });
   });
 
@@ -599,7 +601,7 @@ describe('pause, resume, cancel', () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
     await h.tickAt(plusHours(DUE, -48));
-    const cancelled = await h.scheduler.cancel('sub_1');
+    const cancelled = await h.scheduler.cancel(SID);
     expect(cancelled).toMatchObject({
       status: ScheduleStatus.Cancelled,
       statusReason: ScheduleStatusReason.CancelledByMerchant,
@@ -610,7 +612,7 @@ describe('pause, resume, cancel', () => {
     await h.tickAt(DUE);
     await h.tickAt(plusHours(DUE, 24 * 40));
     expect(h.provider.createCalls).toHaveLength(0);
-    expect((await h.scheduler.cancel('sub_1')).status).toBe(ScheduleStatus.Cancelled);
+    expect((await h.scheduler.cancel(SID)).status).toBe(ScheduleStatus.Cancelled);
     expect(h.events.filter((e) => e.type === SchedulerEventType.ScheduleCancelled)).toHaveLength(1);
   });
 
@@ -621,9 +623,9 @@ describe('pause, resume, cancel', () => {
     await runCycle(h, DUE);
     expect((await cycleOf(h)).status).toBe(CycleStatus.Charging);
 
-    await h.scheduler.cancel('sub_1');
+    await h.scheduler.cancel(SID);
     const inFlight = h.events.find((e) => e.type === SchedulerEventType.ChargeInFlight);
-    expect(inFlight).toMatchObject({ scheduleId: 'sub_1', chargeId: h.provider.createCalls[0]!.chargeId });
+    expect(inFlight).toMatchObject({ scheduleId: SID, chargeId: h.provider.createCalls[0]!.chargeId });
 
     await h.tickAt(plusHours(DUE, 1));
     expect(h.provider.getCalls).toHaveLength(1);
@@ -637,24 +639,24 @@ describe('pause, resume, cancel', () => {
     h.provider.createScript = [CreateBehaviour.Pending];
     await h.scheduler.register(registration());
     await runCycle(h, DUE);
-    await h.scheduler.cancel('sub_1');
+    await h.scheduler.cancel(SID);
     expect(h.events.some((e) => e.type === SchedulerEventType.ChargeInFlight)).toBe(true);
 
     h.provider.settle(h.provider.createCalls[0]!.chargeId, ChargeStatus.Succeeded);
     await h.tickAt(plusHours(DUE, 1));
-    const schedule = await h.scheduler.get('sub_1');
+    const schedule = await h.scheduler.get(SID);
     expect(schedule).toMatchObject({ status: ScheduleStatus.Cancelled, paidCycles: 1 });
     expect((await cycleOf(h)).status).toBe(CycleStatus.Succeeded);
     expect(h.events.some((e) => e.type === SchedulerEventType.ChargeSucceeded)).toBe(true);
-    expect(await h.scheduler.listCycles('sub_1')).toHaveLength(1);
+    expect(await h.scheduler.listCycles(SID)).toHaveLength(1);
   });
 
   it('cancel on a completed schedule throws CONFLICT', async () => {
     const h = makeHarness({ style: Style.OnDue });
     await h.scheduler.register(registration({ totalCycles: 1 }));
     await h.tickAt(DUE);
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Completed);
-    await expect(h.scheduler.cancel('sub_1')).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Completed);
+    await expect(h.scheduler.cancel(SID)).rejects.toMatchObject({ code: ErrorCode.Conflict });
   });
 });
 
@@ -662,12 +664,12 @@ describe('updateAmount', () => {
   it('applies to cycles that are not notified yet, and to later cycles', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
-    await h.scheduler.updateAmount('sub_1', 59900);
+    await h.scheduler.updateAmount(SID, 59900);
     await h.tickAt(plusHours(DUE, -48));
     expect(h.provider.notifyCalls[0]!.amount).toBe(59900);
 
     // Already notified at 59,900: a later change must not alter this cycle.
-    await h.scheduler.updateAmount('sub_1', 69900);
+    await h.scheduler.updateAmount(SID, 69900);
     await h.tickAt(DUE);
     expect(h.provider.createCalls[0]!.amount).toBe(59900);
 
@@ -678,10 +680,10 @@ describe('updateAmount', () => {
   it('validates the amount and rejects terminal schedules', async () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
-    await expect(h.scheduler.updateAmount('sub_1', 0)).rejects.toMatchObject({ code: ErrorCode.Validation });
-    await expect(h.scheduler.updateAmount('sub_1', 99.5)).rejects.toMatchObject({ code: ErrorCode.Validation });
-    await h.scheduler.cancel('sub_1');
-    await expect(h.scheduler.updateAmount('sub_1', 100)).rejects.toMatchObject({ code: ErrorCode.Conflict });
+    await expect(h.scheduler.updateAmount(SID, 0)).rejects.toMatchObject({ code: ErrorCode.Validation });
+    await expect(h.scheduler.updateAmount(SID, 99.5)).rejects.toMatchObject({ code: ErrorCode.Validation });
+    await h.scheduler.cancel(SID);
+    await expect(h.scheduler.updateAmount(SID, 100)).rejects.toMatchObject({ code: ErrorCode.Conflict });
     await expect(h.scheduler.updateAmount('missing', 100)).rejects.toMatchObject({ code: ErrorCode.NotFound });
   });
 });
@@ -705,13 +707,16 @@ describe('register', () => {
     const h = makeHarness();
     const results = await Promise.all([h.scheduler.register(registration()), h.scheduler.register(registration())]);
     expect(results[0]).toEqual(results[1]);
-    expect(await h.scheduler.listCycles('sub_1')).toHaveLength(1);
+    expect(await h.scheduler.listCycles(SID)).toHaveLength(1);
   });
 
-  it('defaults the id to the subscription id, accepts an explicit one, and stores plain JSON', async () => {
+  it('defaults the id to the provider-scoped reference or subscription id, accepts an explicit one, and stores plain JSON', async () => {
     const h = makeHarness();
     const byDefault = await h.scheduler.register(registration());
-    expect(byDefault.id).toBe('sub_1');
+    expect(byDefault.id).toBe(scheduleIdFor(Provider.PayU, 'sub_1'));
+    expect(byDefault.id).toBe(SID);
+    const byReference = await h.scheduler.register(registration({ subscriptionId: 'sub_9', reference: 'ref_9' }));
+    expect(byReference.id).toBe(scheduleIdFor(Provider.PayU, 'ref_9'));
     const explicit = await h.scheduler.register(registration({ id: 'order_7', subscriptionId: 'sub_2', reference: 'order_7' }));
     expect(explicit).toMatchObject({ id: 'order_7', subscriptionId: 'sub_2', reference: 'order_7', currency: 'INR' });
     expect(JSON.parse(JSON.stringify(explicit))).toEqual(explicit);

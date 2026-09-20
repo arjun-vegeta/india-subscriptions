@@ -11,6 +11,7 @@ import {
   registration,
   sleep,
   type Harness,
+  SID,
 } from './helpers.js';
 
 /** A schedule whose first debit was raised and is awaiting the bank's answer. */
@@ -19,7 +20,7 @@ async function awaiting(h: Harness): Promise<string> {
   await h.scheduler.register(registration());
   await h.tickAt(plusHours(DUE, -48));
   await h.tickAt(DUE);
-  const cycle = await h.store.getCycle('sub_1', 0);
+  const cycle = await h.store.getCycle(SID, 0);
   expect(cycle?.status).toBe(CycleStatus.AwaitingConfirmation);
   return cycle?.chargeId as string;
 }
@@ -35,14 +36,14 @@ describe('handleEvent: charges', () => {
     });
 
     await h.scheduler.handleEvent(event);
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.Succeeded);
-    expect((await h.store.getCycle('sub_1', 1))?.status).toBe(CycleStatus.Pending);
+    expect(await h.scheduler.get(SID)).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.Succeeded);
+    expect((await h.store.getCycle(SID, 1))?.status).toBe(CycleStatus.Pending);
 
     // The gateway delivers it again: nothing changes.
     await h.scheduler.handleEvent(event);
     await h.scheduler.handleEvent(event);
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
+    expect(await h.scheduler.get(SID)).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
     expect(h.events.filter((e) => e.type === SchedulerEventType.ChargeSucceeded)).toHaveLength(1);
     expect(h.provider.createCalls).toHaveLength(1);
   });
@@ -52,7 +53,7 @@ describe('handleEvent: charges', () => {
     const chargeId = await awaiting(h);
     // Learn the gateway id by reconciling once, then match on it alone.
     await h.tickAt(plusHours(DUE, 1));
-    const cycle = await h.store.getCycle('sub_1', 0);
+    const cycle = await h.store.getCycle(SID, 0);
     expect(cycle?.providerChargeId).toBe(`pay_${chargeId}`);
 
     await h.scheduler.handleEvent(
@@ -62,7 +63,7 @@ describe('handleEvent: charges', () => {
         charge: { id: `pay_${chargeId}`, status: ChargeStatus.Succeeded },
       }),
     );
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.Succeeded);
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.Succeeded);
   });
 
   it('treats "charged" as collected even when the charge status still reads pending', async () => {
@@ -75,7 +76,7 @@ describe('handleEvent: charges', () => {
         charge: { chargeId, status: ChargeStatus.Pending },
       }),
     );
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.Succeeded);
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.Succeeded);
   });
 
   it('subscription.charge_failed starts the next attempt under a new charge id', async () => {
@@ -89,7 +90,7 @@ describe('handleEvent: charges', () => {
         charge: { chargeId, status: ChargeStatus.Failed },
       }),
     );
-    const cycle = await h.store.getCycle('sub_1', 0);
+    const cycle = await h.store.getCycle(SID, 0);
     expect(cycle).toMatchObject({ status: CycleStatus.Pending, attempt: 2, attemptDueAt: plusHours(DUE, 26) });
     expect(cycle?.attempts[0]).toMatchObject({ attempt: 1, chargeId, status: ChargeStatus.Failed });
 
@@ -110,11 +111,11 @@ describe('handleEvent: charges', () => {
         charge: { chargeId: 'chg_someone_else', status: ChargeStatus.Succeeded },
       }),
     );
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.AwaitingConfirmation);
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.AwaitingConfirmation);
 
     await h.scheduler.handleEvent(makeEvent({ type: EventType.SubscriptionCharged, subscriptionId: 'unknown_sub', charge: { chargeId, status: ChargeStatus.Succeeded } }));
     await h.scheduler.handleEvent(makeEvent({ type: EventType.SubscriptionChargeScheduled, subscriptionId: 'sub_1' }));
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.AwaitingConfirmation);
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.AwaitingConfirmation);
   });
 
   it('is safe to race with a tick that is in the middle of the debit', async () => {
@@ -139,8 +140,8 @@ describe('handleEvent: charges', () => {
 
     expect(result.errors).toHaveLength(0);
     expect(h.provider.createCalls).toHaveLength(1);
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
-    expect((await h.store.getCycle('sub_1', 0))?.status).toBe(CycleStatus.Succeeded);
+    expect(await h.scheduler.get(SID)).toMatchObject({ paidCycles: 1, cycleIndex: 1 });
+    expect((await h.store.getCycle(SID, 0))?.status).toBe(CycleStatus.Succeeded);
   });
 });
 
@@ -149,7 +150,7 @@ describe('handleEvent: subscription lifecycle', () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
     await h.scheduler.handleEvent(makeEvent({ type: EventType.SubscriptionCancelled, subscriptionId: 'sub_1' }));
-    expect(await h.scheduler.get('sub_1')).toMatchObject({
+    expect(await h.scheduler.get(SID)).toMatchObject({
       status: ScheduleStatus.Cancelled,
       statusReason: ScheduleStatusReason.CancelledByGateway,
     });
@@ -164,12 +165,12 @@ describe('handleEvent: subscription lifecycle', () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
     await h.scheduler.handleEvent(makeEvent({ type: EventType.SubscriptionPaused, subscriptionId: 'sub_1' }));
-    expect(await h.scheduler.get('sub_1')).toMatchObject({
+    expect(await h.scheduler.get(SID)).toMatchObject({
       status: ScheduleStatus.Paused,
       statusReason: ScheduleStatusReason.PausedByGateway,
     });
     await h.scheduler.handleEvent(makeEvent({ type: EventType.SubscriptionHalted, subscriptionId: 'sub_1' }));
-    expect(await h.scheduler.get('sub_1')).toMatchObject({
+    expect(await h.scheduler.get(SID)).toMatchObject({
       status: ScheduleStatus.Halted,
       statusReason: ScheduleStatusReason.HaltedByGateway,
     });
@@ -181,7 +182,7 @@ describe('handleEvent: subscription lifecycle', () => {
     const h = makeHarness();
     await h.scheduler.register(registration());
     await h.scheduler.handleEvent(makeEvent({ type: EventType.SubscriptionExpired, subscriptionId: 'sub_1' }));
-    expect(await h.scheduler.get('sub_1')).toMatchObject({
+    expect(await h.scheduler.get(SID)).toMatchObject({
       status: ScheduleStatus.Cancelled,
       statusReason: ScheduleStatusReason.MandateExpired,
     });
@@ -195,7 +196,7 @@ describe('handleEvent: subscription lifecycle', () => {
     await h.scheduler.handleEvent(
       makeEvent({ type: EventType.SubscriptionCharged, subscriptionId: 'sub_1', charge: { chargeId, status: ChargeStatus.Succeeded } }),
     );
-    expect(await h.scheduler.get('sub_1')).toMatchObject({ status: ScheduleStatus.Cancelled, paidCycles: 1 });
+    expect(await h.scheduler.get(SID)).toMatchObject({ status: ScheduleStatus.Cancelled, paidCycles: 1 });
   });
 
   it('ignores events for schedules it does not know and for other providers', async () => {
@@ -206,6 +207,6 @@ describe('handleEvent: subscription lifecycle', () => {
       ...makeEvent({ type: EventType.SubscriptionCancelled, subscriptionId: 'sub_1' }),
       provider: Provider.Razorpay,
     });
-    expect((await h.scheduler.get('sub_1'))?.status).toBe(ScheduleStatus.Active);
+    expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.Active);
   });
 });
