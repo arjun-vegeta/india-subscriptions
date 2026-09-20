@@ -156,7 +156,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -234,7 +234,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -392,7 +392,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -401,7 +401,7 @@
             "name": "planId",
             "in": "path",
             "required": true,
-            "description": "The plan id, as returned by the gateway.",
+            "description": "The plan id, as returned when the plan was created.",
             "schema": {
               "type": "string"
             }
@@ -539,7 +539,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -697,7 +697,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -842,7 +842,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -1009,7 +1009,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -1176,7 +1176,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -1343,7 +1343,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -1510,7 +1510,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -1528,7 +1528,7 @@
             "name": "limit",
             "in": "query",
             "required": false,
-            "description": "Most charges to return.",
+            "description": "Most charges to return, from 1 to 100.",
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -1671,7 +1671,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -1689,7 +1689,7 @@
             "name": "chargeId",
             "in": "path",
             "required": true,
-            "description": "The charge id.",
+            "description": "The charge id, as returned by the gateway or when the charge was raised.",
             "schema": {
               "type": "string"
             }
@@ -1827,7 +1827,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -1985,7 +1985,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -2143,7 +2143,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -2301,7 +2301,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -2459,7 +2459,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -2560,7 +2560,7 @@
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The gateway.",
+            "description": "The payment gateway to call. It must be configured on the service.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -2990,7 +2990,7 @@
             "pattern": "^\\+?[0-9]{10,15}$"
           }
         },
-        "description": "The paying customer."
+        "description": "A customer: identity and contact details."
       },
       "CreatePlanInput": {
         "type": "object",
@@ -3320,6 +3320,7 @@
             "description": "An existing plan id, or plan details to create inline."
           },
           "customer": {
+            "description": "The paying customer.",
             "$ref": "#/components/schemas/Customer"
           },
           "quantity": {
@@ -3764,6 +3765,7 @@
             "maxLength": 200
           },
           "customer": {
+            "description": "The paying customer.",
             "$ref": "#/components/schemas/Customer"
           },
           "metadata": {
@@ -4401,6 +4403,26 @@
         "additionalProperties": {},
         "description": "This API as an OpenAPI 3.1 document."
       },
+      "TickError": {
+        "type": "object",
+        "properties": {
+          "scheduleId": {
+            "type": "string"
+          },
+          "code": {
+            "$ref": "#/components/schemas/LibraryErrorCode"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scheduleId",
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      },
       "TickResult": {
         "type": "object",
         "properties": {
@@ -4408,90 +4430,57 @@
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-            "description": "The instant the tick ran at."
+            "description": "An ISO-8601 instant with a timezone offset or `Z`."
           },
           "due": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Schedules the store reported as due."
+            "minimum": 0
           },
           "locked": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Due schedules skipped because another worker held their lock."
+            "minimum": 0
           },
           "notified": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Pre-debit notifications accepted by the gateway."
+            "minimum": 0
           },
           "charged": {
             "type": "integer",
-            "minimum": 0,
-            "description": "`createCharge` calls made."
+            "minimum": 0
           },
           "reconciled": {
             "type": "integer",
-            "minimum": 0,
-            "description": "`getCharge` reconciliations made."
+            "minimum": 0
           },
           "succeeded": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Cycles that became collected."
+            "minimum": 0
           },
           "failed": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Debit attempts that failed."
+            "minimum": 0
           },
           "awaiting": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Cycles left waiting for the gateway's final answer."
+            "minimum": 0
           },
           "completed": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Schedules that finished their last cycle."
+            "minimum": 0
           },
           "halted": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Schedules halted because a cycle ran out of attempts."
+            "minimum": 0
           },
           "expired": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Pending-authorisation schedules cancelled by their timeout."
+            "minimum": 0
           },
           "errors": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "scheduleId": {
-                  "type": "string",
-                  "description": "The schedule that failed; the other schedules of the tick are unaffected."
-                },
-                "code": {
-                  "description": "Why it failed.",
-                  "$ref": "#/components/schemas/LibraryErrorCode"
-                },
-                "message": {
-                  "type": "string",
-                  "description": "Human-readable explanation. Do not branch on it."
-                }
-              },
-              "required": [
-                "scheduleId",
-                "code",
-                "message"
-              ],
-              "additionalProperties": false,
-              "description": "A schedule that failed during a tick."
-            },
-            "description": "The schedules that failed, each with its error."
+              "$ref": "#/components/schemas/TickError"
+            }
           }
         },
         "required": [
@@ -4509,8 +4498,7 @@
           "expired",
           "errors"
         ],
-        "additionalProperties": false,
-        "description": "What one `tick()` did. A failing schedule shows up in `errors`; the others are unaffected."
+        "additionalProperties": false
       },
       "LibraryErrorCode": {
         "type": "string",
@@ -4530,8 +4518,7 @@
           "OUTCOME_UNKNOWN",
           "SIGNATURE_INVALID",
           "INTERNAL_ERROR"
-        ],
-        "description": "A stable error code of this library (`SubscriptionError.code`). Branch on this, never on the message."
+        ]
       }
     },
     "securitySchemes": {

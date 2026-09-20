@@ -493,7 +493,7 @@ const ROUTE_CASES: RouteCase[] = [
     name: 'POST checkout/verify',
     method: HttpMethod.Post,
     path: '/v1/razorpay/checkout/verify',
-    body: { razorpay_payment_id: 'pay_1', razorpay_subscription_id: 'sub_1', razorpay_signature: 'abc' },
+    body: { result: { razorpay_payment_id: 'pay_1', razorpay_subscription_id: 'sub_1', razorpay_signature: 'abc' } },
     status: 200,
     schema: SchemaName.CheckoutVerification,
     call: {
@@ -748,6 +748,35 @@ describe('request validation', () => {
   it('rejects a body of the wrong JSON type', async () => {
     const h = harness();
     expect((await send(h.handler, HttpMethod.Post, '/v1/razorpay/checkout/verify', { body: [1, 2] })).status).toBe(400);
+    // the bare gateway result is no longer the body: it must be wrapped as `result`
+    const bare = { razorpay_payment_id: 'pay_1' };
+    expect((await send(h.handler, HttpMethod.Post, '/v1/razorpay/checkout/verify', { body: bare })).status).toBe(400);
+  });
+
+  describe('POST checkout/verify expectedSubscriptionId', () => {
+    const verify = (body: unknown) => {
+      const h = harness();
+      return send(h.handler, HttpMethod.Post, '/v1/razorpay/checkout/verify', { body });
+    };
+    const result = { razorpay_payment_id: 'pay_1' };
+
+    it('accepts a result that belongs to the expected subscription', async () => {
+      expect((await verify({ result, expectedSubscriptionId: VERIFICATION.subscriptionId })).status).toBe(200);
+    });
+
+    it('rejects a genuine result that belongs to another subscription like a forged one', async () => {
+      const response = await verify({ result, expectedSubscriptionId: 'sub_other' });
+      expect(response.status).toBe(401);
+      expect(ErrorResponseSchema.parse(await response.json()).error.code).toBe(ErrorCode.SignatureInvalid);
+    });
+
+    it('accepts a request without it', async () => {
+      expect((await verify({ result })).status).toBe(200);
+    });
+
+    it('rejects an empty expectedSubscriptionId', async () => {
+      expect((await verify({ result, expectedSubscriptionId: '' })).status).toBe(400);
+    });
   });
 
   it('rejects an invalid limit query', async () => {

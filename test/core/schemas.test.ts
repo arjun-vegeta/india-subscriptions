@@ -354,3 +354,21 @@ describe('CheckoutInstructionSchema', () => {
     if (result.success) expect('fields' in result.data).toBe(false);
   });
 });
+
+describe('raw is optional on every output model', () => {
+  it('accepts a response without raw (JSON drops undefined)', () => {
+    const plan = { provider: 'razorpay', id: 'plan_1', name: 'Pro', amount: 49900, currency: 'INR', scheduling: 'gateway' };
+    expect(schemas.PlanSchema.safeParse(plan).success).toBe(true);
+    expect(schemas.PlanSchema.safeParse({ ...plan, raw: { any: 'thing' } }).success).toBe(true);
+    expect(schemas.CheckoutVerificationSchema.safeParse({ provider: 'razorpay', subscriptionId: 's', authorized: true }).success).toBe(true);
+  });
+});
+
+describe('VerifyCheckoutInputSchema', () => {
+  it('wraps the gateway result and takes an optional expected subscription id', () => {
+    expect(schemas.VerifyCheckoutInputSchema.safeParse({ result: { a: '1' } }).success).toBe(true);
+    expect(schemas.VerifyCheckoutInputSchema.safeParse({ result: {}, expectedSubscriptionId: 'sub_1' }).success).toBe(true);
+    expect(schemas.VerifyCheckoutInputSchema.safeParse({ a: '1' }).success).toBe(false);
+    expect(schemas.VerifyCheckoutInputSchema.safeParse({ result: {}, expectedSubscriptionId: '' }).success).toBe(false);
+  });
+});

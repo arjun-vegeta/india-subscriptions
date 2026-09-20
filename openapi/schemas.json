@@ -197,7 +197,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "The paying customer."
+      "description": "A customer: identity and contact details."
     },
     "CreatePlanInput": {
       "type": "object",
@@ -521,6 +521,7 @@
           "description": "An existing plan id, or plan details to create inline."
         },
         "customer": {
+          "description": "The paying customer.",
           "$ref": "#/$defs/Customer"
         },
         "quantity": {
@@ -976,6 +977,7 @@
           "maxLength": 200
         },
         "customer": {
+          "description": "The paying customer.",
           "$ref": "#/$defs/Customer"
         },
         "metadata": {

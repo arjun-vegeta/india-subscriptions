@@ -122,7 +122,7 @@ export const CustomerSchema = z
       .optional()
       .describe('Mobile number; 10 digits or E.164. Adapters format it for their gateway.'),
   })
-  .describe('The paying customer.');
+  .describe('A customer: identity and contact details.');
 export type Customer = z.infer<typeof CustomerSchema>;
 
 // ---------------------------------------------------------------------------
