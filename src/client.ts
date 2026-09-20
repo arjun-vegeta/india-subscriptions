@@ -1,5 +1,5 @@
-import { ErrorCode, SchedulingMode, SubscriptionStatus, type Provider } from './constants.js';
-import { SubscriptionError } from './errors.js';
+import { CancelMode, ErrorCode, SchedulingMode, SubscriptionStatus, type Provider } from './constants.js';
+import { SubscriptionError, unsupported } from './errors.js';
 import type { SubscriptionProvider } from './provider.js';
 import type {
   CancelSubscriptionOptions,
@@ -23,9 +23,9 @@ import type {
   UpdateSubscriptionInput,
   WebhookRequest,
 } from './schemas.js';
-import { ScheduleStatus } from './scheduler/constants.js';
-import type { ScheduleRecord, TickResult } from './scheduler/schemas.js';
-import type { BillingScheduler } from './scheduler/scheduler.js';
+import { ScheduleStatus, ScheduleStatusReason } from './scheduler/constants.js';
+import type { ScheduleRecord, TickResult, UpdateScheduleInput } from './scheduler/schemas.js';
+import { awaitsActivation, type BillingScheduler } from './scheduler/scheduler.js';
 
 export interface SubscriptionsOptions {
   /** Gateway adapters, built with `razorpay(...)`, `cashfree(...)`, `payu(...)`. */
@@ -51,22 +51,25 @@ export class Subscriptions {
   readonly scheduler?: BillingScheduler;
   private readonly registry = new Map<Provider, SubscriptionProvider>();
 
+  // Every method that returns a promise rejects: none of them throws synchronously, even for an unknown gateway.
   readonly plans = {
-    create: (provider: Provider, input: CreatePlanInput): Promise<Plan> => this.provider(provider).createPlan(input),
-    get: (provider: Provider, planId: string): Promise<Plan> => this.provider(provider).getPlan(planId),
+    create: async (provider: Provider, input: CreatePlanInput): Promise<Plan> =>
+      this.provider(provider).createPlan(input),
+    get: async (provider: Provider, planId: string): Promise<Plan> => this.provider(provider).getPlan(planId),
   };
 
   readonly charges = {
-    list: (provider: Provider, subscriptionId: string, options?: ListChargesOptions): Promise<Charge[]> =>
+    list: async (provider: Provider, subscriptionId: string, options?: ListChargesOptions): Promise<Charge[]> =>
       this.provider(provider).listCharges(subscriptionId, options),
-    get: (provider: Provider, subscriptionId: string, chargeId: string): Promise<Charge> =>
+    get: async (provider: Provider, subscriptionId: string, chargeId: string): Promise<Charge> =>
       this.provider(provider).getCharge(subscriptionId, chargeId),
     /** Raises a debit yourself. With a scheduler configured you normally never call this. */
-    create: (provider: Provider, input: CreateChargeInput): Promise<Charge> =>
+    create: async (provider: Provider, input: CreateChargeInput): Promise<Charge> =>
       this.provider(provider).createCharge(input),
-    notify: (provider: Provider, input: NotifyChargeInput): Promise<ChargeNotification> =>
+    notify: async (provider: Provider, input: NotifyChargeInput): Promise<ChargeNotification> =>
       this.provider(provider).notifyCharge(input),
-    refund: (provider: Provider, input: RefundInput): Promise<Refund> => this.provider(provider).refundCharge(input),
+    refund: async (provider: Provider, input: RefundInput): Promise<Refund> =>
+      this.provider(provider).refundCharge(input),
   };
 
   readonly webhooks = {
@@ -76,8 +79,11 @@ export class Subscriptions {
     /** `parse`, then applies each event to the billing scheduler. Use this in your webhook route. */
     handle: async (provider: Provider, request: WebhookRequest): Promise<SubscriptionEvent[]> => {
       const events = this.provider(provider).parseWebhook(request);
-      if (this.scheduler) {
-        for (const event of events) await this.scheduler.handleEvent(event);
+      const scheduler = this.schedulerFor(provider);
+      if (scheduler) {
+        for (const event of events) {
+          await guarded(provider, 'applying a webhook event to the billing schedule', () => scheduler.handleEvent(event));
+        }
       }
       return events;
     },
@@ -117,86 +123,170 @@ export class Subscriptions {
   }
 
   async create(provider: Provider, input: CreateSubscriptionInput): Promise<Subscription> {
-    const subscription = await this.provider(provider).createSubscription(input);
+    const adapter = this.provider(provider);
+    // Decide BEFORE touching the gateway whether this can only work with a scheduler.
+    if (!this.scheduler && mustBeMerchantScheduled(adapter, input)) throw missingScheduler(provider);
+
+    const subscription = await adapter.createSubscription(input);
     if (subscription.scheduling !== SchedulingMode.Merchant) return subscription;
 
-    const scheduler = this.requireScheduler(provider);
+    const scheduler = this.scheduler;
+    if (!scheduler) {
+      const cancelled = await this.abandon(provider, subscription);
+      throw missingScheduler(provider, subscription, cancelled);
+    }
     if (subscription.amount === undefined || !subscription.interval || !subscription.startAt) {
+      const cancelled = await this.abandon(provider, subscription, scheduler);
       throw new SubscriptionError(
         ErrorCode.UnexpectedResponse,
-        `${provider} returned a merchant-scheduled subscription without amount, interval or startAt`,
-        { provider },
+        `${provider} returned a merchant-scheduled subscription without amount, interval or startAt` +
+          `; the subscription ${subscription.id} was ${cancelled ? 'cancelled again' : 'created and could NOT be cancelled: cancel it yourself'}`,
+        { provider, raw: subscription },
       );
     }
-    const schedule = await scheduler.register({
-      id: scheduleIdOf(subscription),
-      provider,
-      subscriptionId: subscription.id,
-      reference: subscription.reference,
-      amount: subscription.amount,
-      currency: subscription.currency,
-      interval: subscription.interval,
-      firstChargeAt: subscription.startAt,
-      totalCycles: subscription.totalCycles,
-      customer: subscription.customer,
-      metadata: subscription.metadata,
-      awaitingAuthorization: true,
-    });
-    return overlaySchedule(subscription, schedule);
+    let schedule: ScheduleRecord;
+    try {
+      schedule = await scheduler.register({
+        provider,
+        subscriptionId: subscription.id,
+        reference: subscription.reference,
+        amount: subscription.amount,
+        currency: subscription.currency,
+        interval: subscription.interval,
+        firstChargeAt: subscription.startAt,
+        totalCycles: subscription.totalCycles,
+        mandateEndsAt: subscription.mandateEndsAt,
+        customer: subscription.customer,
+        metadata: subscription.metadata,
+        awaitingAuthorization: true,
+      });
+    } catch (error) {
+      const cancelled = await this.abandon(provider, subscription, scheduler);
+      throw new SubscriptionError(
+        ErrorCode.Internal,
+        `${provider} subscription ${subscription.id} was created but its billing schedule could not be registered (${describe(error)}); ` +
+          (cancelled ? 'the subscription was cancelled again' : 'it could NOT be cancelled again: cancel it yourself'),
+        { provider, raw: subscription, cause: error },
+      );
+    }
+    return overlaySchedule(subscription, schedule, scheduler.now());
   }
 
   async get(provider: Provider, subscriptionId: string): Promise<Subscription> {
     const subscription = await this.provider(provider).getSubscription(subscriptionId);
-    return this.withSchedule(subscription);
-  }
-
-  async cancel(provider: Provider, subscriptionId: string, options?: CancelSubscriptionOptions): Promise<Subscription> {
-    const subscription = await this.provider(provider).cancelSubscription(subscriptionId, options);
-    const schedule = await this.findSchedule(subscription);
-    if (schedule && this.scheduler) {
-      return overlaySchedule(subscription, await this.scheduler.cancel(schedule.id));
-    }
-    return subscription;
+    if (subscription.scheduling !== SchedulingMode.Merchant) return subscription;
+    const scheduler = this.schedulerFor(provider);
+    if (!scheduler) return subscription;
+    return guarded(provider, 'reading the billing schedule', async () => {
+      const found = await scheduler.find(provider, subscription.reference, subscriptionId, subscription.id);
+      if (!found) return subscription;
+      const schedule = await syncWithGateway(scheduler, found, subscription);
+      return overlaySchedule(subscription, schedule, scheduler.now());
+    });
   }
 
   /**
-   * Pauses charging. For merchant-scheduled subscriptions this works on every
-   * gateway, because pausing is simply the scheduler not raising debits; the
-   * gateway is also told when it has a pause operation of its own.
+   * Cancels the subscription. For merchant-scheduled subscriptions billing is
+   * stopped FIRST (the schedule is cancelled), then the gateway mandate is
+   * cancelled: if the gateway call fails the schedule stays cancelled, so the
+   * customer is never billed against a mandate you meant to end, and the error
+   * propagates so you can retry. Cancelling twice, or after completion, is fine.
+   */
+  async cancel(provider: Provider, subscriptionId: string, options?: CancelSubscriptionOptions): Promise<Subscription> {
+    const adapter = this.provider(provider);
+    const scheduler = this.schedulerFor(provider);
+    const found = scheduler ? await this.findSchedule(scheduler, provider, subscriptionId) : undefined;
+    if (!scheduler || !found) return adapter.cancelSubscription(subscriptionId, options);
+
+    if (options?.mode === CancelMode.AtPeriodEnd && !adapter.capabilities.cancelAtPeriodEnd) {
+      // Refuse before billing is stopped: a merchant-scheduled mandate has no "period" to run to the end of.
+      throw unsupported(provider, 'cancelling at the end of the period', 'cancel immediately: billing stops with the schedule');
+    }
+    const schedule = await guarded(provider, 'cancelling the billing schedule', () => stopBilling(scheduler, found));
+    const subscription = await adapter.cancelSubscription(found.subscriptionId, options);
+    return overlaySchedule(subscription, schedule, scheduler.now());
+  }
+
+  /**
+   * Pauses charging. A merchant-scheduled subscription is paused by the
+   * scheduler alone (the gateway's own pause, where it has one, is never used,
+   * so the mandate stays valid and nothing can resume it behind the scheduler's
+   * back). `resumeAt` makes the scheduler resume it by itself.
    */
   async pause(provider: Provider, subscriptionId: string, options?: PauseSubscriptionOptions): Promise<Subscription> {
     const adapter = this.provider(provider);
-    const schedule = await this.findScheduleById(provider, subscriptionId);
-    if (schedule && this.scheduler) {
-      const paused = await this.scheduler.pause(schedule.id);
-      const subscription = adapter.capabilities.pause
-        ? await adapter.pauseSubscription(subscriptionId, options)
-        : await adapter.getSubscription(subscriptionId);
-      return overlaySchedule(subscription, paused);
-    }
-    return adapter.pauseSubscription(subscriptionId, options);
+    const scheduler = this.schedulerFor(provider);
+    const found = scheduler ? await this.findSchedule(scheduler, provider, subscriptionId) : undefined;
+    if (!scheduler || !found) return adapter.pauseSubscription(subscriptionId, options);
+    const paused = await guarded(provider, 'pausing the billing schedule', () =>
+      scheduler.pause(found.id, { resumeAt: options?.resumeAt }),
+    );
+    const subscription = await adapter.getSubscription(paused.subscriptionId);
+    return overlaySchedule(subscription, paused, scheduler.now());
   }
 
   async resume(provider: Provider, subscriptionId: string, options?: ResumeSubscriptionOptions): Promise<Subscription> {
     const adapter = this.provider(provider);
-    const schedule = await this.findScheduleById(provider, subscriptionId);
-    if (schedule && this.scheduler) {
-      const subscription = adapter.capabilities.resume
-        ? await adapter.resumeSubscription(subscriptionId, options)
-        : await adapter.getSubscription(subscriptionId);
-      const resumed = await this.scheduler.resume(schedule.id, { nextChargeAt: options?.nextChargeAt });
-      return overlaySchedule(subscription, resumed);
-    }
-    return adapter.resumeSubscription(subscriptionId, options);
+    const scheduler = this.schedulerFor(provider);
+    const found = scheduler ? await this.findSchedule(scheduler, provider, subscriptionId) : undefined;
+    if (!scheduler || !found) return adapter.resumeSubscription(subscriptionId, options);
+    const resumed = await guarded(provider, 'resuming the billing schedule', () =>
+      scheduler.resume(found.id, { nextChargeAt: options?.nextChargeAt }),
+    );
+    const subscription = await adapter.getSubscription(resumed.subscriptionId);
+    return overlaySchedule(subscription, resumed, scheduler.now());
   }
 
+  /**
+   * Updates the subscription. For a merchant-scheduled one the gateway is told
+   * what it holds (amount, mandate end) and the schedule gets every field the
+   * scheduler can apply (`amount`, `nextChargeAt`, `remainingCycles`,
+   * `mandateEndsAt`): nothing is silently dropped. `planId` and `quantity` are
+   * refused because the scheduler bills one fixed amount.
+   */
   async update(provider: Provider, subscriptionId: string, input: UpdateSubscriptionInput): Promise<Subscription> {
-    const subscription = await this.provider(provider).updateSubscription(subscriptionId, input);
-    const schedule = await this.findSchedule(subscription);
-    if (schedule && this.scheduler && input.amount !== undefined) {
-      return overlaySchedule(subscription, await this.scheduler.updateAmount(schedule.id, input.amount));
+    const adapter = this.provider(provider);
+    const scheduler = this.schedulerFor(provider);
+    const found = scheduler ? await this.findSchedule(scheduler, provider, subscriptionId) : undefined;
+    if (!scheduler || !found) return adapter.updateSubscription(subscriptionId, input);
+
+    if (input.planId !== undefined || input.quantity !== undefined) {
+      throw unsupported(
+        provider,
+        'changing the plan or quantity of a merchant-scheduled subscription',
+        'the billing scheduler bills one fixed amount per cycle: update `amount` instead',
+      );
     }
-    return this.withSchedule(subscription);
+    if (found.status === ScheduleStatus.Cancelled || found.status === ScheduleStatus.Completed) {
+      throw new SubscriptionError(
+        ErrorCode.Conflict,
+        `The subscription is ${found.status}; its terms cannot change`,
+        { provider },
+      );
+    }
+    const scheduleFields: UpdateScheduleInput = {
+      ...(input.amount !== undefined ? { amount: input.amount } : {}),
+      ...(input.nextChargeAt !== undefined ? { nextChargeAt: input.nextChargeAt } : {}),
+      ...(input.remainingCycles !== undefined ? { remainingCycles: input.remainingCycles } : {}),
+      ...(input.mandateEndsAt !== undefined ? { mandateEndsAt: input.mandateEndsAt } : {}),
+    };
+    const scheduleOnly = input.nextChargeAt !== undefined || input.remainingCycles !== undefined;
+    const gatewayInput: UpdateSubscriptionInput = scheduleOnly
+      ? {
+          ...(input.amount !== undefined ? { amount: input.amount } : {}),
+          ...(input.mandateEndsAt !== undefined ? { mandateEndsAt: input.mandateEndsAt } : {}),
+          ...(input.timing !== undefined ? { timing: input.timing } : {}),
+          ...(input.notifyCustomer !== undefined ? { notifyCustomer: input.notifyCustomer } : {}),
+        }
+      : input;
+    const touchesGateway = input.amount !== undefined || input.mandateEndsAt !== undefined;
+
+    // The gateway first: it validates what it holds (mandate ceiling, modify rules) before the schedule changes.
+    const subscription = touchesGateway
+      ? await adapter.updateSubscription(found.subscriptionId, gatewayInput)
+      : await adapter.getSubscription(found.subscriptionId);
+    const updated = await guarded(provider, 'updating the billing schedule', () => scheduler.update(found.id, scheduleFields));
+    return overlaySchedule(subscription, updated, scheduler.now());
   }
 
   /**
@@ -208,6 +298,12 @@ export class Subscriptions {
    * Always pass `expectedSubscriptionId` (the id or reference your server
    * stored at creation): the browser supplies `result`, so without it a
    * customer could present a genuine result from a different subscription.
+   *
+   * Billing starts only when the customer really authorised and the mandate is
+   * not still pending at the bank. If starting it fails after the gateway
+   * verified the result, the mandate is live but unbilled: this throws
+   * `INTERNAL_ERROR` whose `raw` is the verification (so the new subscription
+   * id is not lost); calling `verifyCheckout` again, or a webhook, finishes it.
    */
   async verifyCheckout(
     provider: Provider,
@@ -225,12 +321,23 @@ export class Subscriptions {
         { provider },
       );
     }
-    if (!this.scheduler || !verification.authorized) return verification;
-    const schedule =
-      (verification.reference ? await this.scheduler.get(verification.reference) : undefined) ??
-      (await this.scheduler.get(verification.subscriptionId));
-    if (schedule && schedule.status === ScheduleStatus.PendingAuthorization) {
-      await this.scheduler.activate(schedule.id, { subscriptionId: verification.subscriptionId });
+    const scheduler = this.schedulerFor(provider);
+    if (!scheduler || !verification.authorized || verification.status === SubscriptionStatus.PendingAuthorization) {
+      return verification;
+    }
+    try {
+      const schedule = await scheduler.find(provider, verification.reference, verification.subscriptionId);
+      if (schedule && awaitsActivation(schedule)) {
+        await scheduler.activate(schedule.id, { subscriptionId: verification.subscriptionId });
+      }
+    } catch (error) {
+      throw new SubscriptionError(
+        ErrorCode.Internal,
+        `${provider} verified the customer's authorisation, so the mandate ${verification.subscriptionId} is live, but its billing ` +
+          `schedule could not be started (${describe(error)}): nothing will be billed until verifyCheckout is called again or the ` +
+          "gateway's authorisation webhook is handled. The verification is in `raw`.",
+        { provider, raw: verification, cause: error },
+      );
     }
     return verification;
   }
@@ -245,37 +352,33 @@ export class Subscriptions {
     return this.scheduler.tick(options);
   }
 
-  private requireScheduler(provider: Provider): BillingScheduler {
-    if (!this.scheduler) {
-      throw new SubscriptionError(
-        ErrorCode.Config,
-        `${provider} subscriptions are merchant-scheduled: pass a scheduler to createSubscriptions so charges are raised`,
-        { provider },
-      );
+  /** The scheduler, when this gateway can be merchant-scheduled at all; otherwise the facade never reads it. */
+  private schedulerFor(provider: Provider): BillingScheduler | undefined {
+    return this.scheduler && this.provider(provider).capabilities.merchantCharges ? this.scheduler : undefined;
+  }
+
+  /** The ONE way the facade finds a schedule: provider-scoped, by what the caller knows (reference or gateway id). */
+  private findSchedule(
+    scheduler: BillingScheduler,
+    provider: Provider,
+    ...keys: Array<string | undefined>
+  ): Promise<ScheduleRecord | undefined> {
+    return guarded(provider, 'looking up the billing schedule', () => scheduler.find(provider, ...keys));
+  }
+
+  /** Best-effort undo of a gateway subscription that could not be scheduled. Never throws; true when it was cancelled. */
+  private async abandon(provider: Provider, subscription: Subscription, scheduler?: BillingScheduler): Promise<boolean> {
+    try {
+      if (scheduler) {
+        // Never cancel a subscription some schedule already tracks: an idempotent retry returns a live one.
+        const tracked = await scheduler.find(provider, subscription.reference, subscription.id);
+        if (tracked && tracked.subscriptionId === subscription.id) return false;
+      }
+      await this.provider(provider).cancelSubscription(subscription.id);
+      return true;
+    } catch {
+      return false;
     }
-    return this.scheduler;
-  }
-
-  private async findSchedule(subscription: Subscription): Promise<ScheduleRecord | undefined> {
-    if (!this.scheduler) return undefined;
-    return (
-      (subscription.reference ? await this.scheduler.get(subscription.reference) : undefined) ??
-      (await this.scheduler.get(subscription.id))
-    );
-  }
-
-  private async findScheduleById(provider: Provider, subscriptionId: string): Promise<ScheduleRecord | undefined> {
-    if (!this.scheduler) return undefined;
-    const direct = await this.scheduler.get(subscriptionId);
-    if (direct && direct.provider === provider) return direct;
-    return this.scheduler.findBySubscriptionId(provider, subscriptionId);
-  }
-
-  private async withSchedule(subscription: Subscription): Promise<Subscription> {
-    if (subscription.scheduling !== SchedulingMode.Merchant) return subscription;
-    const schedule =
-      (await this.findSchedule(subscription)) ?? (await this.findScheduleById(subscription.provider, subscription.id));
-    return schedule ? overlaySchedule(subscription, schedule) : subscription;
   }
 }
 
@@ -283,9 +386,86 @@ export function createSubscriptions(options: SubscriptionsOptions): Subscription
   return new Subscriptions(options);
 }
 
-/** A schedule is keyed by the merchant's reference when there is one, so it survives gateway id changes. */
-function scheduleIdOf(subscription: Subscription): string {
-  return subscription.reference ?? subscription.id;
+/** Gateway statuses that mean the mandate is live. */
+const LIVE_GATEWAY_STATUSES: readonly SubscriptionStatus[] = [SubscriptionStatus.Active, SubscriptionStatus.Trialing];
+
+function missingScheduler(provider: Provider, created?: Subscription, cancelled?: boolean): SubscriptionError {
+  return new SubscriptionError(
+    ErrorCode.Config,
+    `${provider} subscriptions are merchant-scheduled: pass a scheduler to createSubscriptions so charges are raised` +
+      (created ? `; the subscription ${created.id} was created at the gateway and ${cancelled ? 'cancelled again' : 'could NOT be cancelled: cancel it yourself'}` : ''),
+    { provider, ...(created ? { raw: created } : {}) },
+  );
+}
+
+/** True when the request can only be served by the billing scheduler, which is knowable before calling the gateway. */
+function mustBeMerchantScheduled(adapter: SubscriptionProvider, input: CreateSubscriptionInput): boolean {
+  const modes = adapter.capabilities.scheduling;
+  if (modes.length === 1 && modes[0] === SchedulingMode.Merchant) return true;
+  return typeof input.plan === 'object' && input.plan !== null && input.plan.scheduling === SchedulingMode.Merchant;
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Runs a scheduler interaction; anything that is not already a `SubscriptionError` (a store failure) becomes `INTERNAL_ERROR`. */
+async function guarded<T>(provider: Provider, what: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof SubscriptionError) throw error;
+    throw new SubscriptionError(ErrorCode.Internal, `${what} failed: ${describe(error)}`, { provider, cause: error });
+  }
+}
+
+/** Cancels the schedule unless it is already over; a schedule that is cancelled or completed is left as it is. */
+async function stopBilling(scheduler: BillingScheduler, found: ScheduleRecord): Promise<ScheduleRecord> {
+  if (found.status === ScheduleStatus.Cancelled || found.status === ScheduleStatus.Completed) return found;
+  try {
+    return await scheduler.cancel(found.id);
+  } catch (error) {
+    // It completed between the lookup and the cancel: nothing left to stop.
+    const latest = await scheduler.get(found.id);
+    if (latest?.status === ScheduleStatus.Completed) return latest;
+    throw error;
+  }
+}
+
+/**
+ * Brings the schedule in step with what the gateway reports, for apps without
+ * webhooks: a mandate that is live starts (or revives) billing, a mandate that is
+ * dead stops it so ticks stop calling it.
+ */
+async function syncWithGateway(
+  scheduler: BillingScheduler,
+  schedule: ScheduleRecord,
+  subscription: Subscription,
+): Promise<ScheduleRecord> {
+  const status = subscription.status;
+  if (awaitsActivation(schedule) && LIVE_GATEWAY_STATUSES.includes(status)) {
+    return scheduler.activate(schedule.id, { subscriptionId: subscription.id });
+  }
+  const gatewayIsDead =
+    status === SubscriptionStatus.Cancelled || status === SubscriptionStatus.Expired || status === SubscriptionStatus.Failed;
+  const stillOpen =
+    schedule.status === ScheduleStatus.PendingAuthorization ||
+    schedule.status === ScheduleStatus.Active ||
+    schedule.status === ScheduleStatus.Paused ||
+    schedule.status === ScheduleStatus.Halted;
+  if (gatewayIsDead && stillOpen) {
+    const pending = schedule.status === ScheduleStatus.PendingAuthorization;
+    const reason =
+      status === SubscriptionStatus.Expired
+        ? pending
+          ? ScheduleStatusReason.AuthorizationTimeout
+          : ScheduleStatusReason.MandateExpired
+        : status === SubscriptionStatus.Failed && pending
+          ? ScheduleStatusReason.AuthorizationFailed
+          : ScheduleStatusReason.CancelledByGateway;
+    return scheduler.cancel(schedule.id, { reason });
+  }
+  return schedule;
 }
 
 const SCHEDULE_TO_SUBSCRIPTION_STATUS: Record<ScheduleStatus, SubscriptionStatus | undefined> = {
@@ -299,10 +479,11 @@ const SCHEDULE_TO_SUBSCRIPTION_STATUS: Record<ScheduleStatus, SubscriptionStatus
 
 /**
  * For merchant-scheduled subscriptions the gateway only knows the mandate; the
- * billing state lives in the schedule. This merges the two into one view.
- * A terminal gateway status (mandate revoked, expired) always wins.
+ * billing state lives in the schedule. This merges the two into one view, as of `now`.
+ * `trialing` only while nothing is paid and the first charge date is still ahead, `past_due` while a failed
+ * debit is being retried. A terminal gateway status (mandate revoked, expired) always wins.
  */
-export function overlaySchedule(subscription: Subscription, schedule: ScheduleRecord): Subscription {
+export function overlaySchedule(subscription: Subscription, schedule: ScheduleRecord, now: Date = new Date()): Subscription {
   const merged: Subscription = {
     ...subscription,
     amount: schedule.amount,
@@ -322,10 +503,17 @@ export function overlaySchedule(subscription: Subscription, schedule: ScheduleRe
   if (gatewayIsTerminal) return merged;
 
   const fromSchedule = SCHEDULE_TO_SUBSCRIPTION_STATUS[schedule.status];
-  if (fromSchedule === SubscriptionStatus.Active && schedule.paidCycles === 0 && schedule.nextChargeAt) {
-    // Mandate is live but nothing has been charged yet: a free trial or delayed start.
-    merged.status = SubscriptionStatus.Trialing;
-    merged.trialEndsAt = schedule.nextChargeAt;
+  if (fromSchedule === SubscriptionStatus.Active) {
+    if (schedule.retrying === true) {
+      // A debit failed and is being retried.
+      merged.status = SubscriptionStatus.PastDue;
+    } else if (schedule.paidCycles === 0 && now.getTime() < Date.parse(schedule.firstChargeAt)) {
+      // Mandate is live and the first charge date has not come yet: a free trial or a delayed start.
+      merged.status = SubscriptionStatus.Trialing;
+      merged.trialEndsAt = schedule.firstChargeAt;
+    } else {
+      merged.status = SubscriptionStatus.Active;
+    }
   } else if (fromSchedule) {
     merged.status = fromSchedule;
   }
