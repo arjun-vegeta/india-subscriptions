@@ -48,7 +48,7 @@ describe('package.json', () => {
   });
 
   it.each(ENTRY_POINTS)('exports %s with ESM, CJS and types, matching the build layout', (key, source) => {
-    const entry = pkg.exports[key] as Record<string, { types: string; default: string }>;
+    const entry = pkg.exports[key] as Record<'import' | 'require', { types: string; default: string }>;
     expect(Object.keys(entry).sort()).toEqual(['import', 'require']);
     for (const condition of ['import', 'require'] as const) {
       const target = entry[condition];
