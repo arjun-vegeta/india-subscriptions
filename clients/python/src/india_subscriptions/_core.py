@@ -83,9 +83,9 @@ def dump_request(model: BaseModel) -> bytes:
     return model.model_dump_json(by_alias=True, exclude_unset=True, exclude_none=True).encode("utf-8")
 
 
-def dump_untouched(model: BaseModel) -> bytes:
-    """JSON for a body the service must see exactly as given (the gateway's checkout result)."""
-    return model.model_dump_json().encode("utf-8")
+def dump_keeping_nulls(model: BaseModel) -> bytes:
+    """JSON for a body that carries the gateway's data (the checkout result): only what was set, but nulls inside it stay."""
+    return model.model_dump_json(by_alias=True, exclude_unset=True).encode("utf-8")
 
 
 def render_path(template: str, params: Mapping[PathParam, str]) -> str:

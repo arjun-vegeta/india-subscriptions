@@ -27,12 +27,12 @@ from india_subscriptions import (
     SubscriptionsApiError,
     SubscriptionsClient,
 )
-from india_subscriptions.models import BillingIntervalUnit
+from india_subscriptions.models import IntervalUnit
 
 with SubscriptionsClient("https://billing.internal", api_key="...") as client:
     plan = client.plans.create(
         Provider.RAZORPAY,
-        {"name": "Gold", "amount": 49900, "interval": {"unit": BillingIntervalUnit.MONTH, "count": 1}},  # paise
+        {"name": "Gold", "amount": 49900, "interval": {"unit": IntervalUnit.MONTH, "count": 1}},  # paise
     )
 
     subscription = client.subscriptions.create(
@@ -67,7 +67,7 @@ Amounts are integer paise (₹499 is `49900`). Instants are timezone-aware `date
 | `client.subscriptions.get / update / cancel / pause / resume(provider, subscription_id, ...)` | `getSubscription`, `updateSubscription`, `cancelSubscription`, `pauseSubscription`, `resumeSubscription` |
 | `client.charges.list / get(provider, subscription_id, ...)` | `listCharges`, `getCharge` |
 | `client.charges.create / notify / refund(provider, ...)` | `createCharge`, `notifyCharge`, `createRefund` |
-| `client.checkout.verify(provider, result)` | `verifyCheckout` |
+| `client.checkout.verify(provider, result, expected_subscription_id)` | `verifyCheckout` |
 | `client.webhooks.parse(provider, request)` | `parseWebhook` |
 | `client.webhooks.receive(provider, raw_body, headers)` | `receiveWebhook` (the gateway-facing route; no key) |
 | `client.scheduler.tick(options=None)` | `runSchedulerTick` |
@@ -98,13 +98,11 @@ Responses ignore fields they do not know, so a newer service does not break an o
 is a discriminated union on `kind`:
 
 ```python
-from india_subscriptions.models import CheckoutInstructionCheckoutInstructionRazorpayCheckout
+from india_subscriptions.models import RazorpayCheckout
 
-if isinstance(subscription.checkout, CheckoutInstructionCheckoutInstructionRazorpayCheckout):
+if isinstance(subscription.checkout, RazorpayCheckout):
     open_razorpay_checkout(subscription.checkout.key_id, subscription.checkout.subscription_id)
 ```
-
-(The long class names come straight from the OpenAPI document, which names its four variants only by position.)
 
 ## Errors
 

@@ -16,12 +16,11 @@ from __future__ import annotations
 from typing import Optional
 
 from .constants import ERROR_BODY_SNIPPET_CHARS, HttpMethod
-from .models import ErrorResponse, ErrorResponseErrorCode, Provider
+from .models import ErrorCode, ErrorResponse, Provider
 
-ErrorCode = ErrorResponseErrorCode
-"""Every code the service can return: the library's codes plus the service's own
-(``UNAUTHORIZED``, ``METHOD_NOT_ALLOWED``, ``PAYLOAD_TOO_LARGE``, ``INTERNAL_ERROR``).
-This is the generated enum, under a readable name."""
+# ``ErrorCode`` is the generated enum of every code the service can return (the library's codes plus the
+# service's own), re-exported here so ``from india_subscriptions.errors import ErrorCode`` keeps working.
+__all__ = ["ErrorCode", "SubscriptionsApiError", "SubscriptionsError", "SubscriptionsTransportError"]
 
 
 class SubscriptionsError(Exception):

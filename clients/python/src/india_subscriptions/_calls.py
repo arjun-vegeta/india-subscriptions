@@ -10,14 +10,13 @@ from typing import Any, List, Mapping, Optional, Union
 
 from pydantic import TypeAdapter
 
-from ._core import Call, coerce, dump_request, dump_untouched
+from ._core import Call, coerce, dump_keeping_nulls, dump_request
 from .constants import OperationId, PathParam, QueryParam, ROUTES
 from .models import (
     CancelSubscriptionOptions,
     Capabilities,
     Charge,
     ChargeNotification,
-    CheckoutResult,
     CheckoutVerification,
     CreateChargeInput,
     CreatePlanInput,
@@ -37,6 +36,7 @@ from .models import (
     TickRequest,
     TickResult,
     UpdateSubscriptionInput,
+    VerifyCheckoutInput,
     WebhookReceipt,
     WebhookRequest,
 )
@@ -172,10 +172,17 @@ def create_refund(provider: Provider, refund: Union[RefundInput, Input]) -> Call
     return Call(ROUTES[OperationId.CREATE_REFUND], _REFUND, _provider(provider), body=body)
 
 
-def verify_checkout(provider: Provider, result: Union[CheckoutResult, Input]) -> Call[CheckoutVerification]:
+def verify_checkout(
+    provider: Provider, result: Input, expected_subscription_id: Optional[str]
+) -> Call[CheckoutVerification]:
     """The gateway's result is forwarded untouched (nothing is dropped, not even a null)."""
-    wrapped = result if isinstance(result, CheckoutResult) else CheckoutResult.model_validate(dict(result))
-    return Call(ROUTES[OperationId.VERIFY_CHECKOUT], _VERIFICATION, _provider(provider), body=dump_untouched(wrapped))
+    # Only a given id is "set", so an absent one is not sent as null.
+    body = (
+        VerifyCheckoutInput(result=dict(result))
+        if expected_subscription_id is None
+        else VerifyCheckoutInput(result=dict(result), expected_subscription_id=expected_subscription_id)
+    )
+    return Call(ROUTES[OperationId.VERIFY_CHECKOUT], _VERIFICATION, _provider(provider), body=dump_keeping_nulls(body))
 
 
 def parse_webhook(provider: Provider, request: Union[WebhookRequest, Input]) -> Call[List[SubscriptionEvent]]:

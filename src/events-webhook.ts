@@ -20,6 +20,8 @@ const SUCCESS_STATUS_MIN = 200;
 const SUCCESS_STATUS_MAX = 299;
 /** A redirect is not followed: a 3xx counts as a failed delivery. */
 const NO_REDIRECT = 'manual';
+/** `name` of the error `AbortSignal.timeout` rejects with. */
+const TIMEOUT_ERROR_NAME = 'TimeoutError';
 
 /** The JSON body of a delivery. */
 export interface EventsDelivery {
@@ -92,7 +94,7 @@ export function createEventsForwarder(
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (cause) {
-      const timedOut = cause instanceof Error && cause.name === 'TimeoutError';
+      const timedOut = cause instanceof Error && cause.name === TIMEOUT_ERROR_NAME;
       throw new SubscriptionError(
         timedOut ? ErrorCode.Timeout : ErrorCode.Network,
         `Events webhook at ${target} ${timedOut ? 'timed out' : 'could not be reached'}`,

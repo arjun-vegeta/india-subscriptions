@@ -33,11 +33,11 @@ from india_subscriptions import (
 )
 from india_subscriptions.constants import ContentType, HttpStatus
 from india_subscriptions.models import (
-    BillingIntervalUnit,
-    CancelSubscriptionOptionsMode,
+    IntervalUnit,
+    CancelMode,
     ChargeStatus,
-    CheckoutInstructionCheckoutInstructionCashfreeCheckout,
-    CheckoutInstructionCheckoutInstructionRazorpayCheckout,
+    CashfreeCheckout,
+    RazorpayCheckout,
     Environment,
     HealthStatus,
     RefundStatus,
@@ -130,7 +130,7 @@ async def test_the_subscription_lifecycle_with_a_trial(api: Api) -> None:
     plan = await api(
         client.plans.create(
             provider,
-            {"name": "Gold", "amount": 49900, "interval": {"unit": BillingIntervalUnit.MONTH, "count": 1}, "maxAmount": 60000},
+            {"name": "Gold", "amount": 49900, "interval": {"unit": IntervalUnit.MONTH, "count": 1}, "maxAmount": 60000},
         )
     )
     assert plan.provider is provider
@@ -159,7 +159,7 @@ async def test_the_subscription_lifecycle_with_a_trial(api: Api) -> None:
     assert created.customer is not None and created.customer.email == "asha@example.com"
     assert created.trial_ends_at is not None
     assert timedelta(days=TRIAL_DAYS) - timedelta(minutes=5) < created.trial_ends_at - before < timedelta(days=TRIAL_DAYS, minutes=5)
-    assert isinstance(created.checkout, CheckoutInstructionCheckoutInstructionRazorpayCheckout)
+    assert isinstance(created.checkout, RazorpayCheckout)
     assert created.checkout.subscription_id == created.id
     assert created.checkout.prefill is not None and created.checkout.prefill.name == "Asha"
     assert created.raw == {"fake": True, "id": created.id}
@@ -176,7 +176,7 @@ async def test_the_subscription_lifecycle_with_a_trial(api: Api) -> None:
     assert updated.quantity == 3
 
     scheduled = await api(
-        client.subscriptions.cancel(provider, created.id, {"mode": CancelSubscriptionOptionsMode.AT_PERIOD_END})
+        client.subscriptions.cancel(provider, created.id, {"mode": CancelMode.AT_PERIOD_END})
     )
     assert scheduled.cancel_at_period_end is True and scheduled.status is SubscriptionStatus.TRIALING
 
@@ -200,13 +200,13 @@ async def test_a_cashfree_subscription_has_the_other_checkout_kind(api: Api) -> 
         api.client.subscriptions.create(
             Provider.CASHFREE,
             {
-                "plan": {"name": "Silver", "amount": 19900, "interval": {"unit": BillingIntervalUnit.WEEK, "count": 2}},
+                "plan": {"name": "Silver", "amount": 19900, "interval": {"unit": IntervalUnit.WEEK, "count": 2}},
                 "customer": {"phone": "+919876543210"},
             },
         )
     )
     assert subscription.status is SubscriptionStatus.CREATED
-    assert isinstance(subscription.checkout, CheckoutInstructionCheckoutInstructionCashfreeCheckout)
+    assert isinstance(subscription.checkout, CashfreeCheckout)
     assert subscription.checkout.environment is Environment.TEST
     assert subscription.checkout.session_id.endswith(subscription.id)
 
@@ -217,7 +217,7 @@ async def test_charges_notifications_and_refunds(api: Api) -> None:
     subscription = await api(
         client.subscriptions.create(
             provider,
-            {"plan": {"name": "Charges", "amount": 10000, "interval": {"unit": BillingIntervalUnit.MONTH, "count": 1}}, "customer": {"name": "B"}},
+            {"plan": {"name": "Charges", "amount": 10000, "interval": {"unit": IntervalUnit.MONTH, "count": 1}}, "customer": {"name": "B"}},
         )
     )
     assert await api(client.charges.list(provider, subscription.id)) == []
@@ -267,7 +267,7 @@ async def test_a_lost_answer_is_outcome_unknown_and_is_not_retried(api: Api) -> 
     subscription = await api(
         api.client.subscriptions.create(
             provider,
-            {"plan": {"name": "P", "amount": 100, "interval": {"unit": BillingIntervalUnit.DAY, "count": 1}}, "customer": {"name": "C"}},
+            {"plan": {"name": "P", "amount": 100, "interval": {"unit": IntervalUnit.DAY, "count": 1}}, "customer": {"name": "C"}},
         )
     )
 
@@ -323,7 +323,7 @@ async def test_errors_from_the_service(api: Api) -> None:
 
 
 async def test_a_body_over_the_size_limit_is_payload_too_large(api: Api) -> None:
-    huge = {"name": "Big", "amount": 1, "interval": {"unit": BillingIntervalUnit.DAY, "count": 1}, "metadata": {"blob": "x" * (2 * 1024 * 1024)}}
+    huge = {"name": "Big", "amount": 1, "interval": {"unit": IntervalUnit.DAY, "count": 1}, "metadata": {"blob": "x" * (2 * 1024 * 1024)}}
 
     with pytest.raises((SubscriptionsApiError, SubscriptionsTransportError)) as caught:
         await api(api.client.plans.create(Provider.RAZORPAY, huge))
@@ -357,12 +357,12 @@ async def test_checkout_verification(api: Api, service: Service) -> None:
     subscription = await api(
         api.client.subscriptions.create(
             provider,
-            {"plan": {"name": "V", "amount": 100, "interval": {"unit": BillingIntervalUnit.DAY, "count": 1}}, "customer": {"name": "C"}},
+            {"plan": {"name": "V", "amount": 100, "interval": {"unit": IntervalUnit.DAY, "count": 1}}, "customer": {"name": "C"}},
         )
     )
     good = {"subscription_id": subscription.id, "signature": sign(service.webhook_secret, subscription.id), "extra": None}
 
-    verification = await api(api.client.checkout.verify(provider, good))
+    verification = await api(api.client.checkout.verify(provider, good, subscription.id))
 
     assert verification.authorized is True
     assert verification.subscription_id == subscription.id
@@ -370,9 +370,21 @@ async def test_checkout_verification(api: Api, service: Service) -> None:
     assert verification.raw == good  # forwarded untouched, nulls included
 
     with pytest.raises(SubscriptionsApiError) as tampered:
-        await api(api.client.checkout.verify(provider, {**good, "signature": "0" * 64}))
+        await api(api.client.checkout.verify(provider, {**good, "signature": "0" * 64}, subscription.id))
     assert tampered.value.code is ErrorCode.SIGNATURE_INVALID
     assert tampered.value.status_code == HttpStatus.UNAUTHORIZED
+
+    # A genuine result for another subscription is refused too, when the expected id is passed.
+    other = await api(
+        api.client.subscriptions.create(
+            provider,
+            {"plan": {"name": "W", "amount": 100, "interval": {"unit": IntervalUnit.DAY, "count": 1}}, "customer": {"name": "D"}},
+        )
+    )
+    with pytest.raises(SubscriptionsApiError) as replayed:
+        await api(api.client.checkout.verify(provider, good, other.id))
+    assert replayed.value.code is ErrorCode.SIGNATURE_INVALID
+    assert "different subscription" in replayed.value.message
 
 
 WEBHOOK_BODY = '{ "id":"evt_42" , "event":"subscription.charged",\r\n "subscription_id":"sub_7", "note":"₹499 \U0001f4b8"}\n'

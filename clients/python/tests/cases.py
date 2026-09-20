@@ -39,9 +39,10 @@ from india_subscriptions import (
 from india_subscriptions.constants import ApiPath, AuthMode, ContentType, HttpMethod, OperationId, PathParam, QueryParam
 from india_subscriptions.models import (
     BillingInterval,
-    BillingIntervalUnit,
-    CancelSubscriptionOptionsMode,
-    CheckoutInstructionCheckoutInstructionRazorpayCheckout,
+    IntervalUnit,
+    CancelMode,
+    ChangeTiming,
+    RazorpayCheckout,
     HealthStatus,
     OpenApiDocument,
 )
@@ -60,7 +61,7 @@ PLAN_JSON = {
     "name": "Gold",
     "amount": 49900,
     "currency": Currency.INR.value,
-    "interval": {"unit": BillingIntervalUnit.MONTH.value, "count": 1},
+    "interval": {"unit": IntervalUnit.MONTH.value, "count": 1},
     "scheduling": SchedulingMode.GATEWAY.value,
     "maxAmount": 60000,
     "createdAt": "2026-11-17T10:30:00Z",
@@ -191,7 +192,7 @@ def _check_plan(result: Any) -> None:
     assert result.amount == 49900
     assert result.currency is Currency.INR
     assert result.max_amount == 60000
-    assert result.interval == BillingInterval(unit=BillingIntervalUnit.MONTH, count=1)
+    assert result.interval == BillingInterval(unit=IntervalUnit.MONTH, count=1)
     assert result.created_at == datetime(2026, 11, 17, 10, 30, tzinfo=timezone.utc)
 
 
@@ -201,7 +202,7 @@ def _check_subscription(result: Any) -> None:
     assert result.status is SubscriptionStatus.TRIALING
     assert result.provider_status == "authenticated"
     assert result.trial_ends_at == datetime(2026, 12, 1, 10, 30, tzinfo=IST)
-    assert isinstance(result.checkout, CheckoutInstructionCheckoutInstructionRazorpayCheckout)
+    assert isinstance(result.checkout, RazorpayCheckout)
     assert result.checkout.key_id == "rzp_test_1"
 
 
@@ -297,7 +298,7 @@ CASES: List[Case] = [
             CreatePlanInput(
                 name="Gold",
                 amount=49900,
-                interval=BillingInterval(unit=BillingIntervalUnit.MONTH, count=1),
+                interval=BillingInterval(unit=IntervalUnit.MONTH, count=1),
                 max_amount=60000,
             ),
         ),
@@ -308,7 +309,7 @@ CASES: List[Case] = [
         body={
             "name": "Gold",
             "amount": 49900,
-            "interval": {"unit": BillingIntervalUnit.MONTH.value, "count": 1},
+            "interval": {"unit": IntervalUnit.MONTH.value, "count": 1},
             "maxAmount": 60000,
         },
     ),
@@ -358,27 +359,27 @@ CASES: List[Case] = [
         lambda c: c.subscriptions.update(
             Provider.RAZORPAY,
             SUBSCRIPTION_ID,
-            {"quantity": 2, "timing": CancelSubscriptionOptionsMode.AT_PERIOD_END},
+            {"quantity": 2, "timing": ChangeTiming.AT_PERIOD_END},
         ),
         _path(ApiPath.SUBSCRIPTION, provider=RAZORPAY, subscriptionId=SUBSCRIPTION_ID),
         200,
         SUBSCRIPTION_JSON,
         _check_subscription,
         method=HttpMethod.PATCH,
-        body={"quantity": 2, "timing": CancelSubscriptionOptionsMode.AT_PERIOD_END.value},
+        body={"quantity": 2, "timing": ChangeTiming.AT_PERIOD_END.value},
     ),
     Case(
         OperationId.CANCEL_SUBSCRIPTION,
         lambda c: c.subscriptions.cancel(
             Provider.RAZORPAY,
             SUBSCRIPTION_ID,
-            CancelSubscriptionOptions(mode=CancelSubscriptionOptionsMode.AT_PERIOD_END),
+            CancelSubscriptionOptions(mode=CancelMode.AT_PERIOD_END),
         ),
         _path(ApiPath.SUBSCRIPTION_CANCEL, provider=RAZORPAY, subscriptionId=SUBSCRIPTION_ID),
         200,
         SUBSCRIPTION_JSON,
         _check_subscription,
-        body={"mode": CancelSubscriptionOptionsMode.AT_PERIOD_END.value},
+        body={"mode": CancelMode.AT_PERIOD_END.value},
     ),
     Case(
         OperationId.PAUSE_SUBSCRIPTION,
@@ -473,12 +474,12 @@ CASES: List[Case] = [
     ),
     Case(
         OperationId.VERIFY_CHECKOUT,
-        lambda c: c.checkout.verify(Provider.RAZORPAY, GATEWAY_RESULT),
+        lambda c: c.checkout.verify(Provider.RAZORPAY, GATEWAY_RESULT, expected_subscription_id=SUBSCRIPTION_ID),
         _path(ApiPath.CHECKOUT_VERIFY, provider=RAZORPAY),
         200,
         VERIFICATION_JSON,
         _check_verification,
-        body=GATEWAY_RESULT,
+        body={"result": GATEWAY_RESULT, "expectedSubscriptionId": SUBSCRIPTION_ID},
     ),
     Case(
         OperationId.PARSE_WEBHOOK,

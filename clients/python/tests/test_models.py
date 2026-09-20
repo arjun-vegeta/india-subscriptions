@@ -10,11 +10,12 @@ from pydantic import BaseModel, ValidationError
 
 from india_subscriptions import models
 from india_subscriptions.models import (
-    CancelSubscriptionOptionsMode,
-    CheckoutInstructionCheckoutInstructionCashfreeCheckout,
-    CheckoutInstructionCheckoutInstructionFormPost,
-    CheckoutInstructionCheckoutInstructionRazorpayCheckout,
-    CheckoutInstructionCheckoutInstructionRedirect,
+    CancelMode,
+    CashfreeCheckout,
+    CheckoutKind,
+    FormPostCheckout,
+    RazorpayCheckout,
+    RedirectCheckout,
     CreatePlanInput,
     Currency,
     Customer,
@@ -48,7 +49,8 @@ def test_provider_is_one_type_everywhere() -> None:
 def test_defaults_are_enum_members_not_strings() -> None:
     plan = CreatePlanInput.model_validate({"name": "G", "amount": 1, "interval": {"unit": "day", "count": 1}})
     assert plan.currency is Currency.INR
-    assert models.CancelSubscriptionOptions().mode is CancelSubscriptionOptionsMode.IMMEDIATELY
+    assert models.CancelSubscriptionOptions().mode is CancelMode.IMMEDIATELY
+    assert models.UpdateSubscriptionInput.model_validate({"quantity": 1}).timing is models.ChangeTiming.IMMEDIATELY
 
 
 def test_models_accept_json_names_and_python_names() -> None:
@@ -105,10 +107,10 @@ def test_response_models_ignore_unknown_keys(model: Any) -> None:
 
 
 CHECKOUTS: Dict[str, Any] = {
-    "redirect": ({"kind": "redirect", "url": "https://pay.example.test/x"}, CheckoutInstructionCheckoutInstructionRedirect),
-    "form_post": ({"kind": "form_post", "url": "https://pay.example.test/x", "fields": {"a": "b"}}, CheckoutInstructionCheckoutInstructionFormPost),
-    "razorpay_checkout": ({"kind": "razorpay_checkout", "keyId": "k", "subscriptionId": "s"}, CheckoutInstructionCheckoutInstructionRazorpayCheckout),
-    "cashfree_checkout": ({"kind": "cashfree_checkout", "sessionId": "s", "environment": Environment.TEST.value}, CheckoutInstructionCheckoutInstructionCashfreeCheckout),
+    CheckoutKind.REDIRECT.value: ({"kind": CheckoutKind.REDIRECT.value, "url": "https://pay.example.test/x"}, RedirectCheckout),
+    CheckoutKind.FORM_POST.value: ({"kind": CheckoutKind.FORM_POST.value, "url": "https://pay.example.test/x", "fields": {"a": "b"}}, FormPostCheckout),
+    CheckoutKind.RAZORPAY_CHECKOUT.value: ({"kind": CheckoutKind.RAZORPAY_CHECKOUT.value, "keyId": "k", "subscriptionId": "s"}, RazorpayCheckout),
+    CheckoutKind.CASHFREE_CHECKOUT.value: ({"kind": CheckoutKind.CASHFREE_CHECKOUT.value, "sessionId": "s", "environment": Environment.TEST.value}, CashfreeCheckout),
 }
 
 

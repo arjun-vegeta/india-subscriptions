@@ -1,16 +1,77 @@
 {
-  "CreatePlanInput": {"config": {"extra": "forbid"}},
-  "CreateSubscriptionInput": {"config": {"extra": "forbid"}},
-  "Trial": {"config": {"extra": "forbid"}},
-  "UpdateSubscriptionInput": {"config": {"extra": "forbid"}},
-  "CancelSubscriptionOptions": {"config": {"extra": "forbid"}},
-  "PauseSubscriptionOptions": {"config": {"extra": "forbid"}},
-  "ResumeSubscriptionOptions": {"config": {"extra": "forbid"}},
-  "CreateChargeInput": {"config": {"extra": "forbid"}},
-  "NotifyChargeInput": {"config": {"extra": "forbid"}},
-  "RefundInput": {"config": {"extra": "forbid"}},
-  "ListChargesOptions": {"config": {"extra": "forbid"}},
-  "WebhookRequest": {"config": {"extra": "forbid"}},
-  "TickRequest": {"config": {"extra": "forbid"}},
-  "OpenApiDocument": {"config": {"extra": "allow"}}
+  "CreatePlanInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "CreateSubscriptionInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "Trial": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "UpdateSubscriptionInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "CancelSubscriptionOptions": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "PauseSubscriptionOptions": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "ResumeSubscriptionOptions": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "CreateChargeInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "NotifyChargeInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "RefundInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "ListChargesOptions": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "WebhookRequest": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "TickRequest": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "OpenApiDocument": {
+    "config": {
+      "extra": "allow"
+    }
+  },
+  "VerifyCheckoutInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  }
 }

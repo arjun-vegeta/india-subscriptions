@@ -18,6 +18,8 @@ const DIRECTORY_MODE = 0o700;
 const JSON_INDENT = 2;
 const TEMP_SUFFIX = 'tmp';
 const MAX_REPORTED_ISSUES = 5;
+/** Node's error code for a file that does not exist. */
+const NOT_FOUND = 'ENOENT';
 
 const StoreFileSchema = z.object({
   format: z.literal(FILE_STORE_FORMAT),
@@ -324,7 +326,7 @@ async function readIfPresent(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, 'utf8');
   } catch (cause) {
-    if (cause instanceof Error && 'code' in cause && cause.code === 'ENOENT') return undefined;
+    if (cause instanceof Error && 'code' in cause && cause.code === NOT_FOUND) return undefined;
     throw storageError(`Cannot read scheduler store file ${path}`, cause);
   }
 }

@@ -179,7 +179,9 @@ async def test_the_client_returns_the_type_the_spec_names(case: Case) -> None:
 
 
 def test_the_documented_error_body_is_the_one_the_client_parses() -> None:
-    schema = SPEC["components"]["schemas"]["ErrorResponse"]["properties"]["error"]
-    assert set(schema["properties"]) == {"code", "message", "provider", "httpStatus", "providerCode", "retryable"}
-    assert set(schema["required"]) == {"code", "message", "retryable"}
-    assert {code.value for code in ErrorCode} == set(schema["properties"]["code"]["enum"])
+    schemas = SPEC["components"]["schemas"]
+    assert schemas["ErrorResponse"]["required"] == ["error"]
+    detail = schemas["ErrorDetail"]
+    assert set(detail["properties"]) == {"code", "message", "provider", "httpStatus", "providerCode", "retryable"}
+    assert set(detail["required"]) == {"code", "message", "retryable"}
+    assert {code.value for code in ErrorCode} == set(schemas["ErrorCode"]["enum"])

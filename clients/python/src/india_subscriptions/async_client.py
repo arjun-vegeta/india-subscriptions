@@ -27,7 +27,6 @@ from .models import (
     Capabilities,
     Charge,
     ChargeNotification,
-    CheckoutResult,
     CheckoutVerification,
     CreateChargeInput,
     CreatePlanInput,
@@ -268,13 +267,21 @@ class AsyncChargesResource(_AsyncResource):
 
 
 class AsyncCheckoutResource(_AsyncResource):
-    async def verify(self, provider: Provider, result: Union[CheckoutResult, Input]) -> CheckoutVerification:
+    async def verify(
+        self, provider: Provider, result: Input, expected_subscription_id: Optional[str] = None
+    ) -> CheckoutVerification:
         """Verifies what the gateway returned to the customer's browser after authorisation.
 
         ``result`` is the gateway's own data (Razorpay's checkout handler response, PayU's
         ``surl``/``furl`` parameters, Cashfree's return query), passed on untouched.
+
+        **Always pass ``expected_subscription_id``**: the subscription id (or your reference) your server
+        stored when it created the subscription. The browser supplies ``result``, so without the expected id
+        a genuine, correctly signed result for *another* subscription would verify, and a customer could
+        replay one subscription's authorisation to unlock a different one. With it, the service rejects a
+        result that belongs to anything else.
         """
-        return await self._client._execute(calls.verify_checkout(provider, result))
+        return await self._client._execute(calls.verify_checkout(provider, result, expected_subscription_id))
 
 
 class AsyncWebhooksResource(_AsyncResource):

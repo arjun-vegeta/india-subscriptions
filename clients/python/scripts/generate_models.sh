@@ -23,13 +23,8 @@
 #   --collapse-root-models + --collapse-constrained-root-models-as-annotated
 #       CreateSubscriptionInput.plan is Union[CreatePlanInput, constrained str], not a RootModel
 #       wrapper the caller would have to construct.
-#   --infer-union-discriminators + --use-tag-as-union-variant-name
-#       the CheckoutInstruction oneOf declares no discriminator in the spec; this writes it as a
-#       pydantic discriminated union on `kind` and names the variants after it.
-#   --reuse-model
-#       Health.providers and ErrorResponse.error.provider are inline copies of the Provider enum
-#       in the spec; this makes them the one Provider type. (Side effect: the identical enums
-#       CancelMode and ChangeTiming, both inline in the spec, collapse into one class.)
+#   --use-field-description + --use-schema-description
+#       the spec carries descriptions; they become field descriptions and class docstrings.
 #   --extra-fields ignore + --extra-template-data scripts/model_config.json
 #       responses ignore unknown keys, so a newer service does not break an older client; request
 #       models forbid them, so a typo in a dict input fails loudly instead of being dropped.
@@ -69,12 +64,10 @@ cd "$root"
   --use-annotated \
   --field-constraints \
   --strict-nullable \
-  --naming-strategy parent-prefixed \
+  --use-field-description \
+  --use-schema-description \
   --collapse-root-models \
   --collapse-constrained-root-models-as-annotated \
-  --infer-union-discriminators \
-  --use-tag-as-union-variant-name \
-  --reuse-model \
   --type-mappings email=string \
   --extra-fields ignore \
   --extra-template-data "$here/model_config.json" \

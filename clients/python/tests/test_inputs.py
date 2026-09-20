@@ -19,12 +19,12 @@ from india_subscriptions import (
     SubscriptionsClient,
 )
 from india_subscriptions.constants import ApiPath, HeaderName
-from india_subscriptions.models import BillingInterval, BillingIntervalUnit, Currency, SchedulingMode
+from india_subscriptions.models import BillingInterval, IntervalUnit, Currency, SchedulingMode
 
 from .cases import CHARGE_JSON, GATEWAY_RESULT, PLAN_JSON, SUBSCRIPTION_ID, SUBSCRIPTION_JSON, VERIFICATION_JSON
 from .conftest import API_KEY, BASE_URL, BOTH_KINDS, ClientKind, Recorder, json_response, run
 
-PLAN_DICT = {"name": "Gold", "amount": 49900, "interval": {"unit": BillingIntervalUnit.MONTH.value, "count": 1}}
+PLAN_DICT = {"name": "Gold", "amount": 49900, "interval": {"unit": IntervalUnit.MONTH.value, "count": 1}}
 
 
 @pytest.mark.parametrize("kind", BOTH_KINDS, ids=lambda kind: kind.value)
@@ -80,7 +80,7 @@ async def test_only_what_the_caller_set_is_sent(kind: ClientKind) -> None:
     plan = CreatePlanInput(
         name="Gold",
         amount=49900,
-        interval=BillingInterval(unit=BillingIntervalUnit.MONTH, count=1),
+        interval=BillingInterval(unit=IntervalUnit.MONTH, count=1),
         description=None,
     )
     assert plan.currency is Currency.INR  # the model knows the default ...
@@ -193,13 +193,31 @@ async def test_an_unknown_provider_is_refused(kind: ClientKind) -> None:
 
 
 @pytest.mark.parametrize("kind", BOTH_KINDS, ids=lambda kind: kind.value)
+async def test_the_expected_subscription_id_is_sent_when_given(kind: ClientKind) -> None:
+    recorder = Recorder(json_response(200, VERIFICATION_JSON))
+
+    await run(kind, recorder, lambda c: c.checkout.verify(Provider.RAZORPAY, GATEWAY_RESULT, "sub_9"))
+
+    assert json.loads(recorder.last.content) == {"result": GATEWAY_RESULT, "expectedSubscriptionId": "sub_9"}
+
+
+@pytest.mark.parametrize("kind", BOTH_KINDS, ids=lambda kind: kind.value)
+async def test_an_empty_expected_subscription_id_is_refused(kind: ClientKind) -> None:
+    recorder = Recorder(json_response(200, VERIFICATION_JSON))
+
+    with pytest.raises(ValidationError):
+        await run(kind, recorder, lambda c: c.checkout.verify(Provider.RAZORPAY, GATEWAY_RESULT, ""))
+    assert recorder.requests == []
+
+
+@pytest.mark.parametrize("kind", BOTH_KINDS, ids=lambda kind: kind.value)
 async def test_the_checkout_result_is_forwarded_untouched(kind: ClientKind) -> None:
     recorder = Recorder(json_response(200, VERIFICATION_JSON))
     result = {**GATEWAY_RESULT, "nested": {"a": [1, None, "x"], "empty": ""}, "unicode": "₹499"}
 
     await run(kind, recorder, lambda c: c.checkout.verify(Provider.RAZORPAY, result))
 
-    assert json.loads(recorder.last.content) == result  # nulls, nesting and key names intact
+    assert json.loads(recorder.last.content) == {"result": result}  # nulls, nesting and key names intact; no expected id was given
 
 
 # -- construction ----------------------------------------------------------------------------------------
