@@ -328,11 +328,27 @@ describe('createSubscription: rejected input', () => {
     const error = await failure(() =>
       makeProvider().provider.createSubscription({
         plan: { ...MONTHLY_PLAN },
-        customer: { ...CUSTOMER, email: 'ashish+shop@example.com' },
+        customer: { ...CUSTOMER, email: 'ashish!shop@example.com' },
       }),
     );
     expect(error.code).toBe(ErrorCode.Validation);
     expect(error.message).toContain('customer.email');
+  });
+
+  it('a "+" in the e-mail is kept verbatim and hashed as posted: PayU\'s test environment keeps it too (live check 2026-11-17)', async () => {
+    const { provider } = makeProvider();
+    const subscription = await provider.createSubscription({
+      plan: { ...MONTHLY_PLAN },
+      customer: { ...CUSTOMER, email: 'ashish+shop@example.com' },
+    });
+    const fields = subscription.checkout && 'fields' in subscription.checkout ? subscription.checkout.fields : {};
+    expect(fields.email).toBe('ashish+shop@example.com');
+    expect(fields.hash).toBe(
+      expectedConsentHash(
+        { txnid: fields.txnid!, amount: fields.amount!, productinfo: fields.productinfo!, firstname: fields.firstname!, email: 'ashish+shop@example.com', si_details: fields.si_details! },
+        6,
+      ),
+    );
   });
 
   it('a name with no characters PayU keeps is VALIDATION', async () => {

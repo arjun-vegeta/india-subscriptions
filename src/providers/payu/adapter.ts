@@ -710,10 +710,24 @@ export class PayUProvider extends BaseProvider {
    * with `getCharge` before retrying. `scheduledAt` is ignored: PayU debits when
    * called. Cards need the `invoiceNumber` of the pre-debit (the scheduler
    * passes it); without one an invoice number is generated from the charge id.
+   *
+   * PayU does NOT reject a repeated `txnid`: the same `txnid` sent again produces another
+   * debit, and `verify_payment` shows only the latest. So the adapter looks the `txnid` up first
+   * and, when PayU already holds it, returns that debit instead of raising another one.
+   * A lookup that fails for any reason other than "not found" aborts before debiting.
    */
   override async createCharge(rawInput: CreateChargeInput): Promise<Charge> {
     const input = parseInput(CreateChargeInputSchema, rawInput, 'charge input', this.name);
     const ref = decodeSubscriptionId(input.subscriptionId);
+    const existing = await this.findDebit(input.chargeId);
+    if (existing !== undefined) {
+      return mapVerifiedTransaction({
+        transaction: existing,
+        chargeId: input.chargeId,
+        subscriptionId: input.subscriptionId,
+        method: ref.method,
+      });
+    }
     const needsInvoice = PRE_DEBIT_METHODS.includes(ref.method);
     const customer = input.customer;
     const var1 = JSON.stringify(
@@ -774,6 +788,16 @@ export class PayUProvider extends BaseProvider {
     const ref = decodeSubscriptionId(subscriptionId);
     const { transaction } = await this.fetchTransaction(chargeId);
     return mapVerifiedTransaction({ transaction, chargeId, subscriptionId, method: ref.method });
+  }
+
+  /** The transaction PayU holds under this merchant `txnid`, or `undefined` when it has none. Any other failure propagates. */
+  private async findDebit(txnid: string) {
+    try {
+      return (await this.fetchTransaction(txnid)).transaction;
+    } catch (error) {
+      if (error instanceof SubscriptionError && error.code === ErrorCode.NotFound) return undefined;
+      throw error;
+    }
   }
 
   private async fetchTransaction(txnid: string) {

@@ -44,6 +44,7 @@ import {
   PAYMENT_METHOD_BY_MODE,
   PAYMENT_METHOD_BY_PG_TYPE,
   PAYU_BILLING_CURRENCY,
+  PAYU_DISALLOWED_EMAIL_CHARS,
   PAYU_DISALLOWED_TEXT_CHARS,
   PAYU_ENACH_CANCELLATION_NOTIFICATION,
   PAYU_ENACH_CANCELLATION_STATUS,
@@ -203,14 +204,14 @@ export const sanitizeFirstName = (value: string): string =>
   sanitizePayUText(value, FIRSTNAME_MAX_LENGTH, 'customer.name (sent as firstname)');
 
 /**
- * An e-mail address cannot be silently cleaned: PayU would drop a `+` and mail
- * a different mailbox. A character PayU strips is a `VALIDATION` error instead.
+ * An e-mail address cannot be silently cleaned: PayU could drop a character and mail a different mailbox. A character
+ * the docs say PayU strips is a `VALIDATION` error instead. `+` is allowed: PayU's test environment keeps it verbatim.
  */
 export function checkEmail(value: string, maxLength: number): string {
   if (value.length > maxLength) throw invalid(`customer.email is longer than the ${maxLength} characters PayU accepts`, PROVIDER);
-  if (value.replace(PAYU_DISALLOWED_TEXT_CHARS, '') !== value) {
+  if (value.replace(PAYU_DISALLOWED_EMAIL_CHARS, '') !== value) {
     throw invalid(
-      'customer.email contains a character PayU strips from e-mail addresses (only letters, digits and - _ @ / . are kept); use an address without it',
+      'customer.email contains a character PayU strips from e-mail addresses (only letters, digits and - _ @ / . + are kept); use an address without it',
       PROVIDER,
     );
   }
@@ -675,6 +676,16 @@ export function sanitizeRefundRemarks(reason: string): string {
  * (102, 101, and the sample without a code) are pending. Returns an error for
  * anything else.
  */
+const NUMERIC_STATUS = /^\d+$/;
+
+/** A numeric envelope `status` other than 0 / 1 (PayU's own refund error code), as text. */
+function statusAsRefundCode(status: string | number | null | undefined): string | undefined {
+  if (status === null || status === undefined) return undefined;
+  const text = String(status).trim();
+  const isEnvelopeStatus = text === String(PAYU_STATUS_OK) || PAYU_FAILED_STATUS_VALUES.some((value) => String(value) === text);
+  return NUMERIC_STATUS.test(text) && !isEnvelopeStatus ? text : undefined;
+}
+
 export function mapRefundResponse(input: {
   body: PayURefundResponse;
   chargeId: string;
@@ -683,9 +694,11 @@ export function mapRefundResponse(input: {
   subscriptionId?: string;
 }): { refund: Refund } | { failure: BodyFailure } {
   const { body } = input;
-  const code = present(body.error_code);
   const message = envelopeMessage(body);
   const ok = body.status !== null && body.status !== undefined && String(body.status) === String(PAYU_STATUS_OK);
+  // PayU's test environment puts the refund error code in `status` itself (`{"status":236,"msg":"..."}`), with no
+  // `error_code`, where the docs promise `status` 0 / 1 and `error_code`.
+  const code = present(body.error_code) ?? statusAsRefundCode(body.status);
 
   if (ok && message !== undefined && REFUND_CAPTURED_TODAY_PATTERN.test(message)) {
     return { failure: { code: ErrorCode.Conflict, message, ...(code !== undefined ? { providerCode: code } : {}) } };

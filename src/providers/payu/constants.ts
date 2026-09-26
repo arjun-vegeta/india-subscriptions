@@ -137,6 +137,12 @@ export const PHONE_MAX_LENGTH = 50;
  * keeps. [reference__payment-consent-transaction-payu-hosted]
  */
 export const PAYU_DISALLOWED_TEXT_CHARS = /[^A-Za-z0-9\-_@/ .]/g;
+/**
+ * The same set plus `+`, for e-mail addresses. The docs list `+` among the characters PayU removes, but PayU's test
+ * environment kept `test+a@example.com` verbatim: it accepted the request hash computed over it, and it returned the
+ * address unchanged in the response (whose hash verified). Observed 2026-11-17, card consent.
+ */
+export const PAYU_DISALLOWED_EMAIL_CHARS = /[^A-Za-z0-9\-_@/ .+]/g;
 
 /** Prefix of a generated consent txnid: `sub_` + 20 hex characters = 24 characters. */
 export const GENERATED_TXNID_PREFIX = 'sub';

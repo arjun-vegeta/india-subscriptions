@@ -10,23 +10,25 @@ import {
  * PayU hashes. All are lower-case hex SHA-512 over a `|`-joined string with the
  * merchant salt. Pure functions: no I/O, no clock, no randomness.
  *
- * ## UNVERIFIED: the consent-request layout
+ * ## VERIFIED 2026-11-17: the consent-request layout
  *
  * PayU's docs print the consent-request hash three different ways: the number
  * of `|` between `udf5` and `si_details` is 6 on most pages (and on the generic
  * hashing page and PayU's own SDK for the standard hash), 4 on the cards / UPI /
- * net-banking guide pages and 5 on the net-banking-plan page. No published
- * sample can be recomputed because no test salt is published. The default is the
- * six-pipe layout; `ConsentHashLayout` names the alternatives and the config's
- * `consentHashLayout` selects one WITHOUT a code change. If PayU's test
- * environment answers the consent request with a hash error, switch layouts.
+ * net-banking guide pages and 5 on the net-banking-plan page. Checked live on
+ * PayU's test environment with its public test merchant: the six-pipe form lands
+ * on the payment page and completes a consent; four and five pipes are refused
+ * with "failed due to incorrectly calculated hash parameter" (the error page
+ * prints the six-pipe formula). The default stays six pipes; `ConsentHashLayout`
+ * and the config's `consentHashLayout` remain for a gateway that disagrees.
  *
- * ## UNVERIFIED: the response hash of an SI transaction
+ * ## VERIFIED 2026-11-17: the response hash of an SI transaction
  *
  * No doc page prints a reverse hash that contains `si_details`. This module
- * implements the layout PayU's SDK uses for every payment (`reverseHasher`),
- * which is also the one the S2S UPI subscription guide validates the consent
- * response with.
+ * implements the layout PayU's SDK uses for every payment (`reverseHasher`).
+ * PayU's real consent responses (success and failure, card) verify with it:
+ * `si_details` is not part of the hash, and neither is the extra `splitInfo`
+ * field the shared test merchant's responses carry.
  */
 
 function join(parts: readonly string[]): string {

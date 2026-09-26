@@ -152,7 +152,7 @@ describe('the salt never leaks', () => {
     attempts.push(() => makeProvider().provider.verifyCheckout({ ...signPayment({ status: 'success', txnid: 't', amount: '1.00' }), amount: '2.00' }));
     attempts.push(async () => makeProvider().provider.parseWebhook({ rawBody: 'a=b', headers: {} }));
     attempts.push(() => makeProvider().provider.createSubscription({ plan: 'p', customer: CUSTOMER }));
-    attempts.push(() => makeProvider().provider.createSubscription({ plan: { ...MONTHLY_PLAN }, customer: { ...CUSTOMER, email: 'a+b@example.com' } }));
+    attempts.push(() => makeProvider().provider.createSubscription({ plan: { ...MONTHLY_PLAN }, customer: { ...CUSTOMER, email: 'a!b@example.com' } }));
 
     for (const attempt of attempts) {
       const error = await failure(attempt);
@@ -167,10 +167,15 @@ describe('the salt never leaks', () => {
   });
 
   it('not in what a request sends: only the hash derived from it', async () => {
-    const { provider, calls } = makeProvider([apiRoute({ status: 1, message: 'ok', details: { c: { status: 'captured', transactionid: 'c', amount: '1.00' } } })]);
+    const { provider, calls } = makeProvider([
+      apiRoute({ status: 0, msg: '0 out of 1 Transactions Fetched Successfully', transaction_details: { c: { mihpayid: 'Not Found', status: 'Not Found' } } }),
+      apiRoute({ status: 1, message: 'ok', details: { c: { status: 'captured', transactionid: 'c', amount: '1.00' } } }),
+    ]);
     await provider.createCharge({ subscriptionId: 'card:1', chargeId: 'c', amount: 100 });
-    expect(calls[0]!.url + calls[0]!.body + JSON.stringify(calls[0]!.headers)).not.toContain(SALT);
-    expect(Object.keys(calls[0]!.form ?? {}).sort()).toEqual(['command', 'hash', 'key', 'var1']);
+    for (const call of calls) {
+      expect(call.url + call.body + JSON.stringify(call.headers)).not.toContain(SALT);
+      expect(Object.keys(call.form ?? {}).sort()).toEqual(['command', 'hash', 'key', 'var1']);
+    }
   });
 
   it('not in what the adapter returns', async () => {

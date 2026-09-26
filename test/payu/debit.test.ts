@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ChargeKind, ChargeStatus, ErrorCode, PaymentMethod } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
+import type { MockRoute } from '../helpers/mock-fetch.js';
 import { SALT, TEST_API_URL, apiRoute, expectedCommandHash, makeProvider, var1Of } from './helpers.js';
 
 async function failure(run: () => Promise<unknown>): Promise<SubscriptionError> {
@@ -197,9 +198,23 @@ function debitOf(txnid: string, status: string, extra: Record<string, unknown> =
   };
 }
 
+/** Source: reference__verify_payment_api, "Failure Responses" (the shape PayU also answers with on its test environment). */
+function unknownTxn(txnid: string): MockRoute {
+  return apiRoute({
+    status: 0,
+    msg: '0 out of 1 Transactions Fetched Successfully',
+    transaction_details: { [txnid]: { mihpayid: 'Not Found', status: 'Not Found' } },
+  });
+}
+
+/** `createCharge` first asks PayU whether it already holds the txnid (PayU does not reject a repeated one): that is call 1. */
+function chargeProvider(txnid: string, routes: MockRoute[] = [], config: Parameters<typeof makeProvider>[1] = {}, options: Parameters<typeof makeProvider>[2] = {}) {
+  return makeProvider([unknownTxn(txnid), ...routes], config, options);
+}
+
 describe('createCharge', () => {
   it('cards: si_transaction with authpayuid, invoiceDisplayNumber, rupee amount, txnid and customer details', async () => {
-    const { provider, calls } = makeProvider([apiRoute(SI_SUCCESS)]);
+    const { provider, calls } = chargeProvider('REC15113506209', [apiRoute(SI_SUCCESS)]);
     const charge = await provider.createCharge({
       subscriptionId: 'card:25600342065',
       chargeId: 'REC15113506209',
@@ -211,10 +226,12 @@ describe('createCharge', () => {
     // Field set and order: reference__recurring_payment_api, "Request".
     const var1 =
       '{"authpayuid":"25600342065","invoiceDisplayNumber":"12345678910","amount":"1.00","txnid":"REC15113506209","phone":"9999999999","email":"chota.bheem@gmail.com"}';
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe(TEST_API_URL);
-    expect(calls[0]!.headers['content-type']).toBe('application/x-www-form-urlencoded');
-    expect(calls[0]!.form).toEqual({ key: 'BmTY3G', command: 'si_transaction', var1, hash: expectedCommandHash('si_transaction', var1) });
+    // Call 1 is the txnid lookup; call 2 is the debit.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.form).toMatchObject({ command: 'verify_payment', var1: 'REC15113506209' });
+    expect(calls[1]!.url).toBe(TEST_API_URL);
+    expect(calls[1]!.headers['content-type']).toBe('application/x-www-form-urlencoded');
+    expect(calls[1]!.form).toEqual({ key: 'BmTY3G', command: 'si_transaction', var1, hash: expectedCommandHash('si_transaction', var1) });
 
     expect(charge).toMatchObject({
       provider: 'payu',
@@ -232,30 +249,30 @@ describe('createCharge', () => {
   });
 
   it('keeps the PayU payment id when PayU has one', async () => {
-    const { provider } = makeProvider([apiRoute(debitOf('chg_1', 'captured', { payuid: '30141596997' }))]);
+    const { provider } = chargeProvider('chg_1', [apiRoute(debitOf('chg_1', 'captured', { payuid: '30141596997' }))]);
     const charge = await provider.createCharge({ subscriptionId: CARD_ID, chargeId: 'chg_1', amount: 100 });
     expect(charge.id).toBe('30141596997');
     expect(charge.reference).toBe('chg_1');
   });
 
   it('UPI sends an invoice display number; eNACH does not', async () => {
-    const upi = makeProvider([apiRoute(debitOf('chg_u', 'pending'))]);
+    const upi = chargeProvider('chg_u', [apiRoute(debitOf('chg_u', 'pending'))]);
     await upi.provider.createCharge({ subscriptionId: UPI_ID, chargeId: 'chg_u', amount: 12500 });
-    expect(var1Of(upi.calls[0]!)).toEqual({
+    expect(var1Of(upi.calls[1]!)).toEqual({
       authpayuid: '25600438037',
       invoiceDisplayNumber: 'INV_chg_u',
       amount: '125.00',
       txnid: 'chg_u',
     });
-    const enach = makeProvider([apiRoute(debitOf('chg_e', 'pending'))]);
+    const enach = chargeProvider('chg_e', [apiRoute(debitOf('chg_e', 'pending'))]);
     await enach.provider.createCharge({ subscriptionId: ENACH_ID, chargeId: 'chg_e', amount: 12500, invoiceNumber: 'IGNORED' });
-    expect(var1Of(enach.calls[0]!)).toEqual({ authpayuid: '403993715525331373', amount: '125.00', txnid: 'chg_e' });
+    expect(var1Of(enach.calls[1]!)).toEqual({ authpayuid: '403993715525331373', amount: '125.00', txnid: 'chg_e' });
   });
 
   it('scheduledAt is ignored: PayU debits when called', async () => {
-    const { provider, calls } = makeProvider([apiRoute(debitOf('chg_s', 'pending'))]);
+    const { provider, calls } = chargeProvider('chg_s', [apiRoute(debitOf('chg_s', 'pending'))]);
     await provider.createCharge({ subscriptionId: UPI_ID, chargeId: 'chg_s', amount: 100, scheduledAt: '2027-01-01T00:00:00.000Z' });
-    expect(calls[0]!.body).not.toContain('2027');
+    expect(calls[1]!.body).not.toContain('2027');
   });
 
   /** Every documented inner status, then blank, then one PayU has not documented. Source: reference__recurring_payment_api 6.5. */
@@ -268,30 +285,31 @@ describe('createCharge', () => {
     ['', ChargeStatus.Failed],
     ['something_new', ChargeStatus.Pending],
   ])('inner status "%s" is %s', async (status, expected) => {
-    const { provider } = makeProvider([apiRoute(debitOf('chg_x', status))]);
+    const { provider } = chargeProvider('chg_x', [apiRoute(debitOf('chg_x', status))]);
     const charge = await provider.createCharge({ subscriptionId: UPI_ID, chargeId: 'chg_x', amount: 100 });
     expect(charge.status).toBe(expected);
     if (status !== '') expect(charge.providerStatus).toBe(status);
   });
 
   it('a failed debit inside a status-1 envelope is a failed Charge with PayU\'s reason, not an exception', async () => {
-    const { provider } = makeProvider([apiRoute(SI_FAILED_IN_ENVELOPE)]);
+    const { provider } = chargeProvider('REC9812123123', [apiRoute(SI_FAILED_IN_ENVELOPE)]);
     const charge = await provider.createCharge({ subscriptionId: 'card:6611192559', chargeId: 'REC9812123123', amount: 100 });
     expect(charge).toMatchObject({ status: ChargeStatus.Failed, failureReason: 'Basic authentication check failed' });
   });
 
   it('a dropped connection is OUTCOME_UNKNOWN, sent once, never retried', async () => {
-    const { provider, calls } = makeProvider([{ method: 'POST', url: TEST_API_URL, networkError: true }], {}, { maxRetries: 5 });
+    const { provider, calls } = chargeProvider('chg_1', [{ method: 'POST', url: TEST_API_URL, networkError: true }], {}, { maxRetries: 5 });
     const error = await failure(() => provider.createCharge({ subscriptionId: CARD_ID, chargeId: 'chg_1', amount: 100 }));
     expect(error.code).toBe(ErrorCode.OutcomeUnknown);
     expect(error.retryable).toBe(false);
     expect(error.message).toContain('fetch the current state');
-    expect(calls).toHaveLength(1);
+    // The lookup, then the debit sent exactly once.
+    expect(calls).toHaveLength(2);
   });
 
   it('an HTTP 502 / 504 is OUTCOME_UNKNOWN too', async () => {
     for (const status of [502, 504]) {
-      const { provider } = makeProvider([apiRoute({ msg: 'gateway' }, status)]);
+      const { provider } = chargeProvider('c', [apiRoute({ msg: 'gateway' }, status)]);
       expect((await failure(() => provider.createCharge({ subscriptionId: CARD_ID, chargeId: 'c', amount: 100 }))).code).toBe(
         ErrorCode.OutcomeUnknown,
       );
@@ -306,7 +324,7 @@ describe('createCharge', () => {
     ['INTERNAL_ERROR (ER1002): unclear', { status: 422, errorCode: 'ER1002', errorMessage: 'INTERNAL_ERROR' }, ErrorCode.OutcomeUnknown],
     ['a failure nobody documented: unclear', { status: 0, message: 'Something else' }, ErrorCode.OutcomeUnknown],
   ])('body-level "%s" is %s', async (_label, body, code) => {
-    const { provider } = makeProvider([apiRoute(body)]);
+    const { provider } = chargeProvider('c', [apiRoute(body)]);
     const error = await failure(() => provider.createCharge({ subscriptionId: CARD_ID, chargeId: 'c', amount: 100 }));
     expect(error.code).toBe(code);
     expect(error.message).not.toContain(SALT);
@@ -314,7 +332,7 @@ describe('createCharge', () => {
 
   it('an answer without a result for the txnid is UNEXPECTED_RESPONSE (reconcile with getCharge)', async () => {
     for (const body of [{ status: 1, message: 'ok', details: [] }, { status: 1, message: 'ok' }, debitOf('another_txn', 'captured')]) {
-      const { provider } = makeProvider([apiRoute(body)]);
+      const { provider } = chargeProvider('chg_1', [apiRoute(body)]);
       const error = await failure(() => provider.createCharge({ subscriptionId: CARD_ID, chargeId: 'chg_1', amount: 100 }));
       expect(error.code).toBe(ErrorCode.UnexpectedResponse);
       expect(error.message).toContain('getCharge');
@@ -322,7 +340,7 @@ describe('createCharge', () => {
   });
 
   it('a non-JSON answer is UNEXPECTED_RESPONSE', async () => {
-    const { provider } = makeProvider([{ method: 'POST', url: TEST_API_URL, text: '<html>maintenance</html>' }]);
+    const { provider } = chargeProvider('c', [{ method: 'POST', url: TEST_API_URL, text: '<html>maintenance</html>' }]);
     expect((await failure(() => provider.createCharge({ subscriptionId: CARD_ID, chargeId: 'c', amount: 100 }))).code).toBe(
       ErrorCode.UnexpectedResponse,
     );
