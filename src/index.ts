@@ -77,15 +77,37 @@ export type { SchedulerStore } from './scheduler/store.js';
 export { MemorySchedulerStore, type MemorySchedulerStoreOptions } from './scheduler/memory-store.js';
 export { BillingScheduler, awaitsActivation, scheduleIdFor, type SchedulerOptions } from './scheduler/scheduler.js';
 
-// Signed events webhook (what `india-subscriptions serve` posts); receivers can verify with these.
+// Events webhook (what `india-subscriptions serve` posts to EVENTS_WEBHOOK_URL): envelopes, signing, verification.
+export {
+  EventsDeliveryKind,
+  EventsDeliverySchema,
+  GatewayEventsDeliverySchema,
+  SCHEDULER_EVENT_ID_PREFIX,
+  SchedulerEventsDeliverySchema,
+  SchedulerWebhookEventSchema,
+  schedulerEventId,
+  toSchedulerWebhookEvent,
+  type EventsDelivery,
+  type GatewayEventsDelivery,
+  type SchedulerEventsDelivery,
+  type SchedulerWebhookEvent,
+} from './events-envelope.js';
 export {
   DEFAULT_EVENTS_TIMEOUT_MS,
+  DEFAULT_TOLERANCE_SECONDS,
   EventsHeader,
+  SIGNED_STRING_SEPARATOR,
   createEventsForwarder,
+  createEventsSender,
+  createSchedulerEventsRelay,
   signEventsBody,
   verifyEventsSignature,
-  type EventsDelivery,
-  type EventsForwarderOptions,
+  type EventsHeaders,
+  type EventsLog,
+  type EventsSenderOptions,
+  type SchedulerEventsRelay,
+  type SchedulerEventsRelayOptions,
+  type VerifyEventsOptions,
 } from './events-webhook.js';
 
 // Schema registry: the published JSON Schema / OpenAPI names of the unified model.

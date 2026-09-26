@@ -7,7 +7,12 @@ import type { Server } from 'node:http';
 import { ErrorCode, Provider } from './constants.js';
 import { Subscriptions, createSubscriptions } from './client.js';
 import { SubscriptionError, isSubscriptionError } from './errors.js';
-import { createEventsForwarder, originOf } from './events-webhook.js';
+import {
+  createEventsForwarder,
+  createSchedulerEventsRelay,
+  originOf,
+  type SchedulerEventsRelay,
+} from './events-webhook.js';
 import type { FetchLike } from './http.js';
 import type { SubscriptionProvider } from './provider.js';
 import { cashfree } from './providers/cashfree/index.js';
@@ -72,13 +77,15 @@ export interface Service {
   /** Present when `SCHEDULER_STORE_FILE` is set. */
   readonly scheduler?: BillingScheduler;
   readonly store?: FileSchedulerStore;
-  /** Present when `EVENTS_WEBHOOK_URL` is set. */
+  /** Present when `EVENTS_WEBHOOK_URL` is set: forwards gateway webhook events. */
   readonly onEvents?: EventsHook;
+  /** Present when both `EVENTS_WEBHOOK_URL` and `SCHEDULER_STORE_FILE` are set: forwards scheduler events. */
+  readonly schedulerEvents?: SchedulerEventsRelay;
   /** A `node:http` server for the API, not yet listening. */
   createServer(): Server;
   /** The startup report: enabled gateways, listen URL, scheduler. Free of secrets. `config.warnings` are separate. */
   describe(listenUrl: string): string[];
-  /** Releases the scheduler store (waits for in-flight writes). */
+  /** Stops the scheduler events relay (waiting for the delivery in flight) and releases the scheduler store. */
   close(): Promise<void>;
 }
 
@@ -103,6 +110,11 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
   if (cashfreeConfig) providers.push(cashfree(cashfreeConfig, providerOptions));
   if (payuConfig) providers.push(payu(payuConfig, providerOptions));
 
+  const eventsWebhook = config.eventsWebhook;
+  const schedulerEvents = eventsWebhook && config.schedulerStoreFile
+    ? createSchedulerEventsRelay({ ...eventsWebhook, fetch: options.fetch, logger })
+    : undefined;
+
   let store: FileSchedulerStore | undefined;
   let scheduler: BillingScheduler | undefined;
   if (config.schedulerStoreFile) {
@@ -115,7 +127,10 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
         if (!provider) throw new SubscriptionError(ErrorCode.Config, `Provider ${String(name)} is not configured`);
         return provider;
       },
-      onEvent: (event) => logger.info(`scheduler: ${event.type} ${event.scheduleId}`),
+      onEvent: (event) => {
+        logger.info(`scheduler: ${event.type} ${event.scheduleId}`);
+        schedulerEvents?.enqueue(event);
+      },
     });
   }
 
@@ -123,13 +138,12 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
   try {
     client = createSubscriptions({ providers, scheduler });
   } catch (error) {
+    await schedulerEvents?.close();
     await store?.close();
     throw error;
   }
 
-  const onEvents = config.eventsWebhook
-    ? createEventsForwarder({ ...config.eventsWebhook, fetch: options.fetch })
-    : undefined;
+  const onEvents = eventsWebhook ? createEventsForwarder({ ...eventsWebhook, fetch: options.fetch }) : undefined;
 
   return {
     config,
@@ -137,6 +151,7 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
     scheduler,
     store,
     onEvents,
+    schedulerEvents,
     createServer: () =>
       createNodeServer({
         client,
@@ -146,6 +161,7 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
       }),
     describe: (listenUrl) => describeService(config, client, listenUrl),
     close: async () => {
+      await schedulerEvents?.close();
       await store?.close();
     },
   };
@@ -176,7 +192,7 @@ function describeService(config: ServiceConfig, client: Subscriptions, listenUrl
   );
   lines.push(
     config.eventsWebhook
-      ? `events webhook: ${originOf(config.eventsWebhook.url)} (signed)`
+      ? `events webhook: ${originOf(config.eventsWebhook.url)} (signed; gateway events${config.schedulerStoreFile ? ' and scheduler events' : ''})`
       : `events webhook: off (${EnvVar.EventsWebhookUrl} is not set)`,
   );
   return lines;

@@ -5,7 +5,20 @@
 import { z } from 'zod';
 import { ContentType } from '../constants.js';
 import { SchemaName, addDiscriminators, exportJsonSchemas, stripSafeIntegerBounds } from '../schema-registry.js';
-import { ErrorCodeSchema as LibraryErrorCodeSchema, TickErrorSchema, TickResultSchema } from '../scheduler/schemas.js';
+import {
+  EventsDeliverySchema,
+  GatewayEventsDeliverySchema,
+  SchedulerEventsDeliverySchema,
+  SchedulerWebhookEventSchema,
+} from '../events-envelope.js';
+import {
+  ErrorCodeSchema as LibraryErrorCodeSchema,
+  ScheduleStatusReasonSchema,
+  ScheduleStatusSchema,
+  SchedulerEventTypeSchema,
+  TickErrorSchema,
+  TickResultSchema,
+} from '../scheduler/schemas.js';
 import {
   AuthMode,
   BEARER_SCHEME,
@@ -73,6 +86,14 @@ function serverSchemas(): Record<string, z.ZodType> {
     [ServerSchemaName.TickError]: TickErrorSchema,
     [ServerSchemaName.TickResult]: TickResultSchema,
     [ServerSchemaName.LibraryErrorCode]: LibraryErrorCodeSchema,
+    // The bodies of the events webhook (outgoing), published so receivers can be generated or validated from them.
+    [ServerSchemaName.EventsDelivery]: EventsDeliverySchema,
+    [ServerSchemaName.GatewayEventsDelivery]: GatewayEventsDeliverySchema,
+    [ServerSchemaName.SchedulerEventsDelivery]: SchedulerEventsDeliverySchema,
+    [ServerSchemaName.SchedulerWebhookEvent]: SchedulerWebhookEventSchema,
+    [ServerSchemaName.SchedulerEventType]: SchedulerEventTypeSchema,
+    [ServerSchemaName.ScheduleStatus]: ScheduleStatusSchema,
+    [ServerSchemaName.ScheduleStatusReason]: ScheduleStatusReasonSchema,
   };
 }
 

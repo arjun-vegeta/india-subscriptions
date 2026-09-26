@@ -227,6 +227,14 @@ export const ServerSchemaName = {
   TickError: 'TickError',
   TickResult: 'TickResult',
   OpenApiDocument: 'OpenApiDocument',
+  /** What the service POSTs to `EVENTS_WEBHOOK_URL`: not a response of this API, published for the receiver. */
+  EventsDelivery: 'EventsDelivery',
+  GatewayEventsDelivery: 'GatewayEventsDelivery',
+  SchedulerEventsDelivery: 'SchedulerEventsDelivery',
+  SchedulerWebhookEvent: 'SchedulerWebhookEvent',
+  SchedulerEventType: 'SchedulerEventType',
+  ScheduleStatus: 'ScheduleStatus',
+  ScheduleStatusReason: 'ScheduleStatusReason',
 } as const;
 export type ServerSchemaName = (typeof ServerSchemaName)[keyof typeof ServerSchemaName];
 
