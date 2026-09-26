@@ -98,7 +98,7 @@ try {
   const listed = dry[0].files.map((file) => file.path);
   const unexpected = listed.filter((path) => !ALLOWED_TOP_LEVEL.has(path.split('/')[0]));
   check('only dist, README.md, LICENSE and package.json are packed', unexpected.length === 0, unexpected.join(', '));
-  const forbidden = listed.filter((path) => /(^|\/)(test|tests|docs|scripts|src|clients|openapi)\//.test(path) || /(^|\/)\.env/.test(path) || /fact/i.test(path));
+  const forbidden = listed.filter((path) => /(^|\/)(test|tests|docs|scripts|src|clients|openapi)\//.test(path) || /(^|\/)\.env/.test(path) || /fact[-_ ]?sheet/i.test(path));
   check('no tests, sources, docs, fact sheets or .env files', forbidden.length === 0, forbidden.join(', '));
   const missing = REQUIRED_FILES.filter((path) => !listed.includes(path));
   check('every entry point and the bin are in the tarball', missing.length === 0, missing.join(', '));
