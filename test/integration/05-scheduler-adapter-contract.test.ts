@@ -4,7 +4,7 @@
  * answer NOT_FOUND the way the scheduler relies on, does a scheduled / pending charge land the cycle in the right state.
  */
 import { describe, expect, it } from 'vitest';
-import { ChargeStatus, ErrorCode, EventType, Provider, SchedulingMode } from '../../src/constants.js';
+import { ErrorCode, IntervalUnit, Provider, SchedulingMode } from '../../src/constants.js';
 import { CashfreeChargeRequestSchema } from '../../src/providers/cashfree/schemas.js';
 import { TXNID_MAX_LENGTH, TXNID_PATTERN, PayUCommand, INVOICE_NUMBER_PREFIX } from '../../src/providers/payu/constants.js';
 import { PayUPreDebitVar1Schema, PayUSiTransactionVar1Schema } from '../../src/providers/payu/schemas.js';
@@ -104,7 +104,7 @@ describe('what the scheduler passes to the adapter, observed on the wire', () =>
     const razorpay = razorpayProvider(scriptedFetch(() => ({ status: 500 })).fetch, clock);
     const scheduler = new BillingScheduler({ store: new MemorySchedulerStore(), resolveProvider: () => razorpay, now: clock.now });
     const error = await rejection(() =>
-      scheduler.register({ provider: Provider.Razorpay, subscriptionId: 'sub_1', amount: 49900, interval: { unit: 'month', count: 1 }, firstChargeAt: '2026-02-01T00:00:00Z' }),
+      scheduler.register({ provider: Provider.Razorpay, subscriptionId: 'sub_1', amount: 49900, interval: { unit: IntervalUnit.Month, count: 1 }, firstChargeAt: '2026-02-01T00:00:00Z' }),
     );
     expect(error.code).toBe(ErrorCode.Unsupported);
   });
@@ -144,7 +144,6 @@ describe('getCharge answers NOT_FOUND the way the scheduler relies on', () => {
     expect((await t.cycle(0))?.status).toBe(CycleStatus.Charging);
     expect(t.fake.chargeCalls).toHaveLength(1);
     expect(events.filter((event) => event.type === SchedulerEventType.ChargeOutcomeOverdue).length).toBeGreaterThan(0);
-    expect(CashfreePath.Pay).toBeDefined();
   });
 });
 
@@ -168,8 +167,6 @@ describe('a Charge with status scheduled / pending lands the cycle in awaiting_c
     const result = await pu.tickAt(PAYU_DUE);
     expect(result).toMatchObject({ charged: 1, awaiting: 1, succeeded: 0 });
     expect((await pu.cycle(0))?.status).toBe(CycleStatus.AwaitingConfirmation);
-    expect(ChargeStatus.Pending).toBeDefined();
-    expect(EventType.SubscriptionCharged).toBeDefined();
   });
 });
 
@@ -182,6 +179,5 @@ describe('update() on a merchant-scheduled subscription', () => {
     expect(error.code).toBe(ErrorCode.Unsupported);
     expect((await t.scheduler.get(t.scheduleId))?.amount).toBe(49900);
     expect(t.provider.capabilities.scheduling).toEqual([SchedulingMode.Merchant]);
-    expect(ScheduleStatus.Active).toBeDefined();
   });
 });

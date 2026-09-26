@@ -7,7 +7,7 @@ import {
   CashfreeSubscriptionStatus,
   ManageAction,
 } from '../../src/providers/cashfree/constants.js';
-import { PAYU_API_URLS, PayUCommand, PayUPaymentMode, PayUPaymentSource, PayUPgType, PayUPaymentStatus } from '../../src/providers/payu/constants.js';
+import { PAYU_API_URLS, PayUCommand, PayUPaymentMode, PayUPaymentSource, PayUPgType, PayUPaymentStatus, PayUTransactionState } from '../../src/providers/payu/constants.js';
 import { chargeIdFor, scheduleIdFor, type SchedulerEvent } from '../../src/scheduler/index.js';
 import {
   CASHFREE_ACCOUNT,
@@ -67,6 +67,8 @@ export class FakeCashfree {
   /** Called when `POST .../manage` arrives, to observe what the scheduler had already done. */
   onManage?: (action: string) => void | Promise<void>;
   planMax = 499;
+  /** Cashfree's payment lookup does not see a payment it already holds until this instant (eventual consistency). */
+  lookupLagUntil: string | undefined;
   /** How Cashfree answers `GET .../payments/{id}` for a payment it does not hold. The spec declares 404. */
   missingPayment: Reply = { status: 404, json: { message: 'something is not found', code: 'something_not_found', type: 'invalid_request_error' } };
 
@@ -135,7 +137,8 @@ export class FakeCashfree {
     const lookup = /^\/subscriptions\/[^/]+\/payments\/([^/?]+)$/.exec(path);
     if (call.method === 'GET' && lookup) {
       const payment = this.payments.get(decodeURIComponent(lookup[1] as string));
-      if (!payment) return this.missingPayment;
+      const visible = payment !== undefined && (this.lookupLagUntil === undefined || this.clock.nowMs() >= Date.parse(this.lookupLagUntil));
+      if (!payment || !visible) return this.missingPayment;
       return { json: this.paymentEntity(this.lastSubscriptionId as string, payment) };
     }
     if (call.method === 'POST' && path === CashfreePath.manageSubscription(this.lastSubscriptionId as string)) {
@@ -215,7 +218,7 @@ export const PAYU_API_URL = PAYU_API_URLS[Environment.Test];
 export interface Debit {
   txnid: string;
   mihpayid: string;
-  status: 'success' | 'failure' | 'pending';
+  status: PayUPaymentStatus | typeof PayUTransactionState.Pending;
 }
 
 export class FakePayU {
@@ -234,7 +237,10 @@ export class FakePayU {
     return this.commands.filter((entry) => entry.command === name).map((entry) => entry.var1 as Record<string, string>);
   }
 
-  readonly gateway = scriptedFetch((call): Reply => {
+  /** Called when `mandate_revoke` arrives, to observe what the scheduler had already done. */
+  onRevoke?: () => void | Promise<void>;
+
+  readonly gateway = scriptedFetch(async (call): Promise<Reply> => {
     expect(call.url).toBe(PAYU_API_URL);
     const command = call.form?.command ?? '';
     const raw = call.form?.var1 ?? '';
@@ -287,6 +293,7 @@ export class FakePayU {
       case PayUCommand.RefundTransaction:
         return { json: { status: 1, msg: 'Refund Request Queued', request_id: '17265314530', bank_ref_num: '100142082006', mihpayid: String(var1) } };
       case PayUCommand.MandateRevoke:
+        await this.onRevoke?.();
         return { json: { status: 1, message: 'Mandate Revoked Successfully', action: 'MANDATE_REVOKE' } };
       default:
         throw new Error(`unexpected PayU command ${command}`);

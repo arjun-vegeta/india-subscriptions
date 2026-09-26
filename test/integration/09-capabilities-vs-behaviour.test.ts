@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { CancelMode, ChangeTiming, ErrorCode, IntervalUnit, PaymentMethod, Provider, RefundStatus, SchedulingMode } from '../../src/constants.js';
+import { CancelMode, ChangeTiming, ErrorCode, IntervalUnit, PaymentMethod, Provider, RefundStatus, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
 import { CashfreeHeader, CashfreePath } from '../../src/providers/cashfree/constants.js';
 import { PAYU_FREE_TRIAL_CONSENT_PAISE, PayUCommand, PayUConsentField } from '../../src/providers/payu/constants.js';
 import { RazorpayEndpoint, RazorpayNoteKey } from '../../src/providers/razorpay/constants.js';
@@ -128,8 +128,8 @@ describe('the README capability table against the capabilities objects', () => {
     const t = setupPayu();
     await t.create();
     await t.verify();
-    expect((await t.subs.pause(Provider.PayU, PAYU_COMPOSITE)).status).toBe('paused');
-    expect((await t.subs.resume(Provider.PayU, PAYU_COMPOSITE)).status).not.toBe('paused');
+    expect((await t.subs.pause(Provider.PayU, PAYU_COMPOSITE)).status).toBe(SubscriptionStatus.Paused);
+    expect((await t.subs.resume(Provider.PayU, PAYU_COMPOSITE)).status).not.toBe(SubscriptionStatus.Paused);
     expect(row('Pause and resume')[2]).toMatch(/scheduler/i);
     expect(adapters().payu).toMatchObject({ pause: false, resume: false });
   });
@@ -167,7 +167,6 @@ describe('Razorpay: every flag', () => {
     expect(Object.keys(sent.headers).filter((name) => name.includes('idempot'))).toEqual([]);
     expect(JSON.stringify(sent.json)).not.toMatch(/upi/i);
     expect(adapters().razorpay.idempotencyKeys).toBe(false);
-    expect(RazorpayNoteKey.Reference).toBeDefined();
   });
 });
 
@@ -215,7 +214,6 @@ describe('Cashfree: every flag', () => {
     expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
     expect((await rejection(() => t.subs.update(Provider.Cashfree, t.reference, { planId: 'other' }))).code).toBe(ErrorCode.Unsupported);
     expect((await rejection(() => t.subs.update(Provider.Cashfree, t.reference, { quantity: 2 }))).code).toBe(ErrorCode.Unsupported);
-    expect(CF_FIRST_DUE).toBeDefined();
   });
 
   it('refunds and listCharges (true) on an on-demand subscription: the real calls go out, keyed by the merchant payment id the scheduler chose', async () => {
@@ -226,12 +224,11 @@ describe('Cashfree: every flag', () => {
     const charges = await t.subs.charges.list(Provider.Cashfree, t.reference);
     expect(charges).toHaveLength(1);
     const chargeId = charges[0]!.id;
-    expect(chargeId).toBe(t.fake.chargeCalls[0]!.json && (t.fake.chargeCalls[0]!.json as { payment_id: string }).payment_id);
+    expect(chargeId).toBe((t.fake.chargeCalls[0]!.json as { payment_id: string }).payment_id);
     const refund = await t.subs.charges.refund(Provider.Cashfree, { subscriptionId: t.reference, chargeId, refundId: 'rf_1', amount: 100 });
     expect(refund).toMatchObject({ chargeId, reference: 'rf_1' });
     expect(t.fake.gateway.calls.at(-1)?.json).toMatchObject({ payment_id: chargeId, refund_id: 'rf_1', refund_amount: 1 });
     expect(adapters().cashfree).toMatchObject({ refunds: true, listCharges: true });
-    expect(RefundStatus.Pending).toBeDefined();
   });
 });
 

@@ -5,10 +5,10 @@
  * JSON mandate webhooks; and the events forwarder's signed envelope is verified the way a receiver would.
  */
 import { describe, expect, it } from 'vitest';
-import { ContentType, ErrorCode, EventType, HeaderName, HttpMethod, IntervalUnit, Provider, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
+import { CheckoutKind, ContentType, ErrorCode, EventType, HeaderName, HttpMethod, IntervalUnit, Provider, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
 import { EventsDeliverySchema, EventsDeliveryKind } from '../../src/events-envelope.js';
 import { EventsHeader, createEventsForwarder, verifyEventsSignature } from '../../src/events-webhook.js';
-import { CashfreePath, CashfreeSubscriptionStatus, RETURN_URL_SUBSCRIPTION_ID_PARAM } from '../../src/providers/cashfree/constants.js';
+import { CashfreePaymentStatus } from '../../src/providers/cashfree/constants.js';
 import { RazorpayEndpoint, RazorpayNoteKey } from '../../src/providers/razorpay/constants.js';
 import { PayUCommand, PayUUpiMandateAction, PayUPaymentMode, PayUPgType } from '../../src/providers/payu/constants.js';
 import { ScheduleStatus, chargeIdFor } from '../../src/scheduler/index.js';
@@ -180,13 +180,10 @@ describe('HTTP service, Cashfree on-demand (with the scheduler)', () => {
     expect(t.fake.chargeCalls).toHaveLength(1);
 
     // the payment webhook of that charge
-    const paid = await t.paymentWebhook('PAYMENT_SUCCESS_2026', chargeIdFor(t.scheduleId, 0, 1), 'SUCCESS');
+    const paid = await t.paymentWebhook('PAYMENT_SUCCESS_2026', chargeIdFor(t.scheduleId, 0, 1), CashfreePaymentStatus.Success);
     expect(paid[0]?.type).toBe(EventType.SubscriptionCharged);
     const got = await exchange(call, OperationId.GetSubscription, HttpMethod.Get, `/v1/cashfree/subscriptions/${t.reference}`);
     expect(got.json).toMatchObject({ paidCycles: 1 });
-    expect(CashfreePath.Pay).toBeDefined();
-    expect(CashfreeSubscriptionStatus.Active).toBeDefined();
-    expect(RETURN_URL_SUBSCRIPTION_ID_PARAM).toBeDefined();
   });
 });
 
@@ -202,7 +199,7 @@ describe('HTTP service, PayU', () => {
       customer: CUSTOMER,
       startAt: PAYU_DUE,
     });
-    expect(created.json.checkout).toMatchObject({ kind: 'form_post' });
+    expect(created.json.checkout).toMatchObject({ kind: CheckoutKind.FormPost });
     expect(created.json.checkout.fields).not.toHaveProperty('salt');
 
     // PayU posts the consent result to the MERCHANT's surl as a form; the merchant forwards it as JSON to verify.
@@ -230,9 +227,6 @@ describe('HTTP service, PayU', () => {
     // get through the service by the composite id; cancel by the composite id revokes the mandate
     expect((await exchange(call, OperationId.GetSubscription, HttpMethod.Get, `/v1/payu/subscriptions/${encodeURIComponent(PAYU_COMPOSITE)}`)).json).toMatchObject({ paidCycles: 1 });
     expect((await exchange(call, OperationId.CancelSubscription, HttpMethod.Post, `/v1/payu/subscriptions/${encodeURIComponent(PAYU_COMPOSITE)}/cancel`)).json.status).toBe(SubscriptionStatus.Cancelled);
-    expect(PayUUpiMandateAction.Pause).toBeDefined();
-    expect(PayUPaymentMode.Upi).toBeDefined();
-    expect(PayUPgType.Upi).toBeDefined();
   });
 
   it('webhooks/parse is documented as "verify and normalise", but it applies the events to the scheduler as well', async () => {
@@ -274,7 +268,6 @@ describe('the events forwarder over the service', () => {
     expect(delivery.headers[EventsHeader.Timestamp]).toMatch(/^\d+$/);
     const parsed = EventsDeliverySchema.parse(JSON.parse(delivery.body));
     expect(parsed).toMatchObject({ kind: EventsDeliveryKind.Gateway, provider: Provider.PayU });
-    expect(published('getHealth')).toBeDefined();
     function formBody(fields: Record<string, string>) {
       return new URLSearchParams(fields).toString();
     }

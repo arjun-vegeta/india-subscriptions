@@ -172,17 +172,17 @@ describe('PayU through the facade and the scheduler', () => {
       const t = setup();
       await t.create();
       await t.verify();
+      t.fake.commands.length = 0;
       let scheduleWhenRevoked: string | undefined;
-      const revoke = t.fake.gateway.fetch;
-      t.fake.gateway.calls.length = 0;
+      t.fake.onRevoke = async () => {
+        scheduleWhenRevoked = (await t.scheduler.get(t.scheduleId))?.status;
+      };
       const cancelled = await t.subs.cancel(Provider.PayU, handle);
-      scheduleWhenRevoked = (await t.scheduler.get(t.scheduleId))?.status;
       expect(cancelled.status).toBe(SubscriptionStatus.Cancelled);
       expect(scheduleWhenRevoked).toBe(ScheduleStatus.Cancelled);
       expect(t.fake.commands.map((entry) => entry.command)).toEqual([PayUCommand.MandateRevoke]);
       expect(t.fake.commandsNamed(PayUCommand.MandateRevoke)[0]).toMatchObject({ authPayuId: MANDATE });
       expect((await t.tickAt(plusHours(DUE, 1))).charged).toBe(0);
-      expect(revoke).toBeDefined();
     }
   });
 

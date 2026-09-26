@@ -7,8 +7,8 @@
  * from those files verbatim.
  */
 import { describe, expect, it } from 'vitest';
-import { CancelMode, CheckoutKind, ErrorCode, EventType, HttpMethod, Provider, RefundStatus, SchedulingMode, SubscriptionStatus, ChangeTiming } from '../../src/constants.js';
-import { RAZORPAY_BASE_URL, RazorpayEndpoint, RazorpayNoteKey, RazorpayScheduleChangeAt } from '../../src/providers/razorpay/constants.js';
+import { CancelMode, CheckoutKind, ErrorCode, IntervalUnit, EventType, HttpMethod, Provider, RefundStatus, SchedulingMode, SubscriptionStatus, ChangeTiming } from '../../src/constants.js';
+import { RAZORPAY_BASE_URL, RazorpayEndpoint, RazorpayNoteKey, RazorpayRefundStatus, RazorpayScheduleChangeAt, RazorpaySubscriptionStatus } from '../../src/providers/razorpay/constants.js';
 import { SubscriptionEventSchema, SubscriptionSchema, ChargeSchema, RefundSchema } from '../../src/schemas.js';
 import {
   CUSTOMER,
@@ -54,7 +54,7 @@ const refundEntity = {
   payment_id: 'pay_00000000000002',
   receipt: 'refund-1',
   notes: [],
-  status: 'processed',
+  status: RazorpayRefundStatus.Processed,
   created_at: NOW_UNIX,
 };
 
@@ -96,7 +96,7 @@ describe('Razorpay through the facade', () => {
     // 1. create: an inline plan, a trial, an upfront amount and a total cycle count.
     const subscription = await subs.create(Provider.Razorpay, {
       reference: REFERENCE,
-      plan: { name: 'Pro monthly', amount: 49900, interval: { unit: 'month', count: 1 } },
+      plan: { name: 'Pro monthly', amount: 49900, interval: { unit: IntervalUnit.Month, count: 1 } },
       customer: CUSTOMER,
       trial: { days: 14 },
       totalCycles: 12,
@@ -214,15 +214,35 @@ describe('Razorpay through the facade', () => {
     expect(subs.capabilities(Provider.Razorpay).merchantCharges).toBe(false);
   });
 
-  it('cancel at period end is reported as pending cancellation on a live subscription (request-derived)', async () => {
+  it('cancel at period end on a live subscription is reported as a pending cancellation (derived from the request)', async () => {
+    const clock = new Clock(NOW);
+    const live = { ...fixtureJson(RAZORPAY_ADAPTER_TEST, 'CANCEL_RESPONSE'), status: RazorpaySubscriptionStatus.Active };
+    const { fetch, calls } = scriptedFetch(() => ({ json: live }));
+    const { subs } = wire(razorpayProvider(fetch, clock), clock, calls);
+    const result = await subs.cancel(Provider.Razorpay, SUB_ID, { mode: CancelMode.AtPeriodEnd });
+    expect(result).toMatchObject({ status: SubscriptionStatus.Active, cancelAtPeriodEnd: true });
+  });
+
+  // DEFECT (see the report, low): `VerifyCheckoutInput.expectedSubscriptionId` is documented as "the subscription id
+  // (or your reference)", and the facade compares it with `verification.subscriptionId` OR `verification.reference`. The
+  // Razorpay adapter never returns a reference from `verifyCheckout`, so the reference a merchant stored is refused.
+  it.fails('verifyCheckout accepts the stored reference as expectedSubscriptionId for Razorpay, as the schema promises', async () => {
     const clock = new Clock(NOW);
     const { fetch, calls } = gateway();
     const { subs } = wire(razorpayProvider(fetch, clock), clock, calls);
-    const live = { ...fixtureJson(RAZORPAY_ADAPTER_TEST, 'CANCEL_RESPONSE'), status: 'active' };
-    const { fetch: liveFetch } = scriptedFetch(() => ({ json: live }));
-    const { subs: liveSubs } = wire(razorpayProvider(liveFetch, clock), clock, []);
-    const result = await liveSubs.cancel(Provider.Razorpay, SUB_ID, { mode: CancelMode.AtPeriodEnd });
-    expect(result).toMatchObject({ status: SubscriptionStatus.Active, cancelAtPeriodEnd: true });
-    expect(subs).toBeDefined();
+    const subscription = await subs.create(Provider.Razorpay, {
+      reference: REFERENCE,
+      plan: { name: 'Pro monthly', amount: 49900, interval: { unit: IntervalUnit.Month, count: 1 } },
+      customer: CUSTOMER,
+      totalCycles: 12,
+    });
+    const paymentId = 'pay_AuthorisationOne';
+    const result = {
+      razorpay_payment_id: paymentId,
+      razorpay_subscription_id: subscription.id,
+      razorpay_signature: hmacHex(RAZORPAY_ACCOUNT.keySecret, `${paymentId}|${subscription.id}`),
+    };
+    const verification = await subs.verifyCheckout(Provider.Razorpay, result, { expectedSubscriptionId: REFERENCE });
+    expect(verification.authorized).toBe(true);
   });
 });

@@ -178,6 +178,20 @@ describe('Cashfree PERIODIC through the facade', () => {
     // a PERIODIC subscription never gets a schedule, even though the facade has a scheduler for this gateway
     expect(store.calls.filter((name) => STORE_WRITES.includes(name))).toEqual([]);
     expect(await subs.scheduler?.find(Provider.Cashfree, REFERENCE)).toBeUndefined();
-    expect(ChangeTiming.Immediately).toBeDefined();
+  });
+
+  it('a failing billing store blocks even the cancellation of a gateway-scheduled subscription (the facade must look for a schedule first); the gateway is not called', async () => {
+    const clock = new Clock(NOW);
+    const { fetch, calls } = gateway(clock);
+    const { subs, store } = wire(cashfreeProvider(fetch, clock), clock, calls);
+    store.inner.getSchedule = async () => {
+      throw new Error('disk full');
+    };
+    store.inner.findBySubscriptionId = async () => {
+      throw new Error('disk full');
+    };
+    const error = await rejection(() => subs.cancel(Provider.Cashfree, REFERENCE));
+    expect(error.code).toBe(ErrorCode.Internal);
+    expect(calls).toHaveLength(0);
   });
 });
