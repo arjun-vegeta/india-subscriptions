@@ -188,6 +188,14 @@ credentials. Run it next to your application, never on the public internet,
 apart from the gateway webhook routes (`POST /v1/{provider}/webhooks`), which
 are authenticated by the gateway's own signature.
 
+- Set `EVENTS_WEBHOOK_URL` and `EVENTS_WEBHOOK_SECRET` and the service posts
+  normalised events to your application: gateway events as they arrive, and
+  the billing scheduler's own events (debit succeeded or failed, schedule
+  halted, and so on). Each request is signed: HMAC-SHA256 over
+  `<timestamp>.<raw body>`, hex, in `x-india-subscriptions-signature`, with
+  the Unix timestamp in `x-india-subscriptions-timestamp`. Scheduler events
+  are queued in memory and retried five times, so treat them as a prompt and
+  read the subscription with `GET` when it matters.
 - The OpenAPI 3.1 document is served at `/v1/openapi.json` and committed at
   [openapi/openapi.json](openapi/openapi.json). Generate a client for your
   language from it.

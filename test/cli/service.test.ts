@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ErrorCode, Environment, Provider } from '../../src/constants.js';
+import { ErrorCode, Environment, IntervalUnit, Provider } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
 import { EventsHeader, verifyEventsSignature } from '../../src/events-webhook.js';
 import { FILE_STORE_FORMAT } from '../../src/scheduler-file-store.js';
@@ -153,7 +153,7 @@ describe('buildService', () => {
       expect(report).toContain('listening on http://127.0.0.1:8787');
       expect(report).toContain('billing scheduler: on');
       expect(report).toContain('tick every 120s');
-      expect(report).toContain('events webhook: https://hooks.example.com (signed)');
+      expect(report).toContain('events webhook: https://hooks.example.com (signed; gateway events and scheduler events)');
       expect(report).not.toContain('secret-token');
       for (const secret of ALL_SECRETS) expect(report).not.toContain(secret);
       await service.close();
@@ -262,9 +262,10 @@ describe('runServe', () => {
       expect(receiver.calls).toHaveLength(1);
       const call = receiver.calls[0]!;
       expect(call.method).toBe('POST');
-      expect(verifyEventsSignature(EVENTS_SECRET, call.body as string, call.headers[EventsHeader.Signature])).toBe(true);
+      expect(() => verifyEventsSignature(EVENTS_SECRET, call.body as string, call.headers)).not.toThrow();
       expect(Number(call.headers[EventsHeader.Timestamp])).toBeGreaterThan(1_700_000_000);
-      const delivered = call.json as { provider: string; events: { type: string; provider: string }[] };
+      const delivered = call.json as { kind: string; provider: string; events: { type: string; provider: string }[] };
+      expect(delivered.kind).toBe('gateway');
       expect(delivered.provider).toBe(Provider.Razorpay);
       expect(delivered.events).toHaveLength(1);
       expect(delivered.events[0]).toMatchObject({ provider: Provider.Razorpay, type: 'subscription.authorized' });
@@ -294,6 +295,85 @@ describe('runServe', () => {
       const response = await postWebhook(running.url);
       expect(response.status).toBe(200);
     });
+  });
+});
+
+describe('scheduler events on the events webhook', () => {
+  const registration = {
+    provider: Provider.PayU,
+    subscriptionId: 'payu-sub-1',
+    reference: 'order-1',
+    amount: 49900,
+    interval: { unit: IntervalUnit.Month, count: 1 },
+    firstChargeAt: '2099-01-15T04:30:00.000Z',
+    awaitingAuthorization: true,
+  };
+  const env = (): EnvironmentVariables => ({
+    ...baseEnv,
+    ...payuEnv,
+    [EnvVar.SchedulerStoreFile]: join(dir, 'state.json'),
+    [EnvVar.EventsWebhookUrl]: EVENTS_URL,
+    [EnvVar.EventsWebhookSecret]: EVENTS_SECRET,
+  });
+
+  it('forwards them, signed, as `scheduler` deliveries with a stable id per event', async () => {
+    const receiver = mockFetch([
+      { url: EVENTS_URL, status: 200 },
+      { url: EVENTS_URL, status: 200 },
+    ]);
+    const service = await buildService(env(), { fetch: receiver.fetch, logger: silentLogger });
+    expect(service.schedulerEvents).toBeDefined();
+    const schedule = await service.scheduler!.register(registration);
+    await service.scheduler!.cancel(schedule.id);
+    await service.schedulerEvents!.idle();
+
+    expect(receiver.calls.length).toBeGreaterThanOrEqual(2);
+    const events: { id: string; type: string; scheduleId: string; provider: string }[] = [];
+    for (const call of receiver.calls) {
+      expect(() => verifyEventsSignature(EVENTS_SECRET, call.body as string, call.headers)).not.toThrow();
+      const delivery = call.json as { kind: string; events: typeof events };
+      expect(delivery.kind).toBe('scheduler');
+      events.push(...delivery.events);
+    }
+    expect(events.map((e) => e.type)).toEqual(['schedule.registered', 'schedule.cancelled']);
+    for (const e of events) {
+      expect(e.scheduleId).toBe(schedule.id);
+      expect(e.provider).toBe(Provider.PayU);
+      expect(e.id).toMatch(/^sevt_[0-9a-f]{32}$/);
+    }
+    expect(new Set(events.map((e) => e.id)).size).toBe(2);
+    await service.close();
+  });
+
+  it('does not run a relay without a scheduler, or without the webhook', async () => {
+    const noStore = { ...env() };
+    delete noStore[EnvVar.SchedulerStoreFile];
+    expect((await buildService(noStore, { logger: silentLogger })).schedulerEvents).toBeUndefined();
+    const noHook = { ...env() };
+    delete noHook[EnvVar.EventsWebhookUrl];
+    delete noHook[EnvVar.EventsWebhookSecret];
+    const service = await buildService(noHook, { logger: silentLogger });
+    expect(service.schedulerEvents).toBeUndefined();
+    await service.close();
+  });
+
+  it('a receiver that is down never breaks billing; undelivered events are logged with id and type', async () => {
+    const receiver = mockFetch(Array.from({ length: 10 }, () => ({ url: EVENTS_URL, status: 503 })));
+    const logger = recordingLogger();
+    const service = await buildService(env(), { fetch: receiver.fetch, logger });
+    const schedule = await service.scheduler!.register(registration);
+    expect(schedule.status).toBe('pending_authorization');
+    expect((await service.scheduler!.get(schedule.id))?.id).toBe(schedule.id);
+    await vi.waitFor(() => expect(receiver.calls.length).toBeGreaterThanOrEqual(1));
+    await service.close(); // stops the retry loop instead of waiting out the backoff
+
+    const errors = logger.lines.filter((line) => line.startsWith('error: ')).join('\n');
+    expect(errors).toMatch(/scheduler event sevt_[0-9a-f]{32} \(schedule\.registered\)/);
+    for (const secret of ALL_SECRETS) expect(logger.lines.join('\n')).not.toContain(secret);
+    // The schedule itself is stored regardless.
+    const reopened = await buildService(env(), { logger: silentLogger });
+    expect((await reopened.scheduler!.get(schedule.id))?.id).toBe(schedule.id);
+    await reopened.close();
   });
 });
 

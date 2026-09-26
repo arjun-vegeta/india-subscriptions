@@ -52,7 +52,8 @@ describe('the main entry', () => {
       'BillingScheduler', 'MemorySchedulerStore', 'ScheduleStatus', 'CycleStatus', 'SchedulerEventType',
       'ScheduleRecordSchema', 'CycleRecordSchema', 'TickResultSchema', 'scheduleIdFor', 'awaitsActivation',
       // events webhook
-      'createEventsForwarder', 'verifyEventsSignature', 'signEventsBody', 'EventsHeader',
+      'createEventsForwarder', 'createSchedulerEventsRelay', 'verifyEventsSignature', 'signEventsBody', 'EventsHeader',
+      'EventsDeliveryKind', 'EventsDeliverySchema', 'GatewayEventsDeliverySchema', 'SchedulerEventsDeliverySchema', 'schedulerEventId',
       // schema registry
       'SchemaName', 'schemaRegistry', 'namedSchema', 'exportJsonSchemas',
       // money and time

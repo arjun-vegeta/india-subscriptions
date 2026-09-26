@@ -1443,6 +1443,104 @@ class LibraryErrorCode(str, Enum):
     INTERNAL_ERROR = 'INTERNAL_ERROR'
 
 
+class GatewayEventsDelivery(BaseModel):
+    """
+    A delivery of gateway webhook events to the events webhook.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    kind: Literal['gateway']
+    """
+    Always `gateway`: tells this delivery from a scheduler one.
+    """
+    provider: Provider
+    """
+    The gateway whose webhook carried the events.
+    """
+    events: Annotated[list[SubscriptionEvent], Field(min_length=1)]
+    """
+    The verified, normalised events of one gateway webhook, in the order the gateway sent them. Each has an `id` to de-duplicate on.
+    """
+
+
+class Error(BaseModel):
+    """
+    The failure, for failure events.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    code: LibraryErrorCode
+    """
+    Error code of the failure.
+    """
+    message: str
+    """
+    Human-readable explanation of the failure.
+    """
+
+
+class SchedulerEventType(str, Enum):
+    """
+    What happened to a schedule, as reported to the `onEvent` listener.
+    """
+
+    SCHEDULE_REGISTERED = 'schedule.registered'
+    SCHEDULE_ACTIVATED = 'schedule.activated'
+    SCHEDULE_PAUSED = 'schedule.paused'
+    SCHEDULE_RESUMED = 'schedule.resumed'
+    SCHEDULE_CANCELLED = 'schedule.cancelled'
+    SCHEDULE_UPDATED = 'schedule.updated'
+    SCHEDULE_COMPLETED = 'schedule.completed'
+    SCHEDULE_HALTED = 'schedule.halted'
+    NOTIFICATION_SENT = 'notification.sent'
+    NOTIFICATION_FAILED = 'notification.failed'
+    CHARGE_SUCCEEDED = 'charge.succeeded'
+    CHARGE_FAILED = 'charge.failed'
+    CHARGE_OUTCOME_UNKNOWN = 'charge.outcome_unknown'
+    CHARGE_OUTCOME_OVERDUE = 'charge.outcome_overdue'
+    CYCLE_FAILED = 'cycle.failed'
+    CYCLE_SKIPPED = 'cycle.skipped'
+    CHARGE_IN_FLIGHT = 'charge.in_flight'
+
+
+class ScheduleStatus(str, Enum):
+    """
+    Lifecycle of one scheduled subscription: pending_authorization (nothing is billed yet), active, paused, halted (retries exhausted), cancelled or completed (all cycles collected or the mandate ended).
+    """
+
+    PENDING_AUTHORIZATION = 'pending_authorization'
+    ACTIVE = 'active'
+    PAUSED = 'paused'
+    CANCELLED = 'cancelled'
+    COMPLETED = 'completed'
+    HALTED = 'halted'
+
+
+class ScheduleStatusReason(str, Enum):
+    """
+    Why a schedule is in its current status, for dashboards and audit logs.
+    """
+
+    AUTHORIZATION_TIMEOUT = 'authorization_timeout'
+    AUTHORIZATION_FAILED = 'authorization_failed'
+    MANDATE_EXPIRED = 'mandate_expired'
+    CANCELLED_BY_MERCHANT = 'cancelled_by_merchant'
+    CANCELLED_BY_GATEWAY = 'cancelled_by_gateway'
+    PAUSED_BY_MERCHANT = 'paused_by_merchant'
+    PAUSED_BY_GATEWAY = 'paused_by_gateway'
+    HALTED_BY_GATEWAY = 'halted_by_gateway'
+    RETRIES_EXHAUSTED = 'retries_exhausted'
+    ALL_CYCLES_COLLECTED = 'all_cycles_collected'
+    FINAL_CYCLE_SKIPPED = 'final_cycle_skipped'
+    MANDATE_ENDED = 'mandate_ended'
+
+
 class ErrorDetail(BaseModel):
     """
     The error: a stable code, a message and, for gateway failures, what the gateway said.
@@ -1583,6 +1681,69 @@ class TickResult(BaseModel):
     """
 
 
+class SchedulerWebhookEvent(BaseModel):
+    """
+    A state change of a billing schedule, with a stable id.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    type: SchedulerEventType
+    """
+    What happened.
+    """
+    at: AwareDatetime
+    """
+    When it happened.
+    """
+    schedule_id: Annotated[str, Field(alias='scheduleId')]
+    """
+    The schedule it happened to.
+    """
+    provider: Provider
+    """
+    The gateway holding the mandate.
+    """
+    subscription_id: Annotated[str, Field(alias='subscriptionId')]
+    """
+    The gateway subscription id of the schedule.
+    """
+    schedule_status: Annotated[ScheduleStatus, Field(alias='scheduleStatus')]
+    """
+    The status of the schedule after the change.
+    """
+    reason: Optional[ScheduleStatusReason] = None
+    """
+    Why the schedule changed status, where relevant.
+    """
+    cycle_index: Annotated[Optional[int], Field(alias='cycleIndex', ge=0)] = None
+    """
+    The cycle concerned, where relevant.
+    """
+    attempt: Annotated[Optional[int], Field(ge=1)] = None
+    """
+    The debit attempt concerned, where relevant.
+    """
+    charge_id: Annotated[Optional[str], Field(alias='chargeId')] = None
+    """
+    The debit id concerned, where relevant.
+    """
+    amount: Annotated[Optional[int], Field(ge=0)] = None
+    """
+    The amount in paise concerned, where relevant.
+    """
+    error: Optional[Error] = None
+    """
+    The failure, for failure events.
+    """
+    id: Annotated[str, Field(min_length=1)]
+    """
+    Stable id for de-duplication: the same scheduler event always has the same id, so a repeated delivery can be ignored.
+    """
+
+
 class ErrorResponse(BaseModel):
     """
     The body of every error response.
@@ -1595,4 +1756,33 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
     """
     The error.
+    """
+
+
+class SchedulerEventsDelivery(BaseModel):
+    """
+    A delivery of billing scheduler events to the events webhook.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    kind: Literal['scheduler']
+    """
+    Always `scheduler`: tells this delivery from a gateway one.
+    """
+    events: Annotated[list[SchedulerWebhookEvent], Field(min_length=1)]
+    """
+    Billing scheduler events in the order they happened. Each has an `id` to de-duplicate on.
+    """
+
+
+class EventsDelivery(RootModel[Union[GatewayEventsDelivery, SchedulerEventsDelivery]]):
+    root: Annotated[
+        Union[GatewayEventsDelivery, SchedulerEventsDelivery],
+        Field(discriminator='kind'),
+    ]
+    """
+    Anything the service POSTs to the events webhook; switch on `kind`.
     """

@@ -4537,6 +4537,219 @@
           "INTERNAL_ERROR"
         ],
         "description": "Stable error code of this library. Branch on it, never on the message."
+      },
+      "EventsDelivery": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/GatewayEventsDelivery"
+          },
+          {
+            "$ref": "#/components/schemas/SchedulerEventsDelivery"
+          }
+        ],
+        "description": "Anything the service POSTs to the events webhook; switch on `kind`.",
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "gateway": "#/components/schemas/GatewayEventsDelivery",
+            "scheduler": "#/components/schemas/SchedulerEventsDelivery"
+          }
+        }
+      },
+      "GatewayEventsDelivery": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "gateway",
+            "description": "Always `gateway`: tells this delivery from a scheduler one."
+          },
+          "provider": {
+            "description": "The gateway whose webhook carried the events.",
+            "$ref": "#/components/schemas/Provider"
+          },
+          "events": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionEvent"
+            },
+            "description": "The verified, normalised events of one gateway webhook, in the order the gateway sent them. Each has an `id` to de-duplicate on."
+          }
+        },
+        "required": [
+          "kind",
+          "provider",
+          "events"
+        ],
+        "additionalProperties": false,
+        "description": "A delivery of gateway webhook events to the events webhook."
+      },
+      "SchedulerEventsDelivery": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "scheduler",
+            "description": "Always `scheduler`: tells this delivery from a gateway one."
+          },
+          "events": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SchedulerWebhookEvent"
+            },
+            "description": "Billing scheduler events in the order they happened. Each has an `id` to de-duplicate on."
+          }
+        },
+        "required": [
+          "kind",
+          "events"
+        ],
+        "additionalProperties": false,
+        "description": "A delivery of billing scheduler events to the events webhook."
+      },
+      "SchedulerWebhookEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "description": "What happened.",
+            "$ref": "#/components/schemas/SchedulerEventType"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "description": "When it happened."
+          },
+          "scheduleId": {
+            "type": "string",
+            "description": "The schedule it happened to."
+          },
+          "provider": {
+            "description": "The gateway holding the mandate.",
+            "$ref": "#/components/schemas/Provider"
+          },
+          "subscriptionId": {
+            "type": "string",
+            "description": "The gateway subscription id of the schedule."
+          },
+          "scheduleStatus": {
+            "description": "The status of the schedule after the change.",
+            "$ref": "#/components/schemas/ScheduleStatus"
+          },
+          "reason": {
+            "description": "Why the schedule changed status, where relevant.",
+            "$ref": "#/components/schemas/ScheduleStatusReason"
+          },
+          "cycleIndex": {
+            "description": "The cycle concerned, where relevant.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "attempt": {
+            "description": "The debit attempt concerned, where relevant.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "chargeId": {
+            "description": "The debit id concerned, where relevant.",
+            "type": "string"
+          },
+          "amount": {
+            "description": "The amount in paise concerned, where relevant.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "error": {
+            "description": "The failure, for failure events.",
+            "type": "object",
+            "properties": {
+              "code": {
+                "description": "Error code of the failure.",
+                "$ref": "#/components/schemas/LibraryErrorCode"
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable explanation of the failure."
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable id for de-duplication: the same scheduler event always has the same id, so a repeated delivery can be ignored."
+          }
+        },
+        "required": [
+          "type",
+          "at",
+          "scheduleId",
+          "provider",
+          "subscriptionId",
+          "scheduleStatus",
+          "id"
+        ],
+        "additionalProperties": false,
+        "description": "A state change of a billing schedule, with a stable id."
+      },
+      "SchedulerEventType": {
+        "type": "string",
+        "enum": [
+          "schedule.registered",
+          "schedule.activated",
+          "schedule.paused",
+          "schedule.resumed",
+          "schedule.cancelled",
+          "schedule.updated",
+          "schedule.completed",
+          "schedule.halted",
+          "notification.sent",
+          "notification.failed",
+          "charge.succeeded",
+          "charge.failed",
+          "charge.outcome_unknown",
+          "charge.outcome_overdue",
+          "cycle.failed",
+          "cycle.skipped",
+          "charge.in_flight"
+        ],
+        "description": "What happened to a schedule, as reported to the `onEvent` listener."
+      },
+      "ScheduleStatus": {
+        "type": "string",
+        "enum": [
+          "pending_authorization",
+          "active",
+          "paused",
+          "cancelled",
+          "completed",
+          "halted"
+        ],
+        "description": "Lifecycle of one scheduled subscription: pending_authorization (nothing is billed yet), active, paused, halted (retries exhausted), cancelled or completed (all cycles collected or the mandate ended)."
+      },
+      "ScheduleStatusReason": {
+        "type": "string",
+        "enum": [
+          "authorization_timeout",
+          "authorization_failed",
+          "mandate_expired",
+          "cancelled_by_merchant",
+          "cancelled_by_gateway",
+          "paused_by_merchant",
+          "paused_by_gateway",
+          "halted_by_gateway",
+          "retries_exhausted",
+          "all_cycles_collected",
+          "final_cycle_skipped",
+          "mandate_ended"
+        ],
+        "description": "Why a schedule is in its current status, for dashboards and audit logs."
       }
     },
     "securitySchemes": {
