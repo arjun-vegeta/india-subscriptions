@@ -22,6 +22,8 @@ import {
   consentResult,
   setupPayu as setup,
 } from './fakes.js';
+import { PayUPaymentMode, PayUPgType } from '../../src/providers/payu/constants.js';
+import { SubscriptionSchema } from '../../src/schemas.js';
 import { CUSTOMER, plusHours, rejection } from './helpers.js';
 
 describe('PayU through the facade and the scheduler', () => {
@@ -189,40 +191,63 @@ describe('PayU through the facade and the scheduler', () => {
 });
 
 describe('PayU through the facade: handles before and after authorisation', () => {
-  // DEFECT (see the report): the facade resolves a REFERENCE to the schedule for cancel / pause / resume / update, but not for get().
-  it.fails('subs.get accepts the reference the subscription was created with (as cancel, pause, resume and update do)', async () => {
+  it('subs.get accepts the reference the subscription was created with, as the composite id', async () => {
     const t = setup();
     const subscription = await t.create();
     await t.verify();
-    // Expected: the same subscription as get(COMPOSITE). Actual: VALIDATION "is not a PayU subscription id".
     const byReference = await t.subs.get(Provider.PayU, subscription.reference as string);
-    expect(byReference.status).toBe(SubscriptionStatus.Active);
+    const byComposite = await t.subs.get(Provider.PayU, COMPOSITE);
+    expect(byReference.status).toBe(SubscriptionStatus.Trialing); // live mandate, first charge date still ahead
+    expect(byReference).toMatchObject({ id: COMPOSITE, status: byComposite.status, amount: 49900 });
   });
 
-  // DEFECT: until the customer authorises, the only handle is the reference, and the facade cannot answer for it.
-  it.fails('subs.get works on the subscription create() just returned, before the customer authorises', async () => {
+  it('subs.get works on the subscription create() just returned, before the customer authorises: built from the schedule, no gateway call', async () => {
     const t = setup();
     const subscription = await t.create();
     const got = await t.subs.get(Provider.PayU, subscription.id);
-    expect(got.status).toBe(SubscriptionStatus.Created);
+    expect(got).toMatchObject({
+      id: REFERENCE,
+      reference: REFERENCE,
+      status: SubscriptionStatus.Created,
+      scheduling: SchedulingMode.Merchant,
+      amount: 49900,
+      interval: { unit: IntervalUnit.Month, count: 1 },
+      startAt: DUE,
+    });
+    expect(SubscriptionSchema.safeParse(got).success).toBe(true);
+    // The gateway was asked first... and could not answer (the consent is not a mandate yet), so the schedule answered.
+    expect(t.fake.commands).toEqual([]);
   });
 
-  // DEFECT: abandoning a never-authorised PayU subscription stops the schedule, then fails on the gateway side for good.
-  it.fails('cancel of a subscription the customer never authorised succeeds (there is no mandate to revoke)', async () => {
+  it('cancel of a subscription the customer never authorised succeeds, and can be repeated: the schedule is cancelled, there is no mandate to revoke', async () => {
     const t = setup();
     const subscription = await t.create();
-    const cancelled = await t.subs.cancel(Provider.PayU, subscription.id);
-    expect(cancelled.status).toBe(SubscriptionStatus.Cancelled);
-  });
-
-  it('what actually happens on that cancel: the schedule IS cancelled, then VALIDATION surfaces, and a retry fails the same way', async () => {
-    const t = setup();
-    const subscription = await t.create();
-    const first = await rejection(() => t.subs.cancel(Provider.PayU, subscription.id));
-    expect(first.code).toBe(ErrorCode.Validation);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const cancelled = await t.subs.cancel(Provider.PayU, subscription.id);
+      expect(cancelled).toMatchObject({ status: SubscriptionStatus.Cancelled, id: REFERENCE });
+    }
     expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Cancelled);
-    const second = await rejection(() => t.subs.cancel(Provider.PayU, subscription.id));
-    expect(second.code).toBe(ErrorCode.Validation);
     expect(t.calls).toHaveLength(0);
+    // A real failure after authorisation is still an error: only "no mandate yet" is swallowed.
+    const authorised = setup();
+    await authorised.create();
+    await authorised.verify();
+    authorised.fake.revokeFails = true;
+    await expect(authorised.subs.cancel(Provider.PayU, REFERENCE)).rejects.toBeDefined();
+  });
+
+  it('the eNACH flow: the consent succeeded but the bank has not confirmed, so the schedule adopts the mandate id and the next poll after the bank confirms activates it', async () => {
+    const t = setup();
+    await t.create();
+    const enach = consentResult(REFERENCE, { mode: PayUPaymentMode.ENach, PG_TYPE: PayUPgType.ENach });
+    const verification = await t.subs.verifyCheckout(Provider.PayU, enach, { expectedSubscriptionId: REFERENCE });
+    expect(verification).toMatchObject({ authorized: false, status: SubscriptionStatus.PendingAuthorization, subscriptionId: `enach:${MANDATE}` });
+    expect(await t.scheduler.get(t.scheduleId)).toMatchObject({ status: ScheduleStatus.PendingAuthorization, subscriptionId: `enach:${MANDATE}` });
+
+    // The bank confirms hours later; no webhook arrives. tick() asks PayU (NB_mandate_status) and starts billing.
+    t.fake.mandateStatus = 'SUCCESS';
+    await t.tickAt(plusHours('2026-01-01T00:00:00.000Z', 1));
+    expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
+    expect(t.fake.commands.map((entry) => entry.command)).toContain(PayUCommand.NbMandateStatus);
   });
 });

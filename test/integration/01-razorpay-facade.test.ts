@@ -68,7 +68,7 @@ function gateway() {
       case `POST ${RazorpayEndpoint.subscriptions}`:
         return { json: createdSubscription };
       case `GET ${RazorpayEndpoint.subscription(SUB_ID)}`:
-        return { json: fetched };
+        return { json: { ...fetched, notes: { [RazorpayNoteKey.Reference]: REFERENCE } } };
       case `POST ${RazorpayEndpoint.pauseSubscription(SUB_ID)}`:
         return { json: fixtureJson(RAZORPAY_ADAPTER_TEST, 'PAUSE_RESPONSE') };
       case `POST ${RazorpayEndpoint.resumeSubscription(SUB_ID)}`:
@@ -137,11 +137,15 @@ describe('Razorpay through the facade', () => {
     expect((await rejection(() => subs.verifyCheckout(Provider.Razorpay, { ...result, razorpay_signature: 'forged' }))).code).toBe(
       ErrorCode.SignatureInvalid,
     );
-    // A genuine result of ANOTHER subscription is refused when the caller says which one it expected.
+    expect(calls).toHaveLength(before);
+    // A genuine result of ANOTHER subscription is refused when the caller says which one it expected. The expected value is
+    // neither the verified id nor a reference the result carries, so the facade reads the verified subscription ONCE to
+    // compare its reference (it may be the merchant's own reference).
     expect(
       (await rejection(() => subs.verifyCheckout(Provider.Razorpay, result, { expectedSubscriptionId: 'sub_someone_else' }))).code,
     ).toBe(ErrorCode.SignatureInvalid);
-    expect(calls).toHaveLength(before);
+    expect(sequence(calls.slice(before))).toEqual([`GET ${RazorpayEndpoint.subscription(SUB_ID)}`]);
+    calls.length = before;
 
     // 3. The documented webhooks, in order, each signed with the webhook secret.
     const documented: Array<[string, EventType]> = [
@@ -223,10 +227,9 @@ describe('Razorpay through the facade', () => {
     expect(result).toMatchObject({ status: SubscriptionStatus.Active, cancelAtPeriodEnd: true });
   });
 
-  // DEFECT (see the report, low): `VerifyCheckoutInput.expectedSubscriptionId` is documented as "the subscription id
-  // (or your reference)", and the facade compares it with `verification.subscriptionId` OR `verification.reference`. The
-  // Razorpay adapter never returns a reference from `verifyCheckout`, so the reference a merchant stored is refused.
-  it.fails('verifyCheckout accepts the stored reference as expectedSubscriptionId for Razorpay, as the schema promises', async () => {
+  // `VerifyCheckoutInput.expectedSubscriptionId` is "the subscription id (or your reference)". The Razorpay adapter returns no
+  // reference from `verifyCheckout`, so the facade reads the subscription once and compares the reference it holds.
+  it('verifyCheckout accepts the stored reference as expectedSubscriptionId for Razorpay, as the schema promises', async () => {
     const clock = new Clock(NOW);
     const { fetch, calls } = gateway();
     const { subs } = wire(razorpayProvider(fetch, clock), clock, calls);

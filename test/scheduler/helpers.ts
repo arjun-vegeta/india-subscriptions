@@ -119,6 +119,8 @@ export class FakeProvider implements SubscriptionProvider {
 
   createScript: CreateBehaviour[] = [];
   notifyScript: NotifyBehaviour[] = [];
+  /** A gateway that ties the debit to its notification (PhonePe): the id the debit after this notification must use. */
+  dictateChargeId: ((input: NotifyChargeInput) => string) | undefined;
   getChargeError: SubscriptionError | undefined;
   /** What `CreateBehaviour.ThrowConfigured` throws. */
   createError: SubscriptionError | undefined;
@@ -198,6 +200,7 @@ export class FakeProvider implements SubscriptionProvider {
       amount: input.amount,
       debitAt: input.debitAt,
       invoiceNumber: `INV-${input.notificationId}`,
+      ...(this.dictateChargeId ? { chargeId: this.dictateChargeId(input) } : {}),
       raw: null,
     };
   }

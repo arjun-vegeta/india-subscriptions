@@ -342,35 +342,32 @@ describe('Cashfree on-demand: lifecycle', () => {
 });
 
 describe('Cashfree on-demand: where the adapter\'s error codes meet the scheduler\'s rules', () => {
-  // DEFECT (see the report): the scheduler treats a VALIDATION rejection of createCharge as proof that no debit exists
-  // (`DEFINITE_REJECTION_CODES`), but the Cashfree adapter maps HTTP 400 and 422 to VALIDATION, and 400 / 422 are the
-  // statuses the spec leaves for "reused payment_id". Conditional on Cashfree's payment lookup lagging past the 30-minute
-  // grace period after a lost answer: the re-sent id is refused as a duplicate, the scheduler books a failed attempt, and
-  // raises a second charge under a new id while the first one still stands.
-  it.fails('a reused-payment_id rejection after a lost answer (lookup lagging) never ends in a second charge for the same cycle', async () => {
-    const t = setup();
+  // The scheduler treats a VALIDATION rejection of a FIRST createCharge as proof that no debit exists, but the Cashfree adapter
+  // maps HTTP 400 and 422, the statuses left for a reused payment_id, to VALIDATION. A re-sent id may already exist, so any error
+  // it gets leaves the cycle in unknown outcome: only getCharge settles it.
+  it('a reused-payment_id rejection after a lost answer (lookup lagging) never ends in a second charge for the same cycle', async () => {
+    const events: SchedulerEvent[] = [];
+    const t = setup('od_ref_dup', undefined, (event) => void events.push(event));
     await t.create();
     await t.activate();
     t.fake.loseNextChargeAnswer = 'answer';
     const at = plusHours(FIRST_DUE, -MERCHANT_CHARGE_LEAD_HOURS);
     await t.tickAt(at);
+    const chargeId = chargeIdFor(t.scheduleId, 0, 1);
     t.fake.lookupLagUntil = plusHours(at, 2);
     await t.tickAt(plusHours(at, 0.1));
-    await t.tickAt(plusHours(at, 1));
+    const resent = await t.tickAt(plusHours(at, 1));
+    // The id was re-sent, Cashfree refused the duplicate (400), and that is NOT a failed attempt.
+    expect(t.fake.chargeCalls.map((call) => (call.json as { payment_id: string }).payment_id)).toEqual([chargeId, chargeId]);
+    expect(resent.failed).toBe(0);
     expect(t.fake.payments.size).toBe(1);
-  });
-
-  it('what happens in that scenario, step by step: duplicate -> VALIDATION -> a failed attempt -> a charge under a new id', async () => {
-    const t = setup();
-    await t.create();
-    await t.activate();
-    t.fake.loseNextChargeAnswer = 'answer';
-    const at = plusHours(FIRST_DUE, -MERCHANT_CHARGE_LEAD_HOURS);
-    await t.tickAt(at);
-    t.fake.lookupLagUntil = plusHours(at, 2);
-    await t.tickAt(plusHours(at, 1));
-    expect([...t.fake.payments.keys()]).toEqual([chargeIdFor(t.scheduleId, 0, 1), chargeIdFor(t.scheduleId, 0, 2)]);
-    expect(await t.cycle(0)).toMatchObject({ attempt: 2 });
+    expect(await t.cycle(0)).toMatchObject({ attempt: 1, status: CycleStatus.Charging, chargeId });
+    expect(events.map((event) => event.type)).toContain(SchedulerEventType.ChargeOutcomeOverdue);
+    // Once Cashfree's lookup sees the payment, the cycle settles under the same id.
+    t.fake.payments.get(chargeId)!.status = CashfreePaymentStatus.Success;
+    await t.tickAt(plusHours(at, 3));
+    expect(await t.scheduler.get(t.scheduleId)).toMatchObject({ paidCycles: 1 });
+    expect(t.fake.payments.size).toBe(1);
   });
 
   it('pause within the charge-ahead window cannot stop the debit Cashfree already holds: the facade says paused, no call cancels the payment, and the scheduler emits charge.in_flight', async () => {

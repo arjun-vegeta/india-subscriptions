@@ -23,7 +23,20 @@ import {
 } from '../../src/providers/payu/constants.js';
 import { CycleStatus, ScheduleStatus, ScheduleStatusReason, chargeIdFor } from '../../src/scheduler/index.js';
 import type { SubscriptionEvent, WebhookRequest } from '../../src/schemas.js';
-import { CF_FIRST_DUE, PAYU_COMPOSITE, PAYU_DUE, PAYU_MANDATE, PAYU_REFERENCE, consentResult, setupCashfree, setupPayu } from './fakes.js';
+import {
+  CF_FIRST_DUE,
+  PAYU_COMPOSITE,
+  PAYU_DUE,
+  PAYU_MANDATE,
+  PAYU_REFERENCE,
+  cardMandateWebhook,
+  consentResult,
+  form,
+  recurringDebitWebhook,
+  setupCashfree,
+  setupPayu,
+  upiMandateWebhook,
+} from './fakes.js';
 import {
   CASHFREE_ACCOUNT,
   CASHFREE_WEBHOOK_TEST,
@@ -43,62 +56,7 @@ import {
 } from './helpers.js';
 
 const CLOCK_START = '2026-11-17T05:00:00.000Z';
-/** A bank decline code, as in PayU's own sample of a failed recurring debit. */
-const INSUFFICIENT_FUNDS_CODE = 'E308';
 const noNetwork = () => scriptedFetch(() => ({ status: 500 })).fetch;
-
-// ---------------------------------------------------------------------------
-// PayU webhook builders: the documented field sets, signed with the documented layouts
-// ---------------------------------------------------------------------------
-
-const form = (fields: Record<string, string>): WebhookRequest => ({ rawBody: new URLSearchParams(fields).toString(), headers: {} });
-const jsonRequest = (body: unknown): WebhookRequest => ({ rawBody: JSON.stringify(body), headers: {} });
-
-function upiMandateWebhook(action: string, status: string, mandate = PAYU_MANDATE): WebhookRequest {
-  const fields = { status, authpayuid: mandate, action, dateTime: '2026-01-10 11:00:00', amount: '499.00', endDate: '2026-04-22 00:00:00', mandateNumber: 'UMN1@paytm', key: PAYU_ACCOUNT.key, udf1: '', udf2: '', udf3: '', udf5: '' };
-  const hash = sha512Hex(`${fields.status}|${fields.action}|${fields.authpayuid}|${fields.dateTime}|${fields.amount}|${fields.endDate}|${PAYU_ACCOUNT.salt}`);
-  return jsonRequest({ ...fields, hash });
-}
-
-function cardMandateWebhook(notificationType: string, status: string, mandate = PAYU_MANDATE): WebhookRequest {
-  const base = {
-    status,
-    authPayuId: mandate,
-    si_details: { billingAmount: 499, paymentStartDate: '2026-01-15', paymentEndDate: '2026-04-22' },
-    message: 'Mandate event',
-    eventDate: '2026-01-10',
-    notificationType,
-    key: PAYU_ACCOUNT.key,
-    udf1: '', udf2: '', udf3: '', udf4: '', udf5: '',
-  };
-  const hash = sha512Hex(
-    [base.status, base.authPayuId, base.notificationType, '499', '2026-01-15', '2026-04-22', base.message, base.eventDate, base.key, '', '', '', '', '', PAYU_ACCOUNT.salt].join('|'),
-  );
-  return jsonRequest({ ...base, hash });
-}
-
-function recurringDebitWebhook(txnid: string, status: PayUPaymentStatus): WebhookRequest {
-  const fields = {
-    mihpayid: '30141596997',
-    mode: PayUPaymentMode.StandingInstruction,
-    status,
-    unmappedstatus: status === PayUPaymentStatus.Success ? PayUTransactionState.Captured : PayUTransactionState.Failed,
-    key: PAYU_ACCOUNT.key,
-    txnid,
-    amount: '499.00',
-    addedon: '2026-01-15 10:00:04',
-    productinfo: 'SI',
-    firstname: '',
-    email: '',
-    udf1: '', udf2: '', udf3: '', udf4: '', udf5: '',
-    payment_source: PayUPaymentSource.RecurringDebit,
-    PG_TYPE: PayUPgType.StandingInstruction,
-    error: status === PayUPaymentStatus.Success ? PAYU_NO_ERROR_CODE : INSUFFICIENT_FUNDS_CODE,
-    error_Message: status === PayUPaymentStatus.Success ? PAYU_NO_ERROR_MESSAGE : 'Insufficient funds',
-  };
-  return form({ ...fields, hash: sha512Hex(`${PAYU_ACCOUNT.salt}|${fields.status}||||||${fields.udf5}|${fields.udf4}|${fields.udf3}|${fields.udf2}|${fields.udf1}|${fields.email}|${fields.firstname}|${fields.productinfo}|${fields.amount}|${fields.txnid}|${PAYU_ACCOUNT.key}`) });
-}
-
 // ---------------------------------------------------------------------------
 // 1. What each adapter puts on its events
 // ---------------------------------------------------------------------------
@@ -225,8 +183,7 @@ describe('BillingScheduler reacting to Cashfree webhooks, through subs.webhooks.
     expect(await t.cycle(0)).toMatchObject({ attempt: 2 });
   });
 
-  // DEFECT (see the report): the scheduler handles `subscription.paused` but nothing ever undoes it.
-  it.fails('a customer who pauses the UPI mandate and later resumes it (CUSTOMER_PAUSED, then ACTIVE) is billed again', async () => {
+  it('a customer who pauses the UPI mandate and later resumes it (CUSTOMER_PAUSED, then ACTIVE) is billed again', async () => {
     const t = setupCashfree();
     await t.create();
     await t.activate();
@@ -236,16 +193,29 @@ describe('BillingScheduler reacting to Cashfree webhooks, through subs.webhooks.
     expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
   });
 
-  it('what actually happens after that ACTIVE webhook: the schedule stays paused by the gateway and nothing is raised', async () => {
+  it('a pause that the MERCHANT made is not undone by the gateway\'s ACTIVE webhook; the billing resumes only when the merchant resumes it', async () => {
+    const t = setupCashfree();
+    await t.create();
+    await t.activate();
+    await t.subs.pause(Provider.Cashfree, t.reference);
+    await statusWebhook(t, CashfreeSubscriptionStatus.Active);
+    expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Paused);
+    expect((await t.tickAt(plusHours(CF_FIRST_DUE, 24 * 40))).charged).toBe(0);
+    await t.subs.resume(Provider.Cashfree, t.reference);
+    expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
+  });
+
+  it('after the customer resumes, nothing is billed retroactively: the next charge is raised for the first date that is still ahead', async () => {
     const t = setupCashfree();
     await t.create();
     await t.activate();
     await statusWebhook(t, CashfreeSubscriptionStatus.CustomerPaused);
-    const events = await statusWebhook(t, CashfreeSubscriptionStatus.Active);
-    expect(events[0]?.type).toBe(EventType.SubscriptionActivated);
-    expect(await t.scheduler.get(t.scheduleId)).toMatchObject({ status: ScheduleStatus.Paused, statusReason: ScheduleStatusReason.PausedByGateway });
+    t.clock.set(plusHours(CF_FIRST_DUE, 24 * 40));
+    await statusWebhook(t, CashfreeSubscriptionStatus.Active);
+    expect((await t.scheduler.get(t.scheduleId))?.paidCycles).toBe(0);
     const result = await t.tickAt(plusHours(CF_FIRST_DUE, 24 * 40));
-    expect(result.charged).toBe(0);
+    expect(result.charged).toBe(1);
+    expect(t.fake.chargeCalls).toHaveLength(1);
   });
 });
 
@@ -273,7 +243,7 @@ describe('BillingScheduler reacting to PayU webhooks, through subs.webhooks.hand
     expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.PendingAuthorization);
   });
 
-  it('eNACH: the consent webhook is not an authorisation, the schedule stays pending, and neither tick() nor a webhook ever starts it (only subs.get / verifyCheckout polling would)', async () => {
+  it('eNACH: the consent webhook is not an authorisation and the schedule stays pending; tick() then asks PayU and starts billing once the bank has confirmed (no webhook exists for it)', async () => {
     const t = setupPayu();
     await t.create();
     const enach = consentResult(PAYU_REFERENCE, { mode: PayUPaymentMode.ENach, PG_TYPE: PayUPgType.ENach });
@@ -281,9 +251,13 @@ describe('BillingScheduler reacting to PayU webhooks, through subs.webhooks.hand
     expect(event?.type).toBe(EventType.Unknown);
     const verification = await t.subs.verifyCheckout(Provider.PayU, enach, { expectedSubscriptionId: PAYU_REFERENCE });
     expect(verification).toMatchObject({ authorized: false, status: SubscriptionStatus.PendingAuthorization });
-    const result = await t.tickAt(plusHours(PAYU_DUE, 24 * 30));
-    expect(result.due + result.charged + result.reconciled + result.notified).toBe(0);
+    const quiet = await t.tickAt(plusHours('2026-01-01T00:00:00.000Z', 0.5));
+    expect(quiet.charged + quiet.notified).toBe(0);
     expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.PendingAuthorization);
+
+    t.fake.mandateStatus = 'SUCCESS';
+    await t.tickAt(plusHours('2026-01-01T00:00:00.000Z', 1));
+    expect(await t.scheduler.get(t.scheduleId)).toMatchObject({ status: ScheduleStatus.Active, subscriptionId: `enach:${PAYU_MANDATE}` });
   });
 
   it('card mandate webhook MANDATE_CANCELLATION cancels the schedule, found by the composite id (it has no reference)', async () => {
@@ -308,8 +282,7 @@ describe('BillingScheduler reacting to PayU webhooks, through subs.webhooks.hand
     }
   });
 
-  // DEFECT (see the report): same asymmetry as Cashfree; PayU documents MANDATE_UNPAUSE for exactly this.
-  it.fails('a customer who pauses a UPI mandate and later unpauses it (MANDATE_PAUSE, then MANDATE_UNPAUSE) is billed again', async () => {
+  it('a customer who pauses a UPI mandate and later unpauses it (MANDATE_PAUSE, then MANDATE_UNPAUSE) is billed again', async () => {
     const t = setupPayu();
     await t.create();
     await t.subs.verifyCheckout(Provider.PayU, consentResult(PAYU_REFERENCE, { mode: PayUPaymentMode.Upi, PG_TYPE: PayUPgType.Upi }), { expectedSubscriptionId: PAYU_REFERENCE });
@@ -318,9 +291,8 @@ describe('BillingScheduler reacting to PayU webhooks, through subs.webhooks.hand
     expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
   });
 
-  // DEFECT (low; PayU's debit webhook carries no subscription id): the payment
-  // webhook of a recurring debit cannot reach its cycle, so a debit PayU left `pending` waits for the next tick.
-  it.fails('the PayU payment webhook of a pending recurring debit settles its cycle without waiting for a tick', async () => {
+  // PayU's payment webhook of a debit names only the debit (no subscription id): found through the debit's id.
+  it('the PayU payment webhook of a pending recurring debit settles its cycle without waiting for a tick', async () => {
     const t = setupPayu();
     await t.create();
     await t.verify();

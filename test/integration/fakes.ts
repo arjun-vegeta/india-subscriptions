@@ -1,4 +1,5 @@
 import { expect } from 'vitest';
+import type { WebhookRequest } from '../../src/schemas.js';
 import { ChargeStatus, Environment, ErrorCode, IntervalUnit, PaymentMethod, Provider, SchedulingMode } from '../../src/constants.js';
 import {
   CashfreePath,
@@ -7,7 +8,7 @@ import {
   CashfreeSubscriptionStatus,
   ManageAction,
 } from '../../src/providers/cashfree/constants.js';
-import { PAYU_API_URLS, PayUCommand, PayUPaymentMode, PayUPaymentSource, PayUPgType, PayUPaymentStatus, PayUTransactionState } from '../../src/providers/payu/constants.js';
+import { PAYU_API_URLS, PAYU_NO_ERROR_CODE, PAYU_NO_ERROR_MESSAGE, PayUCommand, PayUPaymentMode, PayUPaymentSource, PayUPgType, PayUPaymentStatus, PayUTransactionState } from '../../src/providers/payu/constants.js';
 import { chargeIdFor, scheduleIdFor, type SchedulerEvent } from '../../src/scheduler/index.js';
 import {
   CASHFREE_ACCOUNT,
@@ -24,6 +25,7 @@ import {
   pathOf,
   payuProvider,
   scriptedFetch,
+  sha512Hex,
   signedPayuForm,
   wire,
   type Reply,
@@ -224,6 +226,8 @@ export interface Debit {
 export class FakePayU {
   /** Mandate status as `check_mandate_status` reports it. */
   mandateStatus = 'active';
+  /** `mandate_revoke` is answered with a body-level failure. */
+  revokeFails = false;
   readonly debits = new Map<string, Debit>();
   readonly commands: Array<{ command: string; var1: Record<string, string> | string }> = [];
   /** The next `si_transaction` is answered with a failed debit. */
@@ -248,6 +252,8 @@ export class FakePayU {
     this.commands.push({ command, var1 });
     switch (command) {
       case PayUCommand.CheckMandateStatus:
+      case PayUCommand.NbMandateStatus:
+      case PayUCommand.UpiMandateStatus:
         return { json: { status: this.mandateStatus, action: PayUCommand.CheckMandateStatus, authpayuid: PAYU_MANDATE, amount: '499.00', mandateStartDate: '2026-01-15', mandateEndDate: '2026-04-22' } };
       case PayUCommand.PreDebit:
         return { json: { invoiceid: '76323425', approvedStatus: 'na', invoiceStatus: 'unpaid', amount: (var1 as Record<string, string>).amount, status: 1, message: 'Invoice Created Successfully', action: 'MANDATE_PRE_DEBIT' } };
@@ -294,6 +300,7 @@ export class FakePayU {
         return { json: { status: 1, msg: 'Refund Request Queued', request_id: '17265314530', bank_ref_num: '100142082006', mihpayid: String(var1) } };
       case PayUCommand.MandateRevoke:
         await this.onRevoke?.();
+        if (this.revokeFails) return { json: { status: 0, action: 'MANDATE_REVOKE', message: 'Mandate is not active' } };
         return { json: { status: 1, message: 'Mandate Revoked Successfully', action: 'MANDATE_REVOKE' } };
       default:
         throw new Error(`unexpected PayU command ${command}`);
@@ -355,3 +362,63 @@ export function setupPayu(totalCycles?: number) {
   const cycle = async (index: number) => (await scheduler.listCycles(scheduleId))[index];
   return { fake, ...wired, scheduler, scheduleId, create, verify, tickAt, cycle };
 }
+
+// ---------------------------------------------------------------------------
+// PayU webhook builders: the documented field sets, signed with the documented layouts
+// ---------------------------------------------------------------------------
+
+/** A bank decline code, as in PayU's own sample of a failed recurring debit. */
+export const INSUFFICIENT_FUNDS_CODE = 'E308';
+
+// ---------------------------------------------------------------------------
+// PayU webhook builders: the documented field sets, signed with the documented layouts
+// ---------------------------------------------------------------------------
+
+export const form = (fields: Record<string, string>): WebhookRequest => ({ rawBody: new URLSearchParams(fields).toString(), headers: {} });
+export const jsonRequest = (body: unknown): WebhookRequest => ({ rawBody: JSON.stringify(body), headers: {} });
+
+export function upiMandateWebhook(action: string, status: string, mandate = PAYU_MANDATE): WebhookRequest {
+  const fields = { status, authpayuid: mandate, action, dateTime: '2026-01-10 11:00:00', amount: '499.00', endDate: '2026-04-22 00:00:00', mandateNumber: 'UMN1@paytm', key: PAYU_ACCOUNT.key, udf1: '', udf2: '', udf3: '', udf5: '' };
+  const hash = sha512Hex(`${fields.status}|${fields.action}|${fields.authpayuid}|${fields.dateTime}|${fields.amount}|${fields.endDate}|${PAYU_ACCOUNT.salt}`);
+  return jsonRequest({ ...fields, hash });
+}
+
+export function cardMandateWebhook(notificationType: string, status: string, mandate = PAYU_MANDATE): WebhookRequest {
+  const base = {
+    status,
+    authPayuId: mandate,
+    si_details: { billingAmount: 499, paymentStartDate: '2026-01-15', paymentEndDate: '2026-04-22' },
+    message: 'Mandate event',
+    eventDate: '2026-01-10',
+    notificationType,
+    key: PAYU_ACCOUNT.key,
+    udf1: '', udf2: '', udf3: '', udf4: '', udf5: '',
+  };
+  const hash = sha512Hex(
+    [base.status, base.authPayuId, base.notificationType, '499', '2026-01-15', '2026-04-22', base.message, base.eventDate, base.key, '', '', '', '', '', PAYU_ACCOUNT.salt].join('|'),
+  );
+  return jsonRequest({ ...base, hash });
+}
+
+export function recurringDebitWebhook(txnid: string, status: PayUPaymentStatus): WebhookRequest {
+  const fields = {
+    mihpayid: '30141596997',
+    mode: PayUPaymentMode.StandingInstruction,
+    status,
+    unmappedstatus: status === PayUPaymentStatus.Success ? PayUTransactionState.Captured : PayUTransactionState.Failed,
+    key: PAYU_ACCOUNT.key,
+    txnid,
+    amount: '499.00',
+    addedon: '2026-01-15 10:00:04',
+    productinfo: 'SI',
+    firstname: '',
+    email: '',
+    udf1: '', udf2: '', udf3: '', udf4: '', udf5: '',
+    payment_source: PayUPaymentSource.RecurringDebit,
+    PG_TYPE: PayUPgType.StandingInstruction,
+    error: status === PayUPaymentStatus.Success ? PAYU_NO_ERROR_CODE : INSUFFICIENT_FUNDS_CODE,
+    error_Message: status === PayUPaymentStatus.Success ? PAYU_NO_ERROR_MESSAGE : 'Insufficient funds',
+  };
+  return form({ ...fields, hash: sha512Hex(`${PAYU_ACCOUNT.salt}|${fields.status}||||||${fields.udf5}|${fields.udf4}|${fields.udf3}|${fields.udf2}|${fields.udf1}|${fields.email}|${fields.firstname}|${fields.productinfo}|${fields.amount}|${fields.txnid}|${PAYU_ACCOUNT.key}`) });
+}
+

@@ -20,6 +20,7 @@ import {
   chargeIdFor,
   notificationIdFor,
 } from '../../src/scheduler/index.js';
+import { GATEWAY_ID_PATTERN } from '../../src/constants.js';
 import { CreateChargeInputSchema, NotifyChargeInputSchema } from '../../src/schemas.js';
 import type { SchedulerEvent } from '../../src/scheduler/index.js';
 import { CF_FIRST_DUE, PAYU_DUE, setupCashfree, setupPayu } from './fakes.js';
@@ -69,9 +70,12 @@ describe('ids the scheduler generates versus the gateways\' own id rules', () =>
     expect(ids.size).toBe(scheduleIds.length * 4);
   });
 
-  // Two modules agree here by value only: the scheduler's constant is commented "PayU's transaction id limit" but does not import it.
-  it('MAX_GATEWAY_ID_LENGTH (scheduler) and TXNID_MAX_LENGTH (PayU adapter) are the same number, by coincidence of two separate constants', () => {
-    expect(MAX_GATEWAY_ID_LENGTH).toBe(TXNID_MAX_LENGTH);
+  // The scheduler's limit is the one shared constant (src/constants.ts); the PayU adapter keeps its own documented txnid limit. This
+  // pins the two together: the shared constant must never exceed what PayU accepts.
+  it('the shared MAX_GATEWAY_ID_LENGTH does not exceed PayU\'s documented txnid limit, and GATEWAY_ID_PATTERN is within what PayU accepts', () => {
+    expect(MAX_GATEWAY_ID_LENGTH).toBeLessThanOrEqual(TXNID_MAX_LENGTH);
+    expect(GATEWAY_ID_PATTERN.test('Az09_-')).toBe(true);
+    expect('Az09_-'.match(TXNID_PATTERN)).not.toBeNull();
   });
 });
 
