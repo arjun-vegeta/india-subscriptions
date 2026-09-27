@@ -207,14 +207,167 @@ export function describeMerchantAdapterConformance(harness: MerchantAdapterHarne
 
     it('one debit per cycle: exactly one request, one debit, settled once; nothing more is raised for that cycle', async () => {
       const w = await build();
-      await w.authorised();
+      const { schedule } = await w.authorised();
       const id = await w.raiseFirstDebit();
       w.gateway.settle(id, ChargeStatus.Succeeded);
       await w.tickHourly(30);
       expect(w.gateway.chargeRequestIds()).toEqual([id]);
       expect(w.gateway.debitCount()).toBe(1);
-      const schedule = await w.subs.scheduler?.get((await w.authorisedSchedule?.()) ?? '');
-      expect(schedule).toBeUndefined();
+      expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
+    });
+
+    it('every id sent to the gateway is at most MAX_GATEWAY_ID_LENGTH characters of GATEWAY_ID_PATTERN (ids a notification dictated are the gateway\'s own)', async () => {
+      const w = await build();
+      await w.authorised();
+      await w.raiseFirstDebit();
+      const ids = [...w.gateway.notificationIds(), ...(harness.flags.notificationDictatesChargeId ? [] : w.gateway.chargeRequestIds())];
+      expect(ids.length).toBeGreaterThan(0);
+      for (const id of ids) {
+        expect(id.length, id).toBeLessThanOrEqual(MAX_GATEWAY_ID_LENGTH);
+        expect(id, id).toMatch(GATEWAY_ID_PATTERN);
+      }
+    });
+
+    it('a lost answer after the gateway executed the debit is reconciled with getCharge: one debit, the same id, settled', async () => {
+      const w = await build();
+      const { schedule } = await w.authorised();
+      w.gateway.loseNextChargeAnswer();
+      const id = await w.raiseFirstDebit();
+      await w.tickHourly(3);
+      w.gateway.settle(id, ChargeStatus.Succeeded);
+      await w.tickHourly(3);
+      expect(new Set(w.gateway.chargeRequestIds())).toEqual(new Set([id]));
+      expect(w.gateway.debitCount()).toBe(1);
+      expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
+    });
+
+    it('a request that never reached the gateway is NOT_FOUND there; after the grace period the SAME id is sent again, and exactly one debit results', async () => {
+      const w = await build();
+      const { schedule } = await w.authorised();
+      w.gateway.loseNextChargeRequest();
+      const id = await w.raiseFirstDebit();
+      await w.tickHourly(3);
+      expect(w.gateway.chargeRequestIds().length).toBeGreaterThanOrEqual(2);
+      expect(new Set(w.gateway.chargeRequestIds())).toEqual(new Set([id]));
+      expect(w.gateway.debitCount()).toBe(1);
+      w.gateway.settle(id, ChargeStatus.Succeeded);
+      await w.tickHourly(3);
+      expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
+    });
+
+    if (harness.flags.rejectsDuplicateIds) {
+      it('a gateway that lags in showing a debit it holds never ends in a second debit: the re-sent id is refused and the cycle stays unresolved until getCharge sees it', async () => {
+        const w = await build();
+        if (!w.gateway.hideDebitsUntil) throw new Error('a gateway that rejects duplicate ids must provide hideDebitsUntil');
+        const { schedule } = await w.authorised();
+        w.gateway.loseNextChargeAnswer();
+        const id = await w.raiseFirstDebit();
+        w.gateway.hideDebitsUntil(new Date(w.clock.nowMs() + 2 * HOUR_MS).toISOString());
+        const ticks = await w.tickHourly(2);
+        expect(ticks.failed).toBe(0);
+        expect(new Set(w.gateway.chargeRequestIds())).toEqual(new Set([id]));
+        expect(w.gateway.debitCount()).toBe(1);
+        w.gateway.settle(id, ChargeStatus.Succeeded);
+        await w.tickHourly(3);
+        expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
+        expect(w.gateway.debitCount()).toBe(1);
+      });
+    }
+
+    it('getCharge answers NOT_FOUND for a debit the gateway has no trace of, and nothing else for it', async () => {
+      const w = await build();
+      const { schedule } = await w.authorised();
+      const error = await w.adapter.getCharge(schedule.subscriptionId, 'conformance_unknown_0_1').then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toMatchObject({ code: ErrorCode.NotFound });
+    });
+
+    it('the gateway\'s webhook for a debit carries the merchant debit id; handled through the facade it settles the cycle, and a redelivery changes nothing', async () => {
+      const w = await build();
+      const { schedule } = await w.authorised();
+      w.gateway.holdNextCharge();
+      const id = await w.raiseFirstDebit();
+      w.gateway.settle(id, ChargeStatus.Succeeded);
+      const request = w.gateway.debitWebhook(id, ChargeStatus.Succeeded);
+      const events = await w.subs.webhooks.handle(w.adapter.name, request);
+      const charged = events.find((event) => event.type === EventType.SubscriptionCharged);
+      expect(charged).toBeDefined();
+      expect([charged?.charge?.id, charged?.charge?.reference]).toContain(id);
+      expect(await w.subs.scheduler?.get(schedule.id)).toMatchObject({ paidCycles: 1 });
+      await w.subs.webhooks.handle(w.adapter.name, request);
+      expect(await w.subs.scheduler?.get(schedule.id)).toMatchObject({ paidCycles: 1 });
+      expect(w.gateway.debitCount()).toBe(1);
+    });
+
+    it('a failed debit is retried under a NEW id; the failed id is never reused; the retry settles the cycle', async () => {
+      const w = await build();
+      const { schedule } = await w.authorised();
+      w.gateway.holdNextCharge();
+      const first = await w.raiseFirstDebit();
+      w.gateway.settle(first, ChargeStatus.Failed);
+      await w.subs.webhooks.handle(w.adapter.name, w.gateway.debitWebhook(first, ChargeStatus.Failed));
+      w.gateway.holdNextCharge();
+      await w.tickHourly(80, () => w.gateway.chargeRequestIds().length >= 2);
+      const ids = w.gateway.chargeRequestIds();
+      expect(ids.length).toBeGreaterThanOrEqual(2);
+      const second = ids[ids.length - 1] as string;
+      expect(second).not.toBe(first);
+      expect(ids.filter((id) => id === first)).toHaveLength(1);
+      w.gateway.settle(second, ChargeStatus.Succeeded);
+      await w.tickHourly(3);
+      expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
+    });
+
+    if (harness.flags.notificationDictatesChargeId) {
+      it('the notification dictates the debit id: the debit uses it, a lost answer is reconciled under it, a retry uses the next notification\'s id; never two debits for one cycle', async () => {
+        const w = await build();
+        const { schedule } = await w.authorised();
+        w.gateway.loseNextChargeAnswer();
+        const first = await w.raiseFirstDebit();
+        await w.tickHourly(3);
+        expect(w.gateway.dictatedChargeIds?.()).toContain(first);
+        expect(new Set(w.gateway.chargeRequestIds())).toEqual(new Set([first]));
+        expect(w.gateway.debitCount()).toBe(1);
+        w.gateway.settle(first, ChargeStatus.Failed);
+        w.gateway.holdNextCharge();
+        await w.tickHourly(80, () => w.gateway.chargeRequestIds().includes(w.gateway.dictatedChargeIds?.().at(-1) ?? '') && w.gateway.chargeRequestIds().length >= 2);
+        const second = w.gateway.chargeRequestIds().at(-1) as string;
+        expect(second).not.toBe(first);
+        expect(w.gateway.dictatedChargeIds?.()).toContain(second);
+        w.gateway.settle(second, ChargeStatus.Succeeded);
+        await w.tickHourly(3);
+        expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
+      });
+    }
+
+    it('a gateway-side pause and resume (the customer in their app) pauses and resumes the schedule; a cancellation cancels it', async () => {
+      const w = await build();
+      if (!w.gateway.mandateWebhook) return;
+      const { schedule } = await w.authorised();
+      await w.subs.webhooks.handle(w.adapter.name, w.gateway.mandateWebhook(EventType.SubscriptionPaused));
+      expect((await w.subs.scheduler?.get(schedule.id))?.status).toBe(ScheduleStatus.Paused);
+      await w.subs.webhooks.handle(w.adapter.name, w.gateway.mandateWebhook(EventType.SubscriptionResumed));
+      expect((await w.subs.scheduler?.get(schedule.id))?.status).toBe(ScheduleStatus.Active);
+      await w.subs.webhooks.handle(w.adapter.name, w.gateway.mandateWebhook(EventType.SubscriptionCancelled));
+      expect((await w.subs.scheduler?.get(schedule.id))?.status).toBe(ScheduleStatus.Cancelled);
+    });
+
+    it('cancel stops billing and can be repeated; nothing is raised afterwards', async () => {
+      const w = await build();
+      const { subscription, schedule } = await w.authorised();
+      const handle = subscription.reference ?? subscription.id;
+      expect((await w.subs.cancel(w.adapter.name, handle)).status).toBe(SubscriptionStatus.Cancelled);
+      expect((await w.subs.scheduler?.get(schedule.id))?.status).toBe(ScheduleStatus.Cancelled);
+      await w.subs.cancel(w.adapter.name, handle);
+      clockTo(w, Date.parse(harness.firstChargeAt) - 100 * HOUR_MS);
+      await w.tickHourly(130);
+      expect(w.gateway.chargeRequestIds()).toHaveLength(0);
     });
   });
+}
+
+function clockTo(world: World, ms: number): void {
+  world.clock.set(new Date(ms).toISOString());
 }
