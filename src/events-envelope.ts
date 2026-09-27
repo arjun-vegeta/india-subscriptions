@@ -4,9 +4,11 @@
  * signature scheme; the `kind` field tells them apart:
  *
  * - `gateway`: the verified, normalised events of one gateway webhook (`SubscriptionEvent`, which carries its own `id`).
- * - `scheduler`: events of the billing scheduler. For merchant-scheduled gateways (PayU, Cashfree on-demand) this
- *   is how your application learns about debits, because those gateways' own webhooks do not carry enough to
- *   attribute a debit. Each carries an `id` derived from its content, so a repeat is recognisable.
+ * - `scheduler`: events of the billing scheduler. For merchant-scheduled gateways (PayU, Cashfree on-demand) these
+ *   are the events that tell your application which billing cycle a debit belonged to and how it ended: the
+ *   scheduler chose the debit id, so it can attribute the gateway's payment webhook (Cashfree names the payment id and
+ *   the subscription; PayU names only the debit) to a cycle, while a `gateway` delivery carries just what the gateway
+ *   said. Each carries an `id` derived from its content, so a repeat is recognisable.
  */
 import { z } from 'zod';
 import { HashAlgorithm } from './constants.js';

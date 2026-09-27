@@ -44,6 +44,18 @@ export const ScheduleStatusReason = {
 } as const;
 export type ScheduleStatusReason = (typeof ScheduleStatusReason)[keyof typeof ScheduleStatusReason];
 
+/** Who paused a schedule: only a pause by the gateway is ever undone by a gateway event. */
+export const SchedulePauser = {
+  /** The merchant (the facade's `pause`, or `scheduler.pause`). Only the merchant resumes it. */
+  Merchant: 'merchant',
+  /** The gateway or the customer, reported by a gateway event (a customer pausing a UPI mandate in their app). */
+  Gateway: 'gateway',
+} as const;
+export type SchedulePauser = (typeof SchedulePauser)[keyof typeof SchedulePauser];
+
+/** `HH:mm` on the IST clock (24 hours), the form of the `debitAtIstTime` policy. */
+export const IST_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
 /** Where one billing cycle is in the notify -> charge state machine. */
 export const CycleStatus = {
   /** Waiting for the pre-debit notification time (or the due time, if no notification is needed). */
@@ -147,6 +159,8 @@ export const DEFAULT_RETRY_INTERVAL_HOURS = 24;
 export const DEFAULT_LOCK_TTL_MS = 60_000;
 /** How long `pause`/`resume`/`cancel`/`activate`/`handleEvent` wait for a busy lock before throwing CONFLICT. */
 export const DEFAULT_LOCK_WAIT_MS = 5_000;
+/** Minutes between the checks `tick()` makes of a schedule that still awaits the customer's authorisation. */
+export const DEFAULT_AUTHORIZATION_POLL_MINUTES = 60;
 /** Poll interval while waiting for a lock. */
 export const LOCK_POLL_INTERVAL_MS = 25;
 /** Schedules examined per `tick()` unless the caller passes a limit. */
@@ -172,8 +186,6 @@ export const ID_SEPARATOR = '_';
 export const ID_DIGEST_LENGTH = 12;
 /** Hex characters of the sha256 digest turned into the base36 digest (15 hex characters = 60 bits, which fit 12 base36 characters). */
 export const ID_DIGEST_HEX_LENGTH = 15;
-/** The longest charge or notification id the scheduler will send: PayU's transaction id limit. */
-export const MAX_GATEWAY_ID_LENGTH = 25;
 export const ID_RADIX = 36;
 
 /** Separator between the provider and the key in a schedule id (see `scheduleIdFor`). */

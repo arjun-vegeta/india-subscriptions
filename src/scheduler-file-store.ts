@@ -145,6 +145,18 @@ export class FileSchedulerStore implements SchedulerStore {
     return copy(best);
   }
 
+  async findScheduleByChargeId(chargeId: string): Promise<ScheduleRecord | undefined> {
+    let best: ScheduleRecord | undefined;
+    for (const [scheduleId, forSchedule] of this.cycles) {
+      const owned = [...forSchedule.values()].some(
+        (cycle) => cycle.chargeId === chargeId || cycle.providerChargeId === chargeId,
+      );
+      const schedule = owned ? this.schedules.get(scheduleId) : undefined;
+      if (schedule && (!best || Date.parse(schedule.createdAt) >= Date.parse(best.createdAt))) best = schedule;
+    }
+    return copy(best);
+  }
+
   async listDueSchedules(at: string, limit: number): Promise<ScheduleRecord[]> {
     const cutoff = Date.parse(at);
     const due: ScheduleRecord[] = [];

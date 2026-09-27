@@ -71,7 +71,7 @@ const INSECURE_PROTOCOL = 'http:';
 const WHOLE_NUMBER = /^\d+$/;
 
 /** Variables of each gateway. Any of them being set means the gateway is meant to be on. */
-const GATEWAY_VARS: Record<Provider, readonly EnvVar[]> = {
+const GATEWAY_VARS: Record<EnvGateway, readonly EnvVar[]> = {
   [Provider.Razorpay]: [
     EnvVar.RazorpayKeyId,
     EnvVar.RazorpayKeySecret,
@@ -101,14 +101,14 @@ const GATEWAY_VARS: Record<Provider, readonly EnvVar[]> = {
 };
 
 /** The variables a gateway cannot work without. */
-const GATEWAY_REQUIRED_VARS: Record<Provider, readonly EnvVar[]> = {
+const GATEWAY_REQUIRED_VARS: Record<EnvGateway, readonly EnvVar[]> = {
   [Provider.Razorpay]: [EnvVar.RazorpayKeyId, EnvVar.RazorpayKeySecret],
   [Provider.Cashfree]: [EnvVar.CashfreeClientId, EnvVar.CashfreeClientSecret, EnvVar.CashfreeEnvironment],
   [Provider.PayU]: [EnvVar.PayuKey, EnvVar.PayuSalt, EnvVar.PayuEnvironment],
 };
 
 /** Which variable feeds which field of each adapter's config, to name the variable when the adapter's schema objects. */
-const CONFIG_FIELD_VARS: Record<Provider, Record<string, EnvVar>> = {
+const CONFIG_FIELD_VARS: Record<EnvGateway, Record<string, EnvVar>> = {
   [Provider.Razorpay]: {
     keyId: EnvVar.RazorpayKeyId,
     keySecret: EnvVar.RazorpayKeySecret,
@@ -290,8 +290,14 @@ export interface ParseServiceEnvOptions {
 
 export type EnvironmentVariables = Readonly<Record<string, string | undefined>>;
 
-/** The gateways, in the order they are tried and listed. */
-export const GATEWAY_ORDER: readonly Provider[] = [Provider.Razorpay, Provider.Cashfree, Provider.PayU];
+/**
+ * The gateways `serve` can configure from environment variables, in the order
+ * they are tried and listed. A gateway added to `Provider` joins this list once
+ * its variables are defined below.
+ */
+export const GATEWAY_ORDER = [Provider.Razorpay, Provider.Cashfree, Provider.PayU] as const;
+/** A gateway that can be configured from environment variables. */
+export type EnvGateway = (typeof GATEWAY_ORDER)[number];
 
 const GATEWAY_ENV_SCHEMAS = {
   [Provider.Razorpay]: { env: RazorpayEnvSchema, config: RazorpayConfigSchema },
@@ -319,7 +325,7 @@ function variableName(path: PropertyKey[]): string {
   return path.length > 0 ? String(path[0]) : '(environment)';
 }
 
-function describeGatewayVars(provider: Provider): string {
+function describeGatewayVars(provider: EnvGateway): string {
   return `${provider} (${GATEWAY_REQUIRED_VARS[provider].join(', ')})`;
 }
 

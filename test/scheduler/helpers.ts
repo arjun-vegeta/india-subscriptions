@@ -267,8 +267,19 @@ export class FakeProvider implements SubscriptionProvider {
   createSubscription(_input: CreateSubscriptionInput): Promise<Subscription> {
     return Promise.reject(unsupported(this.name, 'subscriptions'));
   }
-  getSubscription(_subscriptionId: string): Promise<Subscription> {
-    return Promise.reject(unsupported(this.name, 'subscriptions'));
+  /** The gateway's view of mandates by subscription id, which the scheduler asks for while a schedule awaits authorisation. */
+  readonly mandates = new Map<string, SubscriptionStatus>();
+  readonly subscriptionCalls: string[] = [];
+  subscriptionError: SubscriptionError | undefined;
+
+  async getSubscription(subscriptionId: string): Promise<Subscription> {
+    this.subscriptionCalls.push(subscriptionId);
+    if (this.subscriptionError) throw this.subscriptionError;
+    const status = this.mandates.get(subscriptionId);
+    if (status === undefined) {
+      throw new SubscriptionError(ErrorCode.NotFound, `no mandate ${subscriptionId}`, { provider: this.name });
+    }
+    return { provider: this.name, id: subscriptionId, status, providerStatus: status, scheduling: SchedulingMode.Merchant, raw: null };
   }
   cancelSubscription(_subscriptionId: string, _options?: CancelSubscriptionOptions): Promise<Subscription> {
     return Promise.reject(unsupported(this.name, 'subscriptions'));

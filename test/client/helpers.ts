@@ -102,6 +102,7 @@ export const StoreMethod = {
   GetSchedule: 'getSchedule',
   SaveSchedule: 'saveSchedule',
   FindBySubscriptionId: 'findBySubscriptionId',
+  FindScheduleByChargeId: 'findScheduleByChargeId',
   ListDueSchedules: 'listDueSchedules',
   GetCycle: 'getCycle',
   SaveCycle: 'saveCycle',
@@ -768,6 +769,10 @@ export class InstrumentedStore implements SchedulerStore {
   async findBySubscriptionId(provider: Provider, subscriptionId: string): Promise<ScheduleRecord | undefined> {
     this.enter(StoreMethod.FindBySubscriptionId, subscriptionId);
     return this.inner.findBySubscriptionId(provider, subscriptionId);
+  }
+  async findScheduleByChargeId(chargeId: string): Promise<ScheduleRecord | undefined> {
+    this.enter(StoreMethod.FindScheduleByChargeId, chargeId);
+    return this.inner.findScheduleByChargeId(chargeId);
   }
   async listDueSchedules(at: string, limit: number): Promise<ScheduleRecord[]> {
     this.enter(StoreMethod.ListDueSchedules, at);

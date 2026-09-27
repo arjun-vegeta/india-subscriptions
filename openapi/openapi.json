@@ -2802,7 +2802,9 @@
         "enum": [
           "razorpay",
           "cashfree",
-          "payu"
+          "payu",
+          "phonepe",
+          "paytm"
         ],
         "description": "A supported payment gateway."
       },

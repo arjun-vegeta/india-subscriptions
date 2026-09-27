@@ -127,8 +127,15 @@ export class Subscriptions {
     return provider;
   }
 
+  /**
+   * What `provider` can do through THIS client: the adapter's own capabilities (`provider(name).capabilities`), plus what
+   * the facade and the billing scheduler add. For a gateway whose debits the merchant raises, with a scheduler configured,
+   * pause and resume work (the scheduler simply stops raising debits), whatever the gateway's own API offers.
+   */
   capabilities(name: Provider): Capabilities {
-    return this.provider(name).capabilities;
+    const raw = this.provider(name).capabilities;
+    if (!this.scheduler || merchantSchedulingOf(raw) === MerchantScheduling.Never) return raw;
+    return { ...raw, pause: true, resume: true };
   }
 
   async create(provider: Provider, input: CreateSubscriptionInput): Promise<Subscription> {
@@ -182,12 +189,19 @@ export class Subscriptions {
   }
 
   async get(provider: Provider, subscriptionId: string): Promise<Subscription> {
-    const subscription = await this.provider(provider).getSubscription(subscriptionId);
-    if (subscription.scheduling !== SchedulingMode.Merchant) return subscription;
+    const adapter = this.provider(provider);
     const scheduler = this.schedulerFor(provider);
+    // A gateway that is only ever billed through the scheduler may not know the id the caller holds (PayU: the reference,
+    // until the mandate exists): resolve the schedule first and ask the gateway by the id the schedule holds.
+    const early =
+      scheduler && merchantSchedulingOf(adapter.capabilities) === MerchantScheduling.Always
+        ? await this.findSchedule(scheduler, provider, subscriptionId)
+        : undefined;
+    const subscription = early ? await this.viewOf(adapter, early) : await adapter.getSubscription(subscriptionId);
+    if (subscription.scheduling !== SchedulingMode.Merchant) return subscription;
     if (!scheduler) return subscription;
     return guarded(provider, 'reading the billing schedule', async () => {
-      const found = await scheduler.find(provider, subscription.reference, subscriptionId, subscription.id);
+      const found = early ?? (await scheduler.find(provider, subscription.reference, subscriptionId, subscription.id));
       if (!found) return subscription;
       const schedule = await syncWithGateway(scheduler, found, subscription);
       return overlaySchedule(subscription, schedule, scheduler.now());
@@ -212,7 +226,14 @@ export class Subscriptions {
       throw unsupported(provider, 'cancelling at the end of the period', 'cancel immediately: billing stops with the schedule');
     }
     const schedule = await guarded(provider, 'cancelling the billing schedule', () => stopBilling(scheduler, found));
-    const subscription = await adapter.cancelSubscription(found.subscriptionId, options);
+    let subscription: Subscription;
+    try {
+      subscription = await adapter.cancelSubscription(found.subscriptionId, options);
+    } catch (error) {
+      // The customer never authorised: the gateway has no mandate to cancel, and stopping the schedule was all there was to do.
+      if (!noMandateYet(schedule, error)) throw error;
+      subscription = subscriptionFromSchedule(schedule);
+    }
     return overlaySchedule(subscription, schedule, scheduler.now());
   }
 
@@ -230,7 +251,7 @@ export class Subscriptions {
     const paused = await guarded(provider, 'pausing the billing schedule', () =>
       scheduler.pause(found.id, { resumeAt: options?.resumeAt }),
     );
-    const subscription = await adapter.getSubscription(paused.subscriptionId);
+    const subscription = await this.viewOf(adapter, paused);
     return overlaySchedule(subscription, paused, scheduler.now());
   }
 
@@ -242,7 +263,7 @@ export class Subscriptions {
     const resumed = await guarded(provider, 'resuming the billing schedule', () =>
       scheduler.resume(found.id, { nextChargeAt: options?.nextChargeAt }),
     );
-    const subscription = await adapter.getSubscription(resumed.subscriptionId);
+    const subscription = await this.viewOf(adapter, resumed);
     return overlaySchedule(subscription, resumed, scheduler.now());
   }
 
@@ -293,7 +314,7 @@ export class Subscriptions {
     // The gateway first: it validates what it holds (mandate ceiling, modify rules) before the schedule changes.
     const subscription = touchesGateway
       ? await adapter.updateSubscription(found.subscriptionId, gatewayInput)
-      : await adapter.getSubscription(found.subscriptionId);
+      : await this.viewOf(adapter, found);
     const updated = await guarded(provider, 'updating the billing schedule', () => scheduler.update(found.id, scheduleFields));
     return overlaySchedule(subscription, updated, scheduler.now());
   }
@@ -319,25 +340,39 @@ export class Subscriptions {
     result: CheckoutResult,
     options: { expectedSubscriptionId?: string } = {},
   ): Promise<CheckoutVerification> {
-    const verification = await this.provider(provider).verifyCheckout(result);
+    const adapter = this.provider(provider);
+    const verification = await adapter.verifyCheckout(result);
     const expected = options.expectedSubscriptionId;
     if (expected !== undefined && expected !== verification.subscriptionId && expected !== verification.reference) {
-      // The signature is genuine but it is for another subscription: treat it
-      // exactly like a forged result.
-      throw new SubscriptionError(
-        ErrorCode.SignatureInvalid,
-        `${provider} checkout result is for a different subscription than expected`,
-        { provider },
-      );
+      // The merchant may have stored its own reference. Some gateways' results carry none (Razorpay's), so read the
+      // verified subscription once and compare ITS reference.
+      // A lookup that fails proves nothing, so it counts as no match (the result is refused, never accepted on a guess).
+      const fetched =
+        verification.reference === undefined
+          ? await adapter.getSubscription(verification.subscriptionId).catch(() => undefined)
+          : undefined;
+      if (fetched?.reference !== expected) {
+        // The signature is genuine but it is for another subscription: treat it exactly like a forged result.
+        throw new SubscriptionError(
+          ErrorCode.SignatureInvalid,
+          `${provider} checkout result is for a different subscription than expected`,
+          { provider },
+        );
+      }
     }
     const scheduler = this.schedulerFor(provider);
-    if (!scheduler || !verification.authorized || verification.status === SubscriptionStatus.PendingAuthorization) {
-      return verification;
-    }
+    const awaitingBank = verification.status === SubscriptionStatus.PendingAuthorization;
+    if (!scheduler || (!verification.authorized && !awaitingBank)) return verification;
     try {
       const schedule = await scheduler.find(provider, verification.reference, verification.subscriptionId);
       if (schedule && awaitsActivation(schedule)) {
-        await scheduler.activate(schedule.id, { subscriptionId: verification.subscriptionId });
+        if (awaitingBank) {
+          // The customer is done but the bank has not confirmed (eNACH): remember the id the mandate now has, so the
+          // scheduler's status checks ask the gateway by it. Billing starts when the mandate is live.
+          await scheduler.attachSubscriptionId(schedule.id, verification.subscriptionId);
+        } else {
+          await scheduler.activate(schedule.id, { subscriptionId: verification.subscriptionId });
+        }
       }
     } catch (error) {
       throw new SubscriptionError(
@@ -364,7 +399,22 @@ export class Subscriptions {
 
   /** The scheduler, when this gateway can be merchant-scheduled at all; otherwise the facade never reads it. */
   private schedulerFor(provider: Provider): BillingScheduler | undefined {
-    return this.scheduler && this.provider(provider).capabilities.merchantCharges ? this.scheduler : undefined;
+    return this.scheduler && merchantSchedulingOf(this.provider(provider).capabilities) !== MerchantScheduling.Never
+      ? this.scheduler
+      : undefined;
+  }
+
+  /**
+   * What the gateway says about the mandate of `schedule`. While the customer has not authorised there may be no mandate
+   * the gateway can answer for (PayU knows only the consent, not yet a mandate id): the view is then built from the schedule.
+   */
+  private async viewOf(adapter: SubscriptionProvider, schedule: ScheduleRecord): Promise<Subscription> {
+    try {
+      return await adapter.getSubscription(schedule.subscriptionId);
+    } catch (error) {
+      if (noMandateYet(schedule, error)) return subscriptionFromSchedule(schedule);
+      throw error;
+    }
   }
 
   /** The ONE way the facade finds a schedule: provider-scoped, by what the caller knows (reference or gateway id). */
@@ -415,9 +465,60 @@ function missingScheduler(provider: Provider, created?: Subscription, cancelled?
 
 /** True when the request can only be served by the billing scheduler, which is knowable before calling the gateway. */
 function mustBeMerchantScheduled(adapter: SubscriptionProvider, input: CreateSubscriptionInput): boolean {
-  const modes = adapter.capabilities.scheduling;
-  if (modes.length === 1 && modes[0] === SchedulingMode.Merchant) return true;
+  if (merchantSchedulingOf(adapter.capabilities) === MerchantScheduling.Always) return true;
   return typeof input.plan === 'object' && input.plan !== null && input.plan.scheduling === SchedulingMode.Merchant;
+}
+
+/** How much of a gateway's billing goes through the scheduler. */
+const MerchantScheduling = {
+  /** The gateway raises every debit itself (Razorpay). */
+  Never: 'never',
+  /** Either: a plan chooses (Cashfree periodic or on-demand). */
+  Optional: 'optional',
+  /** The merchant raises every debit (PayU). */
+  Always: 'always',
+} as const;
+type MerchantScheduling = (typeof MerchantScheduling)[keyof typeof MerchantScheduling];
+
+/**
+ * The ONE place the facade decides whether a gateway's subscriptions are merchant-scheduled, from its capabilities:
+ * whether a scheduler is consulted for it (`schedulerFor`), whether creating a subscription needs one, whether the schedule
+ * is resolved before the gateway is asked, and what `capabilities()` adds.
+ */
+function merchantSchedulingOf(capabilities: Capabilities): MerchantScheduling {
+  const modes = capabilities.scheduling;
+  if (!capabilities.merchantCharges && !modes.includes(SchedulingMode.Merchant)) return MerchantScheduling.Never;
+  return modes.every((mode) => mode === SchedulingMode.Merchant) ? MerchantScheduling.Always : MerchantScheduling.Optional;
+}
+
+/** True when the schedule never saw the customer authorise and the gateway says it has nothing under that id. */
+function noMandateYet(schedule: ScheduleRecord, error: unknown): boolean {
+  return (
+    schedule.activatedAt === undefined &&
+    error instanceof SubscriptionError &&
+    (error.code === ErrorCode.Validation || error.code === ErrorCode.NotFound)
+  );
+}
+
+/** A subscription as far as the schedule knows it, for a mandate the gateway has no record of yet. */
+function subscriptionFromSchedule(schedule: ScheduleRecord): Subscription {
+  return {
+    provider: schedule.provider,
+    id: schedule.subscriptionId,
+    ...(schedule.reference !== undefined ? { reference: schedule.reference } : {}),
+    status: SubscriptionStatus.Created,
+    providerStatus: schedule.status,
+    scheduling: SchedulingMode.Merchant,
+    ...(schedule.customer !== undefined ? { customer: schedule.customer } : {}),
+    amount: schedule.amount,
+    currency: schedule.currency,
+    interval: schedule.interval,
+    ...(schedule.totalCycles !== undefined ? { totalCycles: schedule.totalCycles } : {}),
+    createdAt: schedule.createdAt,
+    startAt: schedule.firstChargeAt,
+    ...(schedule.mandateEndsAt !== undefined ? { mandateEndsAt: schedule.mandateEndsAt } : {}),
+    ...(schedule.metadata !== undefined ? { metadata: schedule.metadata } : {}),
+  };
 }
 
 function describe(error: unknown): string {

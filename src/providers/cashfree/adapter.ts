@@ -67,6 +67,7 @@ import {
   CashfreePaymentType,
   GENERATED_PLAN_ID_PREFIX,
   GENERATED_SUBSCRIPTION_ID_PREFIX,
+  IDEMPOTENCY_KEY_PATTERN,
   INTERVAL_UNIT_TO_CASHFREE,
   ManageAction,
   MERCHANT_CHARGE_LEAD_HOURS,
@@ -266,6 +267,12 @@ export class CashfreeProvider extends BaseProvider {
   async createSubscription(input: CreateSubscriptionInput): Promise<Subscription> {
     const parsed = parseInput(CreateSubscriptionInputSchema, input, 'subscription', this.name);
     this.rejectUnsupportedSubscriptionInput(parsed);
+    if (parsed.idempotencyKey !== undefined && !IDEMPOTENCY_KEY_PATTERN.test(parsed.idempotencyKey)) {
+      throw invalid(
+        'idempotencyKey must be a UUID for Cashfree (its x-idempotency-key header has format UUID), e.g. 47bf8872-46fe-11ee-be56-0242ac120002',
+        this.name,
+      );
+    }
 
     const now = this.now();
     const { firstChargeAt } = resolveFirstChargeAt(parsed, now);

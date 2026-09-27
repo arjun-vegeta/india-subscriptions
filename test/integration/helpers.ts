@@ -261,6 +261,7 @@ export class CountingStore implements SchedulerStore {
   findBySubscriptionId(provider: Parameters<SchedulerStore['findBySubscriptionId']>[0], id: string) {
     return this.note('findBySubscriptionId', this.inner.findBySubscriptionId(provider, id));
   }
+  findScheduleByChargeId(chargeId: string) { return this.note('findScheduleByChargeId', this.inner.findScheduleByChargeId(chargeId)); }
   listDueSchedules(at: string, limit: number) { return this.note('listDueSchedules', this.inner.listDueSchedules(at, limit)); }
   getCycle(scheduleId: string, index: number) { return this.note('getCycle', this.inner.getCycle(scheduleId, index)); }
   saveCycle(cycle: CycleRecord) { return this.note('saveCycle', this.inner.saveCycle(cycle)); }

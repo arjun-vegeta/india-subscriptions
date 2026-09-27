@@ -13,8 +13,11 @@ import {
 } from '../schemas.js';
 import {
   CycleStatus,
+  DEFAULT_AUTHORIZATION_POLL_MINUTES,
   DEFAULT_LOCK_TTL_MS,
   DEFAULT_LOCK_WAIT_MS,
+  IST_TIME_PATTERN,
+  SchedulePauser,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_MIN_NOTICE_HOURS,
   DEFAULT_NOTIFY_LEAD_HOURS,
@@ -56,7 +59,29 @@ export const ErrorCodeSchema = z
   .enum(ErrorCode)
   .describe('Stable error code of this library. Branch on it, never on the message.');
 
+export const SchedulePauserSchema = z
+  .enum(SchedulePauser)
+  .describe(
+    'Who paused a schedule: `merchant` (only the merchant resumes it) or `gateway` (a gateway event; the gateway\'s own ' +
+      'resume event resumes it).',
+  );
+
 const HoursSchema = z.number().nonnegative();
+
+const DebitAtIstTimeSchema = z
+  .string()
+  .regex(IST_TIME_PATTERN, { error: 'debitAtIstTime must look like 14:30 (24-hour clock, IST)' });
+
+const DEBIT_AT_IST_TIME_DESCRIPTION =
+  'Debit every cycle at this clock time, `HH:mm` in IST, on its due date, instead of at the time of day of the first ' +
+  'charge. The first cycle is never moved earlier than its contractual instant. Unset: each cycle falls due at the ' +
+  'time of day of the first charge. NPCI restricts UPI Autopay debits during peak hours (10:00 to 13:00 and 17:00 ' +
+  'to 21:30 IST), so pick an off-peak time for UPI mandates.';
+
+const AUTHORIZATION_POLL_DESCRIPTION =
+  'While a schedule awaits the customer\'s authorisation, `tick()` asks the gateway for the mandate\'s status at most ' +
+  'this often, in minutes, and activates the schedule when the mandate is live (bank mandates such as eNACH confirm ' +
+  'hours later and some gateways send no webhook). 0 turns polling off. Defaults to 60.';
 
 // ---------------------------------------------------------------------------
 // Policy
@@ -94,6 +119,8 @@ export const SchedulePolicySchema = z
         'A schedule still awaiting authorisation this many hours after it was registered is cancelled by `tick()`. ' +
           'Omit for no timeout. A customer who authorises later still revives it.',
       ),
+    authorizationPollMinutes: z.number().nonnegative().optional().describe(AUTHORIZATION_POLL_DESCRIPTION),
+    debitAtIstTime: DebitAtIstTimeSchema.optional().describe(DEBIT_AT_IST_TIME_DESCRIPTION),
   })
   .describe('Billing policy of one schedule, fixed at registration.');
 export type SchedulePolicy = z.infer<typeof SchedulePolicySchema>;
@@ -132,6 +159,12 @@ export const SchedulerConfigSchema = z
       .positive()
       .optional()
       .describe('Default authorisation timeout in hours. Omit for none.'),
+    authorizationPollMinutes: z
+      .number()
+      .nonnegative()
+      .default(DEFAULT_AUTHORIZATION_POLL_MINUTES)
+      .describe(AUTHORIZATION_POLL_DESCRIPTION),
+    debitAtIstTime: DebitAtIstTimeSchema.optional().describe(DEBIT_AT_IST_TIME_DESCRIPTION),
     lockTtlMs: z
       .number()
       .int()
@@ -224,7 +257,10 @@ export const CycleRecordSchema = z
     chargeId: z
       .string()
       .optional()
-      .describe('Deterministic per (schedule, cycle, attempt); set together with status `charging`.'),
+      .describe(
+        'Deterministic per (schedule, cycle, attempt), set when charging starts; or the id the gateway dictated with the ' +
+          "accepted pre-debit notification (`ChargeNotification.chargeId`), set when the cycle is notified.",
+      ),
     providerChargeId: z.string().optional().describe("The gateway's own id for the debit, once known."),
     chargeRequestedAt: IsoDateTimeSchema.optional().describe('When the debit was first requested from the gateway.'),
     chargeSentAt: IsoDateTimeSchema.optional().describe(
@@ -289,6 +325,15 @@ export const ScheduleRecordSchema = z
       .describe('True while the current cycle is being retried after a failed debit attempt.'),
     lastFailure: LastFailureSchema.optional().describe('The most recent failed debit attempt of the current cycle.'),
     resumeAt: IsoDateTimeSchema.optional().describe('While paused: when `tick()` resumes the schedule by itself.'),
+    pausedBy: SchedulePauserSchema.optional().describe(
+      'While paused: who paused it. A gateway event that resumes the mandate resumes the schedule only when the gateway paused it.',
+    ),
+    authorizationCheckedAt: IsoDateTimeSchema.optional().describe(
+      'While awaiting authorisation: when `tick()` last asked the gateway about the mandate.',
+    ),
+    authorizationCheckError: CycleErrorSchema.optional().describe(
+      'While awaiting authorisation: the error the last status check ended with, if it failed.',
+    ),
     nextChargeAt: IsoDateTimeSchema.optional().describe(
       'When the next cycle is due to be debited. Absent when nothing is scheduled (paused, cancelled, completed, halted, awaiting authorisation).',
     ),

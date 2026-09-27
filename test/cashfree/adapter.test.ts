@@ -1001,10 +1001,22 @@ describe('createSubscription', () => {
       },
     ]);
     const error = await rejection(
-      provider.createSubscription({ reference: 'sub_ref_1', plan: PLAN_INPUT, customer: CUSTOMER, idempotencyKey: 'k' }),
+      provider.createSubscription({ reference: 'sub_ref_1', plan: PLAN_INPUT, customer: CUSTOMER, idempotencyKey: '47bf8872-46fe-11ee-be56-0242ac120002' }),
     );
     expect(error.code).toBe(ErrorCode.Conflict);
     expect(error.providerCode).toBe('request_invalid');
+  });
+
+  it('refuses an idempotency key that is not a UUID before any request: the x-idempotency-key header is `format: UUID` [openapi]', async () => {
+    const { provider, calls } = setup([]);
+    for (const idempotencyKey of ['k', 'order-1042-create', '47bf8872-46fe-11ee-be56-0242ac12000', '47bf8872-46fe-11ee-be56-0242ac120002x']) {
+      const error = await rejection(
+        provider.createSubscription({ reference: 'sub_ref_1', plan: PLAN_INPUT, customer: CUSTOMER, idempotencyKey }),
+      );
+      expect(error.code).toBe(ErrorCode.Validation);
+      expect(error.message).toContain('UUID');
+    }
+    expect(calls).toHaveLength(0);
   });
 
   it('requires customer email and phone, naming the missing field', async () => {

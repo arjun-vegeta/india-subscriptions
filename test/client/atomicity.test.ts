@@ -107,7 +107,7 @@ describe('failure atomicity: create when the scheduler store throws', () => {
 
 describe('failure atomicity: verifyCheckout when the scheduler store throws', () => {
   it('the customer has authorised at the gateway but nothing bills; the error carries the verification (new id); a retry recovers', async () => {
-    const world = makeWorld({ gateways: [{ style: Style.Notify, idChanges: true }] });
+    const world = makeWorld({ gateways: [{ style: Style.Notify, idChanges: true }], scheduler: { authorizationPollMinutes: 0 } });
     const created = await world.subs.create(PAYU, trialInput());
     const checkout = world.gateway.authorize(created.id);
     world.store.fail(StoreMethod.SaveSchedule, { when: scheduleIs(ScheduleStatus.Active) });

@@ -95,11 +95,8 @@ describe('the names the README mentions in prose and code', () => {
 });
 
 describe('types the scheduler options need', () => {
-  it('SchedulerSettings (the type of createSubscriptions({ scheduler })) is not exported from the main entry, though SubscriptionsOptions uses it', () => {
-    // @ts-expect-error `SchedulerSettings` is declared in src/scheduler/scheduler.ts and exported from src/scheduler/index.ts, but index.ts lists only `SchedulerOptions`.
-    type NotExported = import('../../src/index.js').SchedulerSettings;
-    const probe: NotExported | undefined = undefined;
-    expect(probe).toBeUndefined();
-    expect(Object.keys(main)).not.toContain('chargeIdFor');
+  it('SchedulerSettings, the type of createSubscriptions({ scheduler }), is exported from the main entry (checked by the compiler)', () => {
+    const settings: import('../../src/index.js').SchedulerSettings = { store: new main.MemorySchedulerStore() };
+    expect(settings.store).toBeDefined();
   });
 });

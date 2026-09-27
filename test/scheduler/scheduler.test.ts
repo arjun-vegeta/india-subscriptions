@@ -733,7 +733,18 @@ describe('register', () => {
       maxAttempts: 4,
       retryIntervalHours: 6,
       unknownOutcomeGraceMinutes: 30,
+      authorizationPollMinutes: 60,
     });
+  });
+
+  it('stores debitAtIstTime and authorizationPollMinutes from the options or the registration, and rejects a malformed time', async () => {
+    const h = makeHarness({ scheduler: { debitAtIstTime: '14:30', authorizationPollMinutes: 15 } });
+    expect((await h.scheduler.register(registration())).policy).toMatchObject({ debitAtIstTime: '14:30', authorizationPollMinutes: 15 });
+    const other = await h.scheduler.register(registration({ id: 'other', debitAtIstTime: '09:05', authorizationPollMinutes: 0 }));
+    expect(other.policy).toMatchObject({ debitAtIstTime: '09:05', authorizationPollMinutes: 0 });
+    for (const bad of ['9:05', '24:00', '12:60', 'noon']) {
+      await expect(h.scheduler.register(registration({ id: `bad${bad}`, debitAtIstTime: bad }))).rejects.toMatchObject({ code: ErrorCode.Validation });
+    }
   });
 
   it('rejects invalid input and gateways that raise their own debits', async () => {

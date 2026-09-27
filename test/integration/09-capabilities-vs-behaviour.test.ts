@@ -6,6 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { createSubscriptions } from '../../src/client.js';
 import { CancelMode, ChangeTiming, ErrorCode, IntervalUnit, PaymentMethod, Provider, RefundStatus, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
 import { CashfreeHeader, CashfreePath } from '../../src/providers/cashfree/constants.js';
 import { PAYU_FREE_TRIAL_CONSENT_PAISE, PayUCommand, PayUConsentField } from '../../src/providers/payu/constants.js';
@@ -33,7 +34,10 @@ import {
 const NOW = '2026-11-17T05:00:00.000Z';
 const PLAN = { name: 'Pro monthly', amount: 49900, interval: { unit: IntervalUnit.Month, count: 1 } } as const;
 
-const adapters = (): Record<Provider, Capabilities> => {
+type BuiltAdapter = typeof Provider.Razorpay | typeof Provider.Cashfree | typeof Provider.PayU;
+
+/** The capabilities each adapter reports itself (`provider(name).capabilities`). */
+const adapters = (): Record<BuiltAdapter, Capabilities> => {
   const clock = new Clock(NOW);
   const fetch = scriptedFetch(() => ({ status: 500 })).fetch;
   return {
@@ -43,16 +47,41 @@ const adapters = (): Record<Provider, Capabilities> => {
   };
 };
 
+/** What `subs.capabilities(name)` says, with a scheduler configured: the adapter's capabilities plus what the facade and scheduler add. */
+function effective(): Record<BuiltAdapter, Capabilities> {
+  const clock = new Clock(NOW);
+  const fetch = scriptedFetch(() => ({ status: 500 })).fetch;
+  const of = (provider: ReturnType<typeof razorpayProvider> | ReturnType<typeof cashfreeProvider> | ReturnType<typeof payuProvider>) =>
+    wire(provider, clock, []).subs.capabilities(provider.name);
+  return {
+    [Provider.Razorpay]: of(razorpayProvider(fetch, clock)),
+    [Provider.Cashfree]: of(cashfreeProvider(fetch, clock)),
+    [Provider.PayU]: of(payuProvider(fetch, clock)),
+  };
+}
+
 describe('the capability objects', () => {
-  it('are valid, say which gateway they describe, and are what the facade hands out', () => {
+  it('are valid and say which gateway they describe; the adapter\'s own view stays raw, the facade\'s view adds pause and resume where the scheduler provides them', () => {
     const clock = new Clock(NOW);
     const fetch = scriptedFetch(() => ({ status: 500 })).fetch;
     for (const provider of [razorpayProvider(fetch, clock), cashfreeProvider(fetch, clock), payuProvider(fetch, clock)]) {
       const { subs } = wire(provider, clock, []);
-      expect(CapabilitiesSchema.safeParse(provider.capabilities).success).toBe(true);
+      expect(CapabilitiesSchema.safeParse(subs.capabilities(provider.name)).success).toBe(true);
       expect(provider.capabilities.provider).toBe(provider.name);
-      expect(subs.capabilities(provider.name)).toBe(provider.capabilities);
+      expect(subs.provider(provider.name).capabilities).toBe(provider.capabilities);
+      const { pause, resume, ...rest } = subs.capabilities(provider.name);
+      const { pause: rawPause, resume: rawResume, ...rawRest } = provider.capabilities;
+      expect(rest).toEqual(rawRest);
+      expect([pause, resume]).toEqual(provider.capabilities.merchantCharges ? [true, true] : [rawPause, rawResume]);
     }
+  });
+
+  it('without a scheduler the facade reports the adapter\'s capabilities untouched', () => {
+    const clock = new Clock(NOW);
+    const payu = payuProvider(scriptedFetch(() => ({ status: 500 })).fetch, clock);
+    const subs = createSubscriptions({ providers: [payu] });
+    expect(subs.capabilities(Provider.PayU)).toBe(payu.capabilities);
+    expect(subs.capabilities(Provider.PayU)).toMatchObject({ pause: false, resume: false });
   });
 
   it('merchantCharges, merchantPreDebitNotification and the lead hours tell the scheduler one coherent style per gateway', () => {
@@ -76,7 +105,7 @@ describe('the README capability table against the capabilities objects', () => {
   /** A cell that is not a plain "No": "Yes", "Yes, through the scheduler", "UPI and cards only", "Periodic plans". */
   const yes = (cell: string) => !/^no\b/i.test(cell);
   const flags = (select: (caps: Capabilities) => boolean) => {
-    const caps = adapters();
+    const caps = effective();
     return [select(caps.razorpay), select(caps.cashfree), select(caps.payu)];
   };
 
@@ -118,13 +147,11 @@ describe('the README capability table against the capabilities objects', () => {
     });
   });
 
-  // DEFECT (see the report): the README promises PayU pause and resume ("Yes, through the scheduler") and
-  // `subs.capabilities(provider)` "returns the same information at runtime", but the flags say false for PayU.
-  it.fails('"Pause and resume" says Yes exactly where capabilities.pause and .resume are true (PayU: "Yes, through the scheduler", flags false)', () => {
+  it('"Pause and resume" says Yes exactly where subs.capabilities() says pause and resume work (PayU: "Yes, through the scheduler")', () => {
     expect(row('Pause and resume').map(yes)).toEqual(flags((caps) => caps.pause && caps.resume));
   });
 
-  it('...yet the facade really does pause and resume PayU (through the scheduler), which is what the README says', async () => {
+  it('...and the facade really does pause and resume PayU (through the scheduler), which is what the README and the capabilities say', async () => {
     const t = setupPayu();
     await t.create();
     await t.verify();
@@ -132,6 +159,7 @@ describe('the README capability table against the capabilities objects', () => {
     expect((await t.subs.resume(Provider.PayU, PAYU_COMPOSITE)).status).not.toBe(SubscriptionStatus.Paused);
     expect(row('Pause and resume')[2]).toMatch(/scheduler/i);
     expect(adapters().payu).toMatchObject({ pause: false, resume: false });
+    expect(effective().payu).toMatchObject({ pause: true, resume: true });
   });
 });
 
@@ -197,8 +225,7 @@ describe('Cashfree: every flag', () => {
     expect(t.gateway.calls).toHaveLength(before);
   });
 
-  // DEFECT (see the report, low): the unified schema takes any 1..255 character idempotency key, Cashfree's header is a UUID.
-  it.fails('an idempotency key that is not a UUID is refused locally for Cashfree (its x-idempotency-key is `format: UUID`)', async () => {
+  it('an idempotency key that is not a UUID is refused locally for Cashfree (its x-idempotency-key is `format: UUID`)', async () => {
     const t = cashfreeSetup();
     const error = await rejection(() => t.subs.create(Provider.Cashfree, { ...input, idempotencyKey: 'order-1042-create' }));
     expect(error.code).toBe(ErrorCode.Validation);

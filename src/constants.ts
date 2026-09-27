@@ -11,6 +11,8 @@ export const Provider = {
   Razorpay: 'razorpay',
   Cashfree: 'cashfree',
   PayU: 'payu',
+  PhonePe: 'phonepe',
+  Paytm: 'paytm',
 } as const;
 export type Provider = (typeof Provider)[keyof typeof Provider];
 
@@ -235,3 +237,13 @@ export const Environment = {
   Live: 'live',
 } as const;
 export type Environment = (typeof Environment)[keyof typeof Environment];
+
+/**
+ * The longest charge id or pre-debit notification id the billing scheduler sends to a gateway, and the longest an
+ * adapter of a merchant-scheduled gateway must accept. It is the tightest limit among the gateways (PayU's transaction
+ * id: 25 characters); the scheduler generates its ids within it and adapter authors can rely on it.
+ */
+export const MAX_GATEWAY_ID_LENGTH = 25;
+
+/** The characters in a charge or notification id the scheduler sends to a gateway. */
+export const GATEWAY_ID_PATTERN = /^[A-Za-z0-9_-]+$/;

@@ -45,6 +45,16 @@ export interface SchedulerStore {
   findBySubscriptionId(provider: Provider, subscriptionId: string): Promise<ScheduleRecord | undefined>;
 
   /**
+   * Returns the schedule that owns the debit with this id, or `undefined`: the schedule of the cycle whose current
+   * `chargeId` (the merchant's debit id, deterministic per schedule, cycle and attempt) or `providerChargeId` (the
+   * gateway's own id for it) equals `chargeId`. It is how a gateway webhook that names only a debit, and no
+   * subscription, finds its schedule (PayU's payment webhook). Index both cycle fields. Ids are unique per schedule
+   * by construction; if several schedules still match, return the most recently created. The result is the
+   * caller's own copy. Same read-your-writes rule as `getSchedule`.
+   */
+  findScheduleByChargeId(chargeId: string): Promise<ScheduleRecord | undefined>;
+
+  /**
    * Returns up to `limit` schedules whose `nextActionAt` is set and is at or
    * before `at` (a UTC ISO-8601 instant), oldest `nextActionAt` first. Ignore
    * schedules without `nextActionAt`; do not filter on `status` (a paused or

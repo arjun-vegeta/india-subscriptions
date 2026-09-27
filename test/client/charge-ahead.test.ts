@@ -41,7 +41,7 @@ describe('merchant-scheduled, charge-ahead (merchantChargeLeadHours): lifecycle 
     const world = chargeAheadWorld();
     await world.subs.create(CASHFREE, trialInput());
     for (const probe of [raiseAt(TRIAL_END), TRIAL_END, CYCLE_2]) {
-      expect(await world.at(probe)).toMatchObject({ due: 0, charged: 0, reconciled: 0, errors: [] });
+      expect(await world.at(probe)).toMatchObject({ charged: 0, reconciled: 0, notified: 0, errors: [] });
     }
     expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(0);
     expect(world.gateway.callsTo(GatewayMethod.NotifyCharge)).toHaveLength(0);

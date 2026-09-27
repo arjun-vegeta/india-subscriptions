@@ -37,6 +37,50 @@ export interface ProviderOptions extends HttpOptions {
  *
  * Operations a gateway cannot perform throw `SubscriptionError` with code
  * `UNSUPPORTED` — check `capabilities` first to avoid them.
+ *
+ * ## The contract of a merchant-scheduled gateway (`capabilities.merchantCharges: true`)
+ *
+ * The billing scheduler (`BillingScheduler`, reached through `Subscriptions`) raises every debit of such a gateway. It
+ * relies on exactly this, and `test/helpers/merchant-adapter-conformance.ts` checks it against any adapter:
+ *
+ * 1. `createSubscription` returns `amount`, `interval` and `startAt` (the instant of the first charge) on the
+ *    subscription, plus `scheduling: 'merchant'`. The facade registers the schedule from them and refuses a subscription
+ *    without them (cancelling it again). `id` is what `getSubscription` and the debit calls accept for the mandate; if
+ *    the id only exists after the customer authorises (PayU), `verifyCheckout` returns it as `subscriptionId` and
+ *    `reference` carries the merchant's own reference.
+ * 2. `createCharge({ subscriptionId, chargeId, amount, ... })`: `chargeId` is the merchant's debit id, deterministic per
+ *    schedule, cycle and attempt. The scheduler may send the SAME `chargeId` again after an unknown outcome (no answer, a
+ *    crash), so the call must be safe to repeat: either it raises one debit per `chargeId` (returning the existing one), or
+ *    the gateway rejects the duplicate. The scheduler never books a failed attempt, or uses a new id, for a re-sent id,
+ *    whatever error it gets back; it asks `getCharge`. `OUTCOME_UNKNOWN` (a write that got no answer) is the right code
+ *    for anything that may have taken effect; use `VALIDATION`, `PROVIDER_ERROR`, `AUTH`, `UNSUPPORTED` or `NOT_FOUND`
+ *    only when the gateway answered and refused, because the FIRST attempt with such a code counts as a failed debit.
+ * 3. `getCharge(subscriptionId, chargeId)` takes the merchant's `chargeId` and answers `NOT_FOUND` only when the
+ *    gateway has no trace of the debit (a gateway whose status API lags must not answer `NOT_FOUND` for a debit it
+ *    holds). Any other failure must not be `NOT_FOUND`. The returned `Charge.status` is `succeeded`, `failed` or
+ *    `cancelled` when final, `pending` or `scheduled` while it is in flight.
+ * 4. Ids sent to the gateway (`chargeId`, `notificationId`) are at most `MAX_GATEWAY_ID_LENGTH` characters of
+ *    `GATEWAY_ID_PATTERN` (`[A-Za-z0-9_-]`); the adapter must accept them as they are.
+ * 5. Webhook events about a debit carry the merchant's debit id in `charge.id` or `charge.reference` (so the scheduler can
+ *    match them to the cycle through `SchedulerStore.findScheduleByChargeId`) and `subscriptionId` where the gateway sends
+ *    one. A debit that succeeded is `subscription.charged`, one that failed or was cancelled is
+ *    `subscription.charge_failed`. Mandate events carry `subscriptionId` (and `subscription.reference` where known):
+ *    `subscription.paused` / `subscription.resumed` / `subscription.cancelled` / `subscription.halted` /
+ *    `subscription.activated` change the schedule.
+ * 6. `merchantPreDebitNotification: true`: the merchant must tell the customer before each debit. The scheduler calls
+ *    `notifyCharge` at due minus its `notifyLeadHours`, keeps the returned `invoiceNumber`, passes it to `createCharge`,
+ *    and debits only once the gateway's minimum notice has passed. An adapter whose method needs no notice returns an
+ *    accepted notification without a request. `merchantChargeLeadHours: n` (and no notification): the gateway notifies
+ *    the customer itself once a charge exists, so the scheduler calls `createCharge` at least `n` hours before the due
+ *    date with `scheduledAt` set to the debit date (never further ahead than `merchantChargeMaxAheadHours`), and the
+ *    adapter must accept every `scheduledAt` the scheduler sends within those limits. Neither set: `createCharge` is
+ *    called on the due date.
+ * 7. A gateway that ties a debit to its notification (PhonePe: the debit uses the notification's merchant order id and the
+ *    amount the notification fixed) returns that id as `ChargeNotification.chargeId`. The scheduler then uses it, as
+ *    given, as the `chargeId` of `createCharge` and `getCharge` for that attempt, in place of the id it would generate,
+ *    and matches webhook events to the cycle by it. It is saved with the notification before any charge call. A retry
+ *    sends a fresh notification and adopts the new one's `chargeId`. The same unknown-outcome rules apply to it: the
+ *    id is re-sent, never replaced, until `getCharge` settles the attempt.
  */
 export interface SubscriptionProvider {
   readonly name: Provider;

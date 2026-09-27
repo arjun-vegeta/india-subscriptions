@@ -481,6 +481,14 @@ export const ChargeNotificationSchema = z
       .string()
       .optional()
       .describe('Carry this into the matching charge call where the gateway requires it.'),
+    chargeId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'The id the debit that follows this notification must use, for gateways that tie a debit to its notification. ' +
+          'When present, pass it as `chargeId` to createCharge and getCharge.',
+      ),
     raw: rawField(RAW_RESPONSE),
   })
   .describe('The result of sending a pre-debit notification.');

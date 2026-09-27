@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ChargeStatus, ErrorCode, EventType, Provider } from '../../src/constants.js';
+import { ChargeStatus, ErrorCode, EventType, Provider, SubscriptionStatus } from '../../src/constants.js';
+import { SubscriptionError } from '../../src/errors.js';
 import { CycleStatus, ScheduleStatus, ScheduleStatusReason, SchedulerEventType } from '../../src/scheduler/index.js';
 import {
   CreateBehaviour,
@@ -14,8 +15,8 @@ import {
 } from './helpers.js';
 
 describe('schedules awaiting authorisation', () => {
-  it('stores the schedule as pending_authorization and tick ignores it entirely', async () => {
-    const h = makeHarness();
+  it('stores the schedule as pending_authorization and, with polling off, tick ignores it entirely', async () => {
+    const h = makeHarness({ scheduler: { authorizationPollMinutes: 0 } });
     const schedule = await h.scheduler.register(registration({ awaitingAuthorization: true }));
     expect(schedule.status).toBe(ScheduleStatus.PendingAuthorization);
     expect(schedule.nextActionAt).toBeUndefined();
@@ -184,7 +185,7 @@ describe('authorisation via webhook events', () => {
 
 describe('authorisation timeout', () => {
   it('cancels a schedule still pending after authorizationTimeoutHours, and emits an event', async () => {
-    const h = makeHarness();
+    const h = makeHarness({ scheduler: { authorizationPollMinutes: 0 } });
     const schedule = await h.scheduler.register(registration({ awaitingAuthorization: true, authorizationTimeoutHours: 24 }));
     expect(schedule.nextActionAt).toBe(plusHours(T0, 24));
 
@@ -229,5 +230,95 @@ describe('authorisation timeout', () => {
     await h.scheduler.register(registration({ awaitingAuthorization: true }));
     await h.tickAt(plusHours(T0, 24 * 365));
     expect((await h.scheduler.get(SID))?.status).toBe(ScheduleStatus.PendingAuthorization);
+  });
+});
+
+describe('authorisation polling', () => {
+  const pending = (h: ReturnType<typeof makeHarness>, over: Record<string, unknown> = {}) =>
+    h.scheduler.register(registration({ awaitingAuthorization: true, ...over }));
+
+  it('asks the gateway about the mandate at most every authorizationPollMinutes (default 60), and not before', async () => {
+    const h = makeHarness();
+    const schedule = await pending(h);
+    expect(schedule.nextActionAt).toBe(plusHours(T0, 1));
+    expect((await h.tickAt(plusHours(T0, 0.9))).due).toBe(0);
+    expect(h.provider.subscriptionCalls).toEqual([]);
+
+    h.provider.mandates.set('sub_1', SubscriptionStatus.PendingAuthorization);
+    const first = await h.tickAt(plusHours(T0, 1));
+    expect(h.provider.subscriptionCalls).toEqual(['sub_1']);
+    expect(first.errors).toEqual([]);
+    const stored = await h.scheduler.get(SID);
+    expect(stored).toMatchObject({ status: ScheduleStatus.PendingAuthorization, authorizationCheckedAt: plusHours(T0, 1), nextActionAt: plusHours(T0, 2) });
+    // Ticking again inside the interval makes no call.
+    await h.tickAt(plusHours(T0, 1.5));
+    expect(h.provider.subscriptionCalls).toHaveLength(1);
+    await h.tickAt(plusHours(T0, 2));
+    expect(h.provider.subscriptionCalls).toHaveLength(2);
+  });
+
+  it('activates the schedule when the gateway reports the mandate live (bank mandates confirm hours later), by the id the gateway gives', async () => {
+    const h = makeHarness();
+    await pending(h);
+    h.provider.mandates.set('sub_1', SubscriptionStatus.Active);
+    await h.tickAt(plusHours(T0, 1));
+    expect(await h.scheduler.get(SID)).toMatchObject({ status: ScheduleStatus.Active, subscriptionId: 'sub_1' });
+    expect(h.events.map((e) => e.type)).toContain(SchedulerEventType.ScheduleActivated);
+    expect((await h.scheduler.get(SID))?.authorizationCheckedAt).toBeUndefined();
+  });
+
+  it.each([
+    [SubscriptionStatus.Cancelled, ScheduleStatusReason.CancelledByGateway],
+    [SubscriptionStatus.Expired, ScheduleStatusReason.AuthorizationTimeout],
+    [SubscriptionStatus.Failed, ScheduleStatusReason.AuthorizationFailed],
+  ])('cancels the schedule when the gateway reports the mandate %s', async (status, reason) => {
+    const h = makeHarness();
+    await pending(h);
+    h.provider.mandates.set('sub_1', status);
+    await h.tickAt(plusHours(T0, 1));
+    expect(await h.scheduler.get(SID)).toMatchObject({ status: ScheduleStatus.Cancelled, statusReason: reason });
+  });
+
+  it('an adapter error is recorded on the schedule and reported, never stops the tick, and the next check comes a poll interval later; an id the adapter cannot answer for yet is not reported', async () => {
+    const h = makeHarness();
+    await pending(h);
+    await pending(h, { id: 'second', subscriptionId: 'sub_2' });
+    h.provider.mandates.set('sub_2', SubscriptionStatus.Active);
+    h.provider.subscriptionError = new SubscriptionError(ErrorCode.ProviderUnavailable, 'down', { provider: 'payu' });
+    const failing = await h.tickAt(plusHours(T0, 1));
+    expect(failing.errors).toHaveLength(2);
+    expect(await h.scheduler.get(SID)).toMatchObject({ status: ScheduleStatus.PendingAuthorization, authorizationCheckError: { code: ErrorCode.ProviderUnavailable }, nextActionAt: plusHours(T0, 2) });
+
+    h.provider.subscriptionError = undefined;
+    const recovered = await h.tickAt(plusHours(T0, 2));
+    // sub_1 is unknown to the fake (NOT_FOUND): recorded, not reported. sub_2 is live: activated.
+    expect(recovered.errors).toEqual([]);
+    expect((await h.scheduler.get(SID))?.authorizationCheckError).toMatchObject({ code: ErrorCode.NotFound });
+    expect((await h.scheduler.get('second'))?.status).toBe(ScheduleStatus.Active);
+  });
+
+  it('a schedule is still cancelled by its authorisation timeout, which wins over a poll that falls after it', async () => {
+    const h = makeHarness();
+    await pending(h, { authorizationTimeoutHours: 0.5 });
+    expect((await h.scheduler.get(SID))?.nextActionAt).toBe(plusHours(T0, 0.5));
+    const result = await h.tickAt(plusHours(T0, 0.5));
+    expect(result.expired).toBe(1);
+    expect(h.provider.subscriptionCalls).toEqual([]);
+  });
+
+  it('authorizationPollMinutes: 0 turns polling off for that schedule', async () => {
+    const h = makeHarness();
+    const schedule = await pending(h, { authorizationPollMinutes: 0 });
+    expect(schedule.nextActionAt).toBeUndefined();
+  });
+
+  it('attachSubscriptionId replaces the id of a pending schedule only', async () => {
+    const h = makeHarness();
+    await pending(h);
+    expect((await h.scheduler.attachSubscriptionId(SID, 'card:123')).subscriptionId).toBe('card:123');
+    h.provider.mandates.set('card:123', SubscriptionStatus.Active);
+    await h.tickAt(plusHours(T0, 1));
+    expect(await h.scheduler.get(SID)).toMatchObject({ status: ScheduleStatus.Active, subscriptionId: 'card:123' });
+    expect((await h.scheduler.attachSubscriptionId(SID, 'other')).subscriptionId).toBe('card:123');
   });
 });

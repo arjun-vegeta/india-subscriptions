@@ -29,6 +29,8 @@ class Provider(str, Enum):
     RAZORPAY = 'razorpay'
     CASHFREE = 'cashfree'
     PAYU = 'payu'
+    PHONEPE = 'phonepe'
+    PAYTM = 'paytm'
 
 
 class Currency(str, Enum):

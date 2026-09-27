@@ -75,7 +75,13 @@ export * from './scheduler/constants.js';
 export * from './scheduler/schemas.js';
 export type { SchedulerStore } from './scheduler/store.js';
 export { MemorySchedulerStore, type MemorySchedulerStoreOptions } from './scheduler/memory-store.js';
-export { BillingScheduler, awaitsActivation, scheduleIdFor, type SchedulerOptions } from './scheduler/scheduler.js';
+export {
+  BillingScheduler,
+  awaitsActivation,
+  scheduleIdFor,
+  type SchedulerOptions,
+  type SchedulerSettings,
+} from './scheduler/scheduler.js';
 
 // Events webhook (what `india-subscriptions serve` posts to EVENTS_WEBHOOK_URL): envelopes, signing, verification.
 export {

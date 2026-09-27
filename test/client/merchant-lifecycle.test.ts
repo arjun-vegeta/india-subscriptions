@@ -58,7 +58,8 @@ describe('merchant-scheduled (notify style): create', () => {
       customer: trialInput().customer,
       metadata: trialInput().metadata,
     });
-    expect(schedule.nextActionAt).toBeUndefined();
+    // The only thing tick() has to do for it: ask the gateway about the mandate, one authorisation-poll interval after registration.
+    expect(schedule.nextActionAt).toBe(plusHours(T0, 1));
     expect(await cyclesOf(world)).toHaveLength(0);
   });
 
@@ -102,7 +103,7 @@ describe('merchant-scheduled (notify style): nothing happens before the customer
     ];
     for (const probe of probes) {
       const tick = await world.at(probe);
-      expect(tick).toMatchObject({ due: 0, notified: 0, charged: 0, reconciled: 0, succeeded: 0, errors: [] });
+      expect(tick).toMatchObject({ notified: 0, charged: 0, reconciled: 0, succeeded: 0, errors: [] });
     }
     expect(world.gateway.callsTo(GatewayMethod.NotifyCharge)).toHaveLength(0);
     expect(world.gateway.callsTo(GatewayMethod.CreateCharge)).toHaveLength(0);
