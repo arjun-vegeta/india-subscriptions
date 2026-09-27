@@ -40,6 +40,8 @@ export async function currentStatus(subscriptionId: string) {
 
 ## All codes
 
-The table below is generated from the code: what each code means, what to do, whether it is retryable and the HTTP status the service uses.
+The [generated error reference](../reference/generated/errors.md) lists every code: what it means, what to do, whether it is retryable and the HTTP status the service uses.
 
-<!-- generated:begin none -->
+## Errors over HTTP
+
+The service answers every error with the same body, `{"error": {"code", "message", "provider?", "httpStatus?", "providerCode?", "retryable"}}`, and a status taken from the code: for example 400 for `VALIDATION`, 401 for `SIGNATURE_INVALID`, 404 for `NOT_FOUND`, 409 for `CONFLICT`, 422 for `UNSUPPORTED`, 504 for `OUTCOME_UNKNOWN`. A gateway that rejects your credentials is a **502** (`AUTH`), not a 401: the 401 is for the caller of the service. The Python client raises `SubscriptionsApiError` with the same `code`.

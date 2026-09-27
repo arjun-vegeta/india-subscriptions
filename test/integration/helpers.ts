@@ -233,15 +233,15 @@ export interface Wired {
   calls: RecordedCall[];
 }
 
-export function razorpayProvider(fetch: FetchLike, clock: Clock): RazorpayProvider {
+export function razorpayProvider(fetch: FetchLike, clock: Pick<Clock, 'now'>): RazorpayProvider {
   return razorpay(RAZORPAY_ACCOUNT, { fetch, now: clock.now, maxRetries: 0 });
 }
 
-export function cashfreeProvider(fetch: FetchLike, clock: Clock): CashfreeProvider {
+export function cashfreeProvider(fetch: FetchLike, clock: Pick<Clock, 'now'>): CashfreeProvider {
   return cashfree(CASHFREE_ACCOUNT, { fetch, now: clock.now, maxRetries: 0 });
 }
 
-export function payuProvider(fetch: FetchLike, clock: Clock): PayUProvider {
+export function payuProvider(fetch: FetchLike, clock: Pick<Clock, 'now'>): PayUProvider {
   return payu(PAYU_ACCOUNT, { fetch, now: clock.now, maxRetries: 0 });
 }
 

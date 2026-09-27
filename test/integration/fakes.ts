@@ -74,7 +74,7 @@ export class FakeCashfree {
   /** How Cashfree answers `GET .../payments/{id}` for a payment it does not hold. The spec declares 404. */
   missingPayment: Reply = { status: 404, json: { message: 'something is not found', code: 'something_not_found', type: 'invalid_request_error' } };
 
-  constructor(private readonly clock: Clock) {}
+  constructor(private readonly clock: { iso(): string; nowMs(): number }) {}
 
   private entity(id: string) {
     return {
@@ -234,6 +234,8 @@ export class FakePayU {
   failDebits = 0;
   /** The next `si_transaction` is answered with a debit still in progress (`pending`). */
   pendingDebits = 0;
+  /** How many `si_transaction` requests PayU executed (a re-sent txnid executes again: PayU does not refuse duplicates). */
+  executedDebits = 0;
   dropNext: 'request' | 'answer' | undefined;
   private payuId = 30141596990;
 
@@ -267,6 +269,7 @@ export class FakePayU {
         if (failed) this.failDebits -= 1;
         const pending = !failed && this.pendingDebits > 0;
         if (pending) this.pendingDebits -= 1;
+        this.executedDebits += 1;
         this.debits.set(debit.txnid as string, { txnid: debit.txnid as string, mihpayid: String(++this.payuId), status: failed ? 'failure' : pending ? 'pending' : 'success' });
         if (this.dropNext === 'answer') {
           this.dropNext = undefined;
