@@ -16,3 +16,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 build/
+
+# Docs site
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
