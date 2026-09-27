@@ -302,6 +302,7 @@ export class FakePayU {
       case PayUCommand.RefundTransaction:
         return { json: { status: 1, msg: 'Refund Request Queued', request_id: '17265314530', bank_ref_num: '100142082006', mihpayid: String(var1) } };
       case PayUCommand.MandateRevoke:
+      case PayUCommand.UpiMandateRevoke:
         await this.onRevoke?.();
         if (this.revokeFails) return { json: { status: 0, action: 'MANDATE_REVOKE', message: 'Mandate is not active' } };
         return { json: { status: 1, message: 'Mandate Revoked Successfully', action: 'MANDATE_REVOKE' } };

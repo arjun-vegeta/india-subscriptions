@@ -31,6 +31,8 @@ import type {
 } from '../../src/schemas.js';
 
 const HOUR_MS = 3_600_000;
+/** Hours the suite lets a settled debit reach its date (a gateway that takes the charge days ahead debits then). */
+const SETTLE_HOURS = 80;
 
 /** The clock the suite drives. Hand `clock.now` to the adapter (`ProviderOptions.now`) and to the gateway fake. */
 export class ConformanceClock {
@@ -210,7 +212,8 @@ export function describeMerchantAdapterConformance(harness: MerchantAdapterHarne
       const { schedule } = await w.authorised();
       const id = await w.raiseFirstDebit();
       w.gateway.settle(id, ChargeStatus.Succeeded);
-      await w.tickHourly(30);
+      // Long enough for a debit scheduled days ahead to reach its date; far short of the next cycle.
+      await w.tickHourly(SETTLE_HOURS);
       expect(w.gateway.chargeRequestIds()).toEqual([id]);
       expect(w.gateway.debitCount()).toBe(1);
       expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
@@ -235,7 +238,7 @@ export function describeMerchantAdapterConformance(harness: MerchantAdapterHarne
       const id = await w.raiseFirstDebit();
       await w.tickHourly(3);
       w.gateway.settle(id, ChargeStatus.Succeeded);
-      await w.tickHourly(3);
+      await w.tickHourly(SETTLE_HOURS);
       expect(new Set(w.gateway.chargeRequestIds())).toEqual(new Set([id]));
       expect(w.gateway.debitCount()).toBe(1);
       expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
@@ -251,7 +254,7 @@ export function describeMerchantAdapterConformance(harness: MerchantAdapterHarne
       expect(new Set(w.gateway.chargeRequestIds())).toEqual(new Set([id]));
       expect(w.gateway.debitCount()).toBe(1);
       w.gateway.settle(id, ChargeStatus.Succeeded);
-      await w.tickHourly(3);
+      await w.tickHourly(SETTLE_HOURS);
       expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
     });
 
@@ -268,7 +271,7 @@ export function describeMerchantAdapterConformance(harness: MerchantAdapterHarne
         expect(new Set(w.gateway.chargeRequestIds())).toEqual(new Set([id]));
         expect(w.gateway.debitCount()).toBe(1);
         w.gateway.settle(id, ChargeStatus.Succeeded);
-        await w.tickHourly(3);
+        await w.tickHourly(SETTLE_HOURS);
         expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
         expect(w.gateway.debitCount()).toBe(1);
       });
@@ -316,7 +319,7 @@ export function describeMerchantAdapterConformance(harness: MerchantAdapterHarne
       expect(second).not.toBe(first);
       expect(ids.filter((id) => id === first)).toHaveLength(1);
       w.gateway.settle(second, ChargeStatus.Succeeded);
-      await w.tickHourly(3);
+      await w.tickHourly(SETTLE_HOURS);
       expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
     });
 
@@ -337,7 +340,7 @@ export function describeMerchantAdapterConformance(harness: MerchantAdapterHarne
         expect(second).not.toBe(first);
         expect(w.gateway.dictatedChargeIds?.()).toContain(second);
         w.gateway.settle(second, ChargeStatus.Succeeded);
-        await w.tickHourly(3);
+        await w.tickHourly(SETTLE_HOURS);
         expect((await w.subs.scheduler?.get(schedule.id))?.paidCycles).toBe(1);
       });
     }
