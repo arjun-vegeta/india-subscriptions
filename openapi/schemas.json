@@ -1080,6 +1080,11 @@
           "description": "Carry this into the matching charge call where the gateway requires it.",
           "type": "string"
         },
+        "chargeId": {
+          "description": "The id the debit that follows this notification must use, for gateways that tie a debit to its notification. When present, pass it as `chargeId` to createCharge and getCharge.",
+          "type": "string",
+          "minLength": 1
+        },
         "raw": {
           "description": "The gateway's response, untouched. Absent when the gateway returned no body."
         }

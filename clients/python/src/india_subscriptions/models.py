@@ -1003,6 +1003,10 @@ class ChargeNotification(BaseModel):
     """
     Carry this into the matching charge call where the gateway requires it.
     """
+    charge_id: Annotated[Optional[str], Field(alias='chargeId', min_length=1)] = None
+    """
+    The id the debit that follows this notification must use, for gateways that tie a debit to its notification. When present, pass it as `chargeId` to createCharge and getCharge.
+    """
     raw: Optional[Any] = None
     """
     The gateway's response, untouched. Absent when the gateway returned no body.

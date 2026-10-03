@@ -242,6 +242,18 @@ export const ORDER_STATE_TO_CHARGE_STATUS: Record<PhonePeOrderState, ChargeStatu
 };
 export const UNKNOWN_CHARGE_STATUS: ChargeStatus = ChargeStatus.Pending;
 
+/**
+ * What the SETUP ORDER says about a mandate the status endpoint does not know yet (the docs describe that endpoint as
+ * "after it has been set up" and say nothing about the time before): the customer has not finished (`PENDING`) is
+ * `created`; the setup failed or expired is `failed`; the setup completed but the mandate is not visible yet is
+ * `pending_authorization`. (ASSUMPTION: fact sheet section 3.4 / 6.)
+ */
+export const SETUP_ORDER_STATE_TO_STATUS: Partial<Record<PhonePeOrderState, SubscriptionStatus>> = {
+  [PhonePeOrderState.Pending]: SubscriptionStatus.Created,
+  [PhonePeOrderState.Completed]: SubscriptionStatus.PendingAuthorization,
+  [PhonePeOrderState.Failed]: SubscriptionStatus.Failed,
+};
+
 /** Refund states. `CONFIRMED` and `ACCEPTED` are in the UAT checklist / legacy webhook list as "still in progress". [A-REFUND, G-UATCHECK, SDK CallbackType] */
 export const PhonePeRefundState = {
   Pending: 'PENDING',

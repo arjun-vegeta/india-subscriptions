@@ -214,13 +214,16 @@ describe('pause / resume: provider WITH a gateway pause operation', () => {
     expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
   });
 
-  it('a gateway outage does not stop a pause: the scheduler pauses and only the final read fails (retry is harmless)', async () => {
+  it('a gateway outage does not affect a pause: pause and resume are the scheduler\'s alone and do not depend on a gateway read', async () => {
     const { world, id } = await afterFirstCharge(spec);
     world.gateway.failOnce(GatewayMethod.GetSubscription);
-    await expect(world.subs.pause(PAYU, id)).rejects.toMatchObject({ code: ErrorCode.ProviderUnavailable });
+    const paused = await world.subs.pause(PAYU, id);
+    expect(paused.status).toBe(SubscriptionStatus.Paused);
     expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Paused);
     expect(await world.at(CYCLE_2)).toMatchObject({ charged: 0 });
-    expect((await world.subs.pause(PAYU, id)).status).toBe(SubscriptionStatus.Paused);
+    world.gateway.failOnce(GatewayMethod.GetSubscription);
+    expect((await world.subs.resume(PAYU, id)).status).not.toBe(SubscriptionStatus.Paused);
+    expect((await scheduleOf(world)).status).toBe(ScheduleStatus.Active);
   });
 });
 

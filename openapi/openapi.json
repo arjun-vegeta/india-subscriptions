@@ -2452,8 +2452,8 @@
         "tags": [
           "Webhooks"
         ],
-        "summary": "Verify and normalise a forwarded webhook",
-        "description": "For apps that receive the gateway webhook themselves: forward the exact raw body and the headers here. The signature is verified and the events are returned normalised. A bad signature answers 401.",
+        "summary": "Verify, apply and normalise a forwarded webhook",
+        "description": "For apps that receive the gateway webhook themselves: forward the exact raw body and the headers here. The signature is verified, each event is applied to the billing scheduler (so a mandate that was authorised, paused or cancelled at the gateway is reflected in billing), and the events are returned normalised. Forwarding the same webhook twice is safe. A bad signature answers 401 and changes nothing.",
         "parameters": [
           {
             "name": "provider",
@@ -3865,6 +3865,11 @@
           "invoiceNumber": {
             "description": "Carry this into the matching charge call where the gateway requires it.",
             "type": "string"
+          },
+          "chargeId": {
+            "description": "The id the debit that follows this notification must use, for gateways that tie a debit to its notification. When present, pass it as `chargeId` to createCharge and getCharge.",
+            "type": "string",
+            "minLength": 1
           },
           "raw": {
             "description": "The gateway's response, untouched. Absent when the gateway returned no body."
