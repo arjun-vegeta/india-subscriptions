@@ -247,3 +247,9 @@ export const MAX_GATEWAY_ID_LENGTH = 25;
 
 /** The characters in a charge or notification id the scheduler sends to a gateway. */
 export const GATEWAY_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * `Subscription.providerStatus` of a merchant-scheduled subscription the gateway had no status for (it answered NOT_FOUND, or
+ * the mandate does not exist yet): the subscription is then built from the billing schedule alone.
+ */
+export const GATEWAY_STATUS_UNAVAILABLE = 'gateway_status_unavailable';

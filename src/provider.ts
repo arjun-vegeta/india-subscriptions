@@ -51,7 +51,9 @@ export interface ProviderOptions extends HttpOptions {
  * 2. `createCharge({ subscriptionId, chargeId, amount, ... })`: `chargeId` is the merchant's debit id, deterministic per
  *    schedule, cycle and attempt. The scheduler may send the SAME `chargeId` again after an unknown outcome (no answer, a
  *    crash), so the call must be safe to repeat: either it raises one debit per `chargeId` (returning the existing one), or
- *    the gateway rejects the duplicate. The scheduler never books a failed attempt, or uses a new id, for a re-sent id,
+ *    the gateway rejects the duplicate. If the gateway does neither (PayU's test environment debits again for a repeated
+ *    transaction id), the ADAPTER must provide the guarantee itself: look the `chargeId` up before debiting and return the
+ *    existing debit when there is one (a lookup that fails for any reason but "not found" aborts before debiting). The scheduler never books a failed attempt, or uses a new id, for a re-sent id,
  *    whatever error it gets back; it asks `getCharge`. `OUTCOME_UNKNOWN` (a write that got no answer) is the right code
  *    for anything that may have taken effect; use `VALIDATION`, `PROVIDER_ERROR`, `AUTH`, `UNSUPPORTED` or `NOT_FOUND`
  *    only when the gateway answered and refused, because the FIRST attempt with such a code counts as a failed debit.

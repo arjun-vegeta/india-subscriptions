@@ -228,6 +228,10 @@ export class FakePayU {
   mandateStatus = 'active';
   /** `mandate_revoke` is answered with a body-level failure. */
   revokeFails = false;
+  /** The card / UPI mandate-status command answers "Consent is Not Mandated" (what PayU's shared test merchant does for a working mandate). */
+  mandateNotMandated = false;
+  /** The mandate-status commands fail with HTTP 503. */
+  mandateStatusDown = false;
   readonly debits = new Map<string, Debit>();
   readonly commands: Array<{ command: string; var1: Record<string, string> | string }> = [];
   /** The next `si_transaction` is answered with a failed debit. */
@@ -252,6 +256,9 @@ export class FakePayU {
     const raw = call.form?.var1 ?? '';
     const var1 = raw.startsWith('{') ? (JSON.parse(raw) as Record<string, string>) : raw;
     this.commands.push({ command, var1 });
+    const isStatusCommand = command === PayUCommand.CheckMandateStatus || command === PayUCommand.NbMandateStatus || command === PayUCommand.UpiMandateStatus;
+    if (isStatusCommand && this.mandateStatusDown) return { status: 503, json: { msg: 'down' } };
+    if (isStatusCommand && this.mandateNotMandated) return { json: { status: 0, message: 'Consent is Not Mandated', action: command } };
     switch (command) {
       case PayUCommand.CheckMandateStatus:
       case PayUCommand.NbMandateStatus:

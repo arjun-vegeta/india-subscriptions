@@ -22,6 +22,7 @@ import {
   consentResult,
   setupPayu as setup,
 } from './fakes.js';
+import { GATEWAY_STATUS_UNAVAILABLE } from '../../src/constants.js';
 import { PayUPaymentMode, PayUPgType } from '../../src/providers/payu/constants.js';
 import { SubscriptionSchema } from '../../src/schemas.js';
 import { CUSTOMER, plusHours, rejection } from './helpers.js';
@@ -249,5 +250,82 @@ describe('PayU through the facade: handles before and after authorisation', () =
     await t.tickAt(plusHours('2026-01-01T00:00:00.000Z', 1));
     expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
     expect(t.fake.commands.map((entry) => entry.command)).toContain(PayUCommand.NbMandateStatus);
+  });
+});
+
+describe('PayU through the facade: what the live test environment showed', () => {
+  it('a gateway that has no status for a mandate its schedule tracks (NOT_FOUND) does not break get, pause or resume, and cancels nothing', async () => {
+    const t = setup();
+    await t.create();
+    await t.verify();
+    t.fake.mandateNotMandated = true;
+    const got = await t.subs.get(Provider.PayU, COMPOSITE);
+    expect(got).toMatchObject({ id: COMPOSITE, providerStatus: GATEWAY_STATUS_UNAVAILABLE, status: SubscriptionStatus.Trialing, amount: 49900, paidCycles: 0 });
+    expect(SubscriptionSchema.safeParse(got).success).toBe(true);
+    expect((await t.subs.get(Provider.PayU, REFERENCE)).providerStatus).toBe(GATEWAY_STATUS_UNAVAILABLE);
+    expect((await t.subs.pause(Provider.PayU, COMPOSITE)).status).toBe(SubscriptionStatus.Paused);
+    expect((await t.subs.resume(Provider.PayU, COMPOSITE)).status).toBe(SubscriptionStatus.Trialing);
+    expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
+    // Billing carries on regardless.
+    await t.tickAt(plusHours(DUE, -48));
+    await t.tickAt(DUE);
+    expect(await t.scheduler.get(t.scheduleId)).toMatchObject({ paidCycles: 1 });
+  });
+
+  it('pause and resume do not depend on a gateway read at all: a status command that is down (503) is ignored', async () => {
+    const t = setup();
+    await t.create();
+    await t.verify();
+    t.fake.mandateStatusDown = true;
+    expect((await t.subs.pause(Provider.PayU, COMPOSITE)).status).toBe(SubscriptionStatus.Paused);
+    expect((await t.subs.resume(Provider.PayU, COMPOSITE)).status).not.toBe(SubscriptionStatus.Paused);
+  });
+
+  it('cancel still revokes at the gateway, and reports the gateway\'s refusal after the schedule has stopped', async () => {
+    const t = setup();
+    await t.create();
+    await t.verify();
+    t.fake.revokeFails = true;
+    await expect(t.subs.cancel(Provider.PayU, COMPOSITE)).rejects.toBeDefined();
+    expect(t.fake.commands.map((entry) => entry.command)).toContain(PayUCommand.MandateRevoke);
+    expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Cancelled);
+  });
+
+  it('every debit is preceded by a verify_payment lookup of its txnid, and a txnid PayU already holds is not debited again', async () => {
+    const t = setup();
+    await t.create();
+    await t.verify();
+    await t.tickAt(plusHours(DUE, -48));
+    await t.tickAt(DUE);
+    const sequence = t.fake.commands.map((entry) => entry.command);
+    const debitAt = sequence.indexOf(PayUCommand.SiTransaction);
+    expect(sequence[debitAt - 1]).toBe(PayUCommand.VerifyPayment);
+    const txnid = t.fake.commandsNamed(PayUCommand.SiTransaction)[0]?.txnid as string;
+    expect(t.fake.commands[debitAt - 1]?.var1).toBe(txnid);
+    // Sending the same txnid again (what the scheduler may do after an unknown outcome) returns the existing debit.
+    const again = await t.provider.createCharge({ subscriptionId: COMPOSITE, chargeId: txnid, amount: 49900 });
+    expect(again).toMatchObject({ reference: txnid });
+    expect(t.fake.executedDebits).toBe(1);
+  });
+
+  it('a debit that sits in progress and then ends failed is retried: a fresh notification, a new txnid, attempt 2', async () => {
+    const t = setup();
+    await t.create();
+    await t.verify();
+    await t.tickAt(plusHours(DUE, -48));
+    t.fake.pendingDebits = 1;
+    await t.tickAt(DUE);
+    const first = chargeIdFor(t.scheduleId, 0, 1);
+    expect((await t.cycle(0))?.status).toBe(CycleStatus.AwaitingConfirmation);
+    t.fake.debits.get(first)!.status = 'failure';
+    await t.tickAt(plusHours(DUE, 0.5));
+    expect(await t.cycle(0)).toMatchObject({ attempt: 2 });
+    expect(t.fake.commandsNamed(PayUCommand.PreDebit)).toHaveLength(2);
+    await t.tickAt(plusHours(DUE, 24 - 48));
+    await t.tickAt(plusHours(DUE, 25));
+    await t.tickAt(plusHours(DUE, 50));
+    const txnids = t.fake.commandsNamed(PayUCommand.SiTransaction).map((entry) => entry.txnid);
+    expect(txnids).toEqual([first, chargeIdFor(t.scheduleId, 0, 2)]);
+    expect(await t.scheduler.get(t.scheduleId)).toMatchObject({ paidCycles: 1 });
   });
 });

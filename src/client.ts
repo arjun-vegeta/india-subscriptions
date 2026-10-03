@@ -1,4 +1,4 @@
-import { CancelMode, ErrorCode, SchedulingMode, SubscriptionStatus, type Provider } from './constants.js';
+import { CancelMode, ErrorCode, GATEWAY_STATUS_UNAVAILABLE, SchedulingMode, SubscriptionStatus, type Provider } from './constants.js';
 import { SubscriptionError, unsupported } from './errors.js';
 import type { SubscriptionProvider } from './provider.js';
 import type {
@@ -197,7 +197,20 @@ export class Subscriptions {
       scheduler && merchantSchedulingOf(adapter.capabilities) === MerchantScheduling.Always
         ? await this.findSchedule(scheduler, provider, subscriptionId)
         : undefined;
-    const subscription = early ? await this.viewOf(adapter, early) : await adapter.getSubscription(subscriptionId);
+    let subscription: Subscription;
+    try {
+      subscription = early ? await this.viewOf(adapter, early) : await adapter.getSubscription(subscriptionId);
+    } catch (error) {
+      // The gateway has no status for a mandate its schedule tracks (PayU answers "Consent is Not Mandated" for a working
+      // card mandate): the schedule answers, and nothing is cancelled for it.
+      const tracked =
+        scheduler && error instanceof SubscriptionError && error.code === ErrorCode.NotFound
+          ? await this.findSchedule(scheduler, provider, subscriptionId)
+          : undefined;
+      if (!scheduler || !tracked) throw error;
+      subscription = subscriptionFromSchedule(tracked);
+      return guarded(provider, 'reading the billing schedule', async () => overlayTracked(scheduler, tracked, subscription));
+    }
     if (subscription.scheduling !== SchedulingMode.Merchant) return subscription;
     if (!scheduler) return subscription;
     return guarded(provider, 'reading the billing schedule', async () => {
@@ -251,7 +264,7 @@ export class Subscriptions {
     const paused = await guarded(provider, 'pausing the billing schedule', () =>
       scheduler.pause(found.id, { resumeAt: options?.resumeAt }),
     );
-    const subscription = await this.viewOf(adapter, paused);
+    const subscription = await this.viewOf(adapter, paused, true);
     return overlaySchedule(subscription, paused, scheduler.now());
   }
 
@@ -263,7 +276,7 @@ export class Subscriptions {
     const resumed = await guarded(provider, 'resuming the billing schedule', () =>
       scheduler.resume(found.id, { nextChargeAt: options?.nextChargeAt }),
     );
-    const subscription = await this.viewOf(adapter, resumed);
+    const subscription = await this.viewOf(adapter, resumed, true);
     return overlaySchedule(subscription, resumed, scheduler.now());
   }
 
@@ -408,11 +421,12 @@ export class Subscriptions {
    * What the gateway says about the mandate of `schedule`. While the customer has not authorised there may be no mandate
    * the gateway can answer for (PayU knows only the consent, not yet a mandate id): the view is then built from the schedule.
    */
-  private async viewOf(adapter: SubscriptionProvider, schedule: ScheduleRecord): Promise<Subscription> {
+  private async viewOf(adapter: SubscriptionProvider, schedule: ScheduleRecord, anyFailure = false): Promise<Subscription> {
     try {
       return await adapter.getSubscription(schedule.subscriptionId);
     } catch (error) {
-      if (noMandateYet(schedule, error)) return subscriptionFromSchedule(schedule);
+      // `anyFailure`: pause and resume are the scheduler's alone and must not depend on a gateway read at all.
+      if (anyFailure || noMandateYet(schedule, error) || isNotFound(error)) return subscriptionFromSchedule(schedule);
       throw error;
     }
   }
@@ -491,6 +505,15 @@ function merchantSchedulingOf(capabilities: Capabilities): MerchantScheduling {
   return modes.every((mode) => mode === SchedulingMode.Merchant) ? MerchantScheduling.Always : MerchantScheduling.Optional;
 }
 
+function isNotFound(error: unknown): boolean {
+  return error instanceof SubscriptionError && error.code === ErrorCode.NotFound;
+}
+
+/** The schedule's own view of a subscription the gateway has no status for, overlaid with the schedule's state. */
+function overlayTracked(scheduler: BillingScheduler, schedule: ScheduleRecord, subscription: Subscription): Subscription {
+  return overlaySchedule(subscription, schedule, scheduler.now());
+}
+
 /** True when the schedule never saw the customer authorise and the gateway says it has nothing under that id. */
 function noMandateYet(schedule: ScheduleRecord, error: unknown): boolean {
   return (
@@ -507,7 +530,7 @@ function subscriptionFromSchedule(schedule: ScheduleRecord): Subscription {
     id: schedule.subscriptionId,
     ...(schedule.reference !== undefined ? { reference: schedule.reference } : {}),
     status: SubscriptionStatus.Created,
-    providerStatus: schedule.status,
+    providerStatus: GATEWAY_STATUS_UNAVAILABLE,
     scheduling: SchedulingMode.Merchant,
     ...(schedule.customer !== undefined ? { customer: schedule.customer } : {}),
     amount: schedule.amount,
