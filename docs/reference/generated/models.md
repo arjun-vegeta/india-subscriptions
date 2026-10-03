@@ -21,8 +21,8 @@ A customer: identity and contact details.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string; at least 1 characters | no | The gateway's customer id, where one exists. |
-| `name` | string; at least 1 characters | no | The customer's name. |
+| `id` | string; not empty | no | The gateway's customer id, where one exists. |
+| `name` | string; not empty | no | The customer's name. |
 | `email` | string (email); pattern `^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` | no | The customer's e-mail address. |
 | `phone` | string; pattern `^\+?[0-9]{10,15}$` | no | Mobile number; 10 digits or E.164. Adapters format it for their gateway. |
 
@@ -137,7 +137,7 @@ Everything needed to create a subscription.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `reference` | string; 1 to 60 characters | no | Your own id for this subscription. Sent to the gateway where it accepts a merchant reference, and echoed back on `Subscription.reference`. |
-| `plan` | string; at least 1 characters or [CreatePlanInput](#createplaninput) | yes | An existing plan id, or plan details to create inline. |
+| `plan` | string; not empty or [CreatePlanInput](#createplaninput) | yes | An existing plan id, or plan details to create inline. |
 | `customer` | [Customer](#customer) | yes | The paying customer. |
 | `quantity` | integer; greater than 0 | no | Units of the plan billed each cycle. Defaults to 1. |
 | `totalCycles` | integer; greater than 0 | no | Total number of recurring charges. Omit to bill until cancelled, where the gateway allows. |
@@ -219,7 +219,7 @@ Changes to make to a subscription. Pass at least one field to change.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `planId` | string; at least 1 characters | no | Move to another plan (upgrade or downgrade). |
+| `planId` | string; not empty | no | Move to another plan (upgrade or downgrade). |
 | `quantity` | integer; greater than 0 | no | New number of units billed each cycle. |
 | `remainingCycles` | integer; greater than 0 | no | New number of cycles still to collect. |
 | `amount` | integer; greater than 0 | no | New amount per cycle in paise, for mandates that are not plan-based. |
@@ -258,7 +258,7 @@ A merchant-raised recurring debit, for gateways/plans the merchant schedules.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `subscriptionId` | string; at least 1 characters | yes | The subscription to debit. |
+| `subscriptionId` | string; not empty | yes | The subscription to debit. |
 | `chargeId` | string; 1 to 50 characters | yes | Your unique id for this debit. Reusing an id must never debit twice, so derive it from the subscription and cycle (the scheduler does). |
 | `amount` | integer; greater than 0 | yes | Amount to debit, in paise. |
 | `scheduledAt` | string (date-time) | no | When to debit. Omit for the earliest the gateway allows. |
@@ -273,7 +273,7 @@ The advance notice RBI rules require before debiting a mandate.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `subscriptionId` | string; at least 1 characters | yes | The subscription that will be debited. |
+| `subscriptionId` | string; not empty | yes | The subscription that will be debited. |
 | `notificationId` | string; 1 to 50 characters | yes | Your unique id for this notification. |
 | `amount` | integer; greater than 0 | yes | Amount that will be debited, in paise. |
 | `debitAt` | string (date-time) | yes | The date the debit will be attempted. |
@@ -293,6 +293,7 @@ The result of sending a pre-debit notification.
 | `amount` | integer; at least 0 | yes | Amount that will be debited, in paise. |
 | `debitAt` | string (date-time) | yes | The date the debit will be attempted. |
 | `invoiceNumber` | string | no | Carry this into the matching charge call where the gateway requires it. |
+| `chargeId` | string; not empty | no | The id the debit that follows this notification must use, for gateways that tie a debit to its notification. When present, pass it as `chargeId` to createCharge and getCharge. |
 | `raw` | any JSON value | no | The gateway's response, untouched. Absent when the gateway returned no body. |
 
 ### ListChargesOptions
@@ -309,8 +310,8 @@ A refund of a charge.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `subscriptionId` | string; at least 1 characters | no | Required by gateways that scope payments under a subscription. |
-| `chargeId` | string; at least 1 characters | yes | The charge to refund. |
+| `subscriptionId` | string; not empty | no | Required by gateways that scope payments under a subscription. |
+| `chargeId` | string; not empty | yes | The charge to refund. |
 | `refundId` | string; 1 to 40 characters | yes | Your unique id for this refund. |
 | `amount` | integer; greater than 0 | no | Amount to refund in paise. Omit to refund the full charge. |
 | `reason` | string; at most 250 characters | no | Why the charge is refunded. |
@@ -346,7 +347,7 @@ What the HTTP service and the facade accept when verifying a checkout result.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `result` | [CheckoutResult](#checkoutresult) | yes | The fields the gateway handed back to the browser or return URL, untouched. |
-| `expectedSubscriptionId` | string; at least 1 characters | no | The subscription id (or your reference) that your server stored when it created the subscription. When given, a result that verifies but belongs to a different subscription is rejected, so a customer cannot replay the authorisation of one subscription to unlock another. |
+| `expectedSubscriptionId` | string; not empty | no | The subscription id (or your reference) that your server stored when it created the subscription. When given, a result that verifies but belongs to a different subscription is rejected, so a customer cannot replay the authorisation of one subscription to unlock another. |
 
 ### CheckoutVerification
 
@@ -554,4 +555,4 @@ A state change of a billing schedule, with a stable id.
 | `chargeId` | string | no | The debit id concerned, where relevant. |
 | `amount` | integer; at least 0 | no | The amount in paise concerned, where relevant. |
 | `error` | object | no | The failure, for failure events. |
-| `id` | string; at least 1 characters | yes | Stable id for de-duplication: the same scheduler event always has the same id, so a repeated delivery can be ignored. |
+| `id` | string; not empty | yes | Stable id for de-duplication: the same scheduler event always has the same id, so a repeated delivery can be ignored. |

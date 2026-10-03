@@ -75,8 +75,13 @@ function header(title: string, source: string, intro: string): string[] {
   ];
 }
 
+/** Escapes what would break a table cell, and `<` outside code spans, which the site would read as an HTML tag. */
 function escapeCell(text: string): string {
-  return text.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
+  const flat = text.replace(/\s*\n\s*/g, ' ').trim();
+  return flat
+    .split('`')
+    .map((part, index) => (index % 2 === 0 ? part.replace(/</g, '&lt;') : part).replace(/\|/g, '\\|'))
+    .join('`');
 }
 
 function code(text: string): string {
@@ -184,7 +189,7 @@ function constraint(schema: Json): string[] {
   const minLength = num('minLength');
   const maxLength = num('maxLength');
   if (minLength !== undefined && maxLength !== undefined) parts.push(`${minLength} to ${maxLength} characters`);
-  else if (minLength !== undefined) parts.push(`at least ${minLength} characters`);
+  else if (minLength !== undefined) parts.push(minLength === 1 ? 'not empty' : `at least ${minLength} characters`);
   else if (maxLength !== undefined) parts.push(`at most ${maxLength} characters`);
   const minimum = num('minimum');
   const maximum = num('maximum');
@@ -664,7 +669,7 @@ function capabilitiesPage(): string {
       ]),
     ),
     '',
-    '## What `subs.capabilities()` reports',
+    '## What the facade reports',
     '',
     'The facade starts from the adapter\'s capabilities and adds what the billing scheduler provides. The rows below are only the ones that differ from the adapter table above; a gateway that is not listed reports exactly its adapter\'s values.',
     '',

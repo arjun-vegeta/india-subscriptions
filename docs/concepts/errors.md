@@ -35,7 +35,7 @@ export async function currentStatus(subscriptionId: string) {
 
 ## The two that matter most
 
-- **`OUTCOME_UNKNOWN`.** A request that moves money was sent and no answer came back. It may or may not have happened. **Do not repeat it.** Fetch the current state, then decide. See [Scheduling](./scheduling.md#what-outcome-unknown-means).
+- **`OUTCOME_UNKNOWN`.** A request that moves money was sent and no answer came back. It may or may not have happened. **Do not repeat it.** Fetch the current state, then decide. See [Scheduling](./scheduling.md#what-an-unknown-outcome-means).
 - **`SIGNATURE_INVALID`.** A webhook or a checkout result did not verify, or it was genuine but belongs to a different subscription than the one you expected. Nothing from it is trusted. Answer 401 to a webhook.
 
 ## All codes

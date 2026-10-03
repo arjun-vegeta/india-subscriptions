@@ -1,0 +1,17 @@
+{
+  "name": "india-subscriptions-docs",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The documentation site of india-subscriptions (VitePress). Site tooling only.",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "build": "vitepress build .",
+    "preview": "vitepress preview ."
+  },
+  "dependencies": {
+    "mermaid": "11.4.1",
+    "vitepress": "1.6.3",
+    "vitepress-plugin-mermaid": "2.0.17"
+  }
+}

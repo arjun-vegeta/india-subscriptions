@@ -329,9 +329,9 @@ Verify and normalise gateway webhooks.
 
 `POST /v1/{provider}/webhooks/parse`
 
-Verify and normalise a forwarded webhook.
+Verify, apply and normalise a forwarded webhook.
 
-For apps that receive the gateway webhook themselves: forward the exact raw body and the headers here. The signature is verified and the events are returned normalised. A bad signature answers 401.
+For apps that receive the gateway webhook themselves: forward the exact raw body and the headers here. The signature is verified, each event is applied to the billing scheduler (so a mandate that was authorised, paused or cancelled at the gateway is reflected in billing), and the events are returned normalised. Forwarding the same webhook twice is safe. A bad signature answers 401 and changes nothing.
 
 | Property | Value |
 |---|---|

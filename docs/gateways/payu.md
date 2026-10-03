@@ -32,7 +32,7 @@ The service reads the same settings from the `PAYU_*` [environment variables](..
 <!-- generated:begin capabilities payu -->
 <!-- generated:end -->
 
-PayU is **merchant-scheduled** only. `pause: no` and `resume: no` describe PayU's own API, which has no pause. With a scheduler configured, the facade pauses and resumes by telling the scheduler to stop and start raising debits, and [`subs.capabilities()`](../reference/generated/capabilities.md#what-subscapabilities-reports) reports that. `charges.list` is not available: read a debit with `charges.get` and the debit id the scheduler chose, or follow the scheduler's events.
+PayU is **merchant-scheduled** only. `pause: no` and `resume: no` describe PayU's own API, which has no pause. With a scheduler configured, the facade pauses and resumes by telling the scheduler to stop and start raising debits, and [`subs.capabilities()`](../reference/generated/capabilities.md#what-the-facade-reports) reports that. `charges.list` is not available: read a debit with `charges.get` and the debit id the scheduler chose, or follow the scheduler's events.
 
 ## How a subscription works on PayU
 

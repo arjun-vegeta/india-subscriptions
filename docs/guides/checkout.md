@@ -48,7 +48,7 @@ export async function authorise(checkout: CheckoutInstruction): Promise<string> 
     case CheckoutStatus.Failed:
       return outcome.error.description ?? outcome.error.message ?? 'the payment failed';
     default:
-      return 'redirecting';
+      return CheckoutStatus.Redirecting;
   }
 }
 ```

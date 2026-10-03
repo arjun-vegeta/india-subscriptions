@@ -12,10 +12,10 @@ A subscription whose recurring debits the scheduler raises.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string; at least 1 characters | yes | The schedule handle. Defaults to `provider:reference` (see `scheduleIdFor`) and never changes. |
+| `id` | string; not empty | yes | The schedule handle. Defaults to `provider:reference` (see `scheduleIdFor`) and never changes. |
 | `provider` | [Provider](enums.md#provider) | yes | The gateway holding the mandate. |
-| `subscriptionId` | string; at least 1 characters | yes | The id the gateway knows the mandate by; debits are raised against it. Activation may replace it. |
-| `reference` | string; at least 1 characters | no | The merchant's own reference for the subscription. |
+| `subscriptionId` | string; not empty | yes | The id the gateway knows the mandate by; debits are raised against it. Activation may replace it. |
+| `reference` | string; not empty | no | The merchant's own reference for the subscription. |
 | `status` | one of `pending_authorization`, `active`, `paused`, `cancelled`, `completed`, `halted` | yes | Where the schedule is in its lifecycle. |
 | `statusReason` | one of `authorization_timeout`, `authorization_failed`, `mandate_expired`, `cancelled_by_merchant`, `cancelled_by_gateway`, `paused_by_merchant`, `paused_by_gateway`, `halted_by_gateway`, `retries_exhausted`, `all_cycles_collected`, `final_cycle_skipped`, `mandate_ended` | no | Why the schedule is in its current status. |
 | `amount` | integer; greater than 0 | yes | Amount in paise of the cycles that have not been notified yet. |
@@ -64,7 +64,7 @@ One billing cycle of a schedule, keyed by `(scheduleId, index)`.
 | `invoiceNumber` | string | no | Invoice number the gateway returned with the notification. |
 | `notifiedAt` | string (date-time) | no | When the gateway accepted the pre-debit notification. |
 | `debitAt` | string (date-time) | no | The debit date the customer was told. |
-| `chargeId` | string | no | Deterministic per (schedule, cycle, attempt); set together with status `charging`. |
+| `chargeId` | string | no | Deterministic per (schedule, cycle, attempt), set when charging starts; or the id the gateway dictated with the accepted pre-debit notification (`ChargeNotification.chargeId`), set when the cycle is notified. |
 | `providerChargeId` | string | no | The gateway's own id for the debit, once known. |
 | `chargeRequestedAt` | string (date-time) | no | When the debit was first requested from the gateway. |
 | `chargeSentAt` | string (date-time) | no | When the debit was last sent to the gateway. A debit of unknown outcome is not sent again until `unknownOutcomeGraceMinutes` after this. |
@@ -168,10 +168,10 @@ Registers a schedule for a merchant-scheduled mandate.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string; at least 1 characters | no | The schedule handle. Defaults to `provider:reference`, or `provider:subscriptionId` without a reference. |
+| `id` | string; not empty | no | The schedule handle. Defaults to `provider:reference`, or `provider:subscriptionId` without a reference. |
 | `provider` | [Provider](enums.md#provider) | yes | The gateway holding the mandate. |
-| `subscriptionId` | string; at least 1 characters | yes | The id the gateway knows the mandate by. |
-| `reference` | string; at least 1 characters | no | The merchant's own reference for the subscription. |
+| `subscriptionId` | string; not empty | yes | The id the gateway knows the mandate by. |
+| `reference` | string; not empty | no | The merchant's own reference for the subscription. |
 | `amount` | integer; greater than 0 | yes | Amount per cycle, in paise. |
 | `currency` | [Currency](enums.md#currency) | no | Currency of the amount. |
 | `interval` | [BillingInterval](models.md#billinginterval) | yes | How often a cycle falls due. |
@@ -197,7 +197,7 @@ Starts billing once the customer has authorised the mandate.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `subscriptionId` | string; at least 1 characters | no | Replaces the stored gateway subscription id (the schedule's own id stays the same). |
+| `subscriptionId` | string; not empty | no | Replaces the stored gateway subscription id (the schedule's own id stays the same). |
 | `firstChargeAt` | string (date-time) | no | Replaces the anchor. Without it, a past anchor becomes the activation instant. |
 
 ### PauseScheduleInput

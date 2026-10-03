@@ -15,7 +15,7 @@ There are three levels, and you want all of them before going live.
 Every adapter takes an options object as its second argument with a `fetch` of your own. Give it a function that returns what the gateway would, and nothing leaves the process. The library's own tests do this with a scripted fetch (`test/helpers/mock-fetch.ts` in the repository).
 
 ```ts
-import { IntervalUnit, Provider, createSubscriptions, razorpay } from 'india-subscriptions';
+import { Currency, IntervalUnit, Provider, RazorpayApi, createSubscriptions, razorpay } from 'india-subscriptions';
 
 const NOW = new Date('2026-11-17T06:30:00.000Z');
 
@@ -24,7 +24,7 @@ const plan = {
   entity: 'plan',
   interval: 1,
   period: 'monthly',
-  item: { id: 'item_1', active: true, name: 'Pro monthly', amount: 49900, unit_amount: 49900, currency: 'INR', type: 'plan', created_at: 1, updated_at: 1 },
+  item: { id: 'item_1', active: true, name: 'Pro monthly', amount: 49900, unit_amount: 49900, currency: Currency.INR, type: 'plan', created_at: 1, updated_at: 1 },
   notes: {},
   created_at: 1,
 };
@@ -32,7 +32,7 @@ const subscription = {
   id: 'sub_00000000000001',
   entity: 'subscription',
   plan_id: plan.id,
-  status: 'created',
+  status: RazorpayApi.RazorpaySubscriptionStatus.Created,
   quantity: 1,
   notes: {},
   start_at: 1_800_000_000,
@@ -68,14 +68,14 @@ A webhook is a signed HTTP request. Sign your fake body the way the gateway does
 
 ```ts
 import { createHmac } from 'node:crypto';
-import { EventType, Provider, createSubscriptions, razorpay } from 'india-subscriptions';
+import { EventType, Provider, RazorpayApi, createSubscriptions, razorpay } from 'india-subscriptions';
 
 const WEBHOOK_SECRET = 'test_webhook_secret';
 
 export function simulateCharged(subscriptionBody: object) {
   const rawBody = JSON.stringify({
     entity: 'event',
-    event: 'subscription.charged',
+    event: RazorpayApi.RazorpayWebhookEvent.Charged,
     contains: ['subscription'],
     payload: { subscription: { entity: subscriptionBody } },
     created_at: 1_800_000_000,

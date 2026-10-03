@@ -1,6 +1,7 @@
 import {
   ChargeKind,
   ChargeStatus,
+  CheckoutKind,
   Currency,
   DigestEncoding,
   ErrorCode,
@@ -48,6 +49,7 @@ import {
   PENNY_DROP_AMOUNT_PAISE,
   PhonePeAmountType,
   PhonePeAuthWorkflowType,
+  PhonePeErrorCode,
   PhonePeEvent,
   PhonePeFrequency,
   PhonePeOrderState,
@@ -55,7 +57,6 @@ import {
   PhonePeProductType,
   PhonePeSubscriptionType,
   REFUND_STATE_TO_STATUS,
-  REDEMPTION_FLOW_TYPES,
   RETURN_SUBSCRIPTION_ID_PARAM,
   SETUP_FLOW_TYPES,
   SETUP_ORDER_ID_PREFIX,
@@ -65,7 +66,6 @@ import {
   UNKNOWN_CHARGE_STATUS,
   UNKNOWN_REFUND_STATUS,
   UNKNOWN_SUBSCRIPTION_STATUS,
-  type PhonePeFrequency as PhonePeFrequencyValue,
 } from './constants.js';
 import type {
   PhonePeAttempt,
@@ -75,7 +75,6 @@ import type {
   PhonePePayResponse,
   PhonePeRedeemResponse,
   PhonePeRefundResponse,
-  PhonePeSetupRequest,
   PhonePeSubscriptionStatus,
   PhonePeWebhook,
   PhonePeWebhookPayload,
@@ -164,7 +163,7 @@ export function returnUrlFor(base: string, merchantSubscriptionId: string): stri
  * not stated. If it does, retries of a named-frequency mandate are refused with that code (mapped to `VALIDATION`; the
  * notification then fails on every tick and the cycle never retries successfully). `ON_DEMAND` never has this problem.
  */
-export function frequencyFor(interval: BillingInterval): PhonePeFrequencyValue {
+export function frequencyFor(interval: BillingInterval): PhonePeFrequency {
   const match = FREQUENCY_BY_INTERVAL.find((entry) => entry.unit === interval.unit && entry.count === interval.count);
   return match ? match.frequency : PhonePeFrequency.OnDemand;
 }
@@ -292,7 +291,7 @@ export function planSetup(
     },
     ...(expireAfter !== undefined ? { expireAfter } : {}),
     ...(metaInfo !== undefined ? { metaInfo } : {}),
-  } satisfies unknown;
+  };
 
   return {
     request,
@@ -344,7 +343,7 @@ export function createdSubscription(
     mandateEndsAt: toIso(setup.mandateEndsAt),
     paymentMethod: PaymentMethod.Upi,
     // PhonePe's own `redirectUrl`, exactly as received: "you must use this exactly as received, without modifications".
-    checkout: { kind: 'redirect', url: response.redirectUrl },
+    checkout: { kind: CheckoutKind.Redirect, url: response.redirectUrl },
     ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     raw: response,
   };
@@ -509,6 +508,21 @@ export function mapRedeemCharge(
     ...(status === ChargeStatus.Succeeded ? { paidAt: toIso(context.now) } : {}),
     paymentMethod: PaymentMethod.Upi,
     raw: response,
+  };
+}
+
+/**
+ * A notification whose execution window has closed without a redemption: the debit can never be raised with it, so it is
+ * a failed debit (the scheduler then retries with a fresh notification). PhonePe reports `SUBSCRIPTION_DEBIT_EXECUTE_INTERVAL_EXPIRED`
+ * for a redeem after the window [A-ERR]; the order itself keeps its `NOTIFIED` state. (ASSUMPTION: fact sheet 5.3 / 5.4.)
+ */
+export function expiredNotificationCharge(order: OrderLike, context: { merchantOrderId: string; subscriptionId?: string | undefined }): Charge {
+  const charge = mapOrderCharge(order, { ...context, raw: order });
+  return {
+    ...charge,
+    status: ChargeStatus.Failed,
+    failureCode: PhonePeErrorCode.ExecuteIntervalExpired,
+    failureReason: 'the notification was not redeemed inside its execution window',
   };
 }
 

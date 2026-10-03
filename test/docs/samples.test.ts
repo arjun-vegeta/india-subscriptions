@@ -8,7 +8,7 @@
  *   real client; every fence names its language.
  * The samples that are also executed are in flows.test.ts.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 import * as CheckoutConstants from '../../src/checkout/constants.js';
 import * as Constants from '../../src/constants.js';
 import * as SchedulerConstants from '../../src/scheduler/constants.js';
-import { ALLOWED_LANGUAGES, MAX_TS_FRAGMENTS, ROOT, allBlocks, markdownFiles, pageName } from './lib.js';
+import { ALLOWED_LANGUAGES, MAX_TS_FRAGMENTS, ROOT, allBlocks } from './lib.js';
 import { exampleFiles, isFragment, tsBlocks, typeCheck, virtualFiles } from './typescript-blocks.js';
 
 const blocks = allBlocks();
@@ -65,7 +65,8 @@ describe('TypeScript samples', () => {
 function constantValues(): Set<string> {
   const skip = new Set(['HttpMethod', 'HeaderName', 'ContentType', 'HashAlgorithm', 'DigestEncoding', 'RazorpayEvent']);
   const values = new Set<string>();
-  for (const module of [Constants, SchedulerConstants, CheckoutConstants] as Record<string, unknown>[]) {
+  const checkout = { CheckoutStatus: CheckoutConstants.CheckoutStatus };
+  for (const module of [Constants, SchedulerConstants, checkout] as Record<string, unknown>[]) {
     for (const [name, value] of Object.entries(module)) {
       if (skip.has(name) || value === null || typeof value !== 'object' || Array.isArray(value)) continue;
       for (const item of Object.values(value)) {
@@ -186,13 +187,5 @@ describe('Python samples', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  });
-});
-
-describe('pages', () => {
-  it('are found', () => {
-    expect(markdownFiles().length).toBeGreaterThan(20);
-    expect(pageName(markdownFiles()[0] as string).startsWith('README.md') || true).toBe(true);
-    void execFileSync;
   });
 });

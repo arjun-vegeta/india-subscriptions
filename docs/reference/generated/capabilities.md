@@ -29,7 +29,7 @@ What each gateway adapter can do, read from the adapters themselves with dummy c
 | `idempotencyKeys` | no | yes | no | Create calls accept an idempotency key. |
 | `paymentMethods` | `card`, `upi`, `enach` | `upi`, `card`, `enach` | `card`, `upi`, `enach` | The payment methods mandates can be authorised with. |
 
-## What `subs.capabilities()` reports
+## What the facade reports
 
 The facade starts from the adapter's capabilities and adds what the billing scheduler provides. The rows below are only the ones that differ from the adapter table above; a gateway that is not listed reports exactly its adapter's values.
 

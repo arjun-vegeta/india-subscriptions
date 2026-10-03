@@ -64,7 +64,7 @@ A scheduler that double-debits a customer is worse than one that does nothing, s
 
 Every state change also happens under a per-schedule lock, after re-reading the schedule, so two workers cannot both act on one schedule. That is why a store must implement the lock correctly: see [Running the scheduler](../guides/scheduler.md).
 
-## What `OUTCOME_UNKNOWN` means
+## What an unknown outcome means
 
 `OUTCOME_UNKNOWN` is an error code with one meaning: **a request that moves money was sent and no answer came back.** The debit, refund or change may or may not have happened. It is not retryable. Fetch the current state first (`subs.get`, `subs.charges.list`, `subs.charges.get`), then act on what you find.
 
