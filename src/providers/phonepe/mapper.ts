@@ -619,6 +619,19 @@ export function errorCodeFor(httpStatus: number, providerCode: string | undefine
 // Webhooks
 // ---------------------------------------------------------------------------
 
+/** A charge from a webhook payload, or `undefined` when the payload lacks what a charge needs (the event is then `unknown`). */
+function chargeFromPayload(
+  payload: PhonePeWebhookPayload,
+  context: { merchantOrderId: string; subscriptionId?: string | undefined; raw?: unknown },
+): Charge | undefined {
+  try {
+    return mapOrderCharge(payload, context);
+  } catch (error) {
+    if (error instanceof SubscriptionError && error.code === ErrorCode.UnexpectedResponse) return undefined;
+    throw error;
+  }
+}
+
 function eventId(...parts: (string | number | null | undefined)[]): string {
   return parts.map((part) => (part === null || part === undefined || part === '' ? EVENT_ID_EMPTY : String(part))).join(EVENT_ID_SEPARATOR);
 }
@@ -641,7 +654,9 @@ function webhookSubscription(
   const flow = payload.paymentFlow;
   const maxAmount = payload.maxAmount ?? flow?.maxAmount;
   const interval = intervalFor(payload.frequency ?? flow?.frequency);
-  const mandateEndsAt = epochMsToIso(payload.expireAt ?? undefined) ?? epochMsToIso(flow?.expireAt);
+  // An order's own `expireAt` is the ORDER's expiry; the mandate's is in its `paymentFlow`. A state-change payload has no
+  // `paymentFlow`, and its root `expireAt` is the mandate's.
+  const mandateEndsAt = epochMsToIso(flow !== undefined && flow !== null ? flow.expireAt : payload.expireAt);
   return {
     provider: Provider.PhonePe,
     id: subscriptionId,
@@ -719,7 +734,8 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
       if (!isSetup || subscriptionId === undefined || orderId === undefined || payload.state !== expectedState) {
         return unknown([orderId ?? fallbackId]);
       }
-      const charge = mapOrderCharge(payload, { merchantOrderId: orderId, subscriptionId });
+      const charge = chargeFromPayload(payload, { merchantOrderId: orderId, subscriptionId });
+      if (charge === undefined) return unknown([orderId]);
       const occurredAt = orderOccurredAt(payload);
       return {
         id: eventId(event, orderId),
@@ -768,6 +784,8 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
 
     case PhonePeEvent.NotificationCompleted: {
       if (orderId === undefined || subscriptionId === undefined) return unknown([orderId ?? fallbackId]);
+      const charge = chargeFromPayload(payload, { merchantOrderId: orderId, subscriptionId });
+      if (charge === undefined) return unknown([orderId]);
       const occurredAt = epochMsToIso(payload.paymentFlow?.notifiedAt);
       return {
         id: eventId(event, orderId),
@@ -775,7 +793,7 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
         type: EventType.SubscriptionChargeScheduled,
         ...(occurredAt ? { occurredAt } : {}),
         subscriptionId,
-        charge: mapOrderCharge(payload, { merchantOrderId: orderId, subscriptionId }),
+        charge,
       };
     }
 
@@ -799,7 +817,10 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
           event === PhonePeEvent.RedemptionOrderCompleted
             ? payload.state === PhonePeOrderState.Completed
             : attempts.some((attempt) => attempt.state === PhonePeOrderState.Completed);
-        if (!confirmed) return unknown([orderId]);
+        const charge = confirmed
+          ? chargeFromPayload({ ...payload, state: PhonePeOrderState.Completed }, { merchantOrderId: orderId, subscriptionId, raw: payload })
+          : undefined;
+        if (charge === undefined) return unknown([orderId]);
         const occurredAt = orderOccurredAt(payload);
         return {
           id: eventId(PhonePeEvent.RedemptionOrderCompleted, orderId),
@@ -807,10 +828,7 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
           type: EventType.SubscriptionCharged,
           ...(occurredAt ? { occurredAt } : {}),
           ...(subscriptionId !== undefined ? { subscriptionId } : {}),
-          charge: mapOrderCharge(
-            { ...payload, state: PhonePeOrderState.Completed },
-            { merchantOrderId: orderId, subscriptionId, raw: payload },
-          ),
+          charge,
         };
       }
       // One attempt failed: with the STANDARD retry strategy PhonePe retries inside its window, so only the order's own
@@ -818,6 +836,8 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
       if (event === PhonePeEvent.RedemptionTransactionFailed || payload.state !== PhonePeOrderState.Failed) {
         return unknown([orderId, attempts[0]?.transactionId]);
       }
+      const failedCharge = chargeFromPayload(payload, { merchantOrderId: orderId, subscriptionId, raw: payload });
+      if (failedCharge === undefined) return unknown([orderId]);
       const occurredAt = orderOccurredAt(payload);
       return {
         id: eventId(event, orderId),
@@ -825,7 +845,7 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
         type: EventType.SubscriptionChargeFailed,
         ...(occurredAt ? { occurredAt } : {}),
         ...(subscriptionId !== undefined ? { subscriptionId } : {}),
-        charge: mapOrderCharge(payload, { merchantOrderId: orderId, subscriptionId, raw: payload }),
+        charge: failedCharge,
       };
     }
 

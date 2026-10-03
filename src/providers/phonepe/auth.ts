@@ -6,6 +6,35 @@ import {
 } from './constants.js';
 import type { PhonePeTokenResponse } from './schemas.js';
 
+export const REDACTED = '[redacted]';
+/** Secrets shorter than this are not scrubbed: they would match ordinary text. Tokens and client secrets are far longer. */
+const MIN_SECRET_LENGTH = 8;
+
+/**
+ * `value` with every occurrence of any of `secrets` replaced by `[redacted]`, in strings, arrays and plain objects, and
+ * whether anything was replaced. Defence in depth: PhonePe's error bodies are put into errors (`message`, `raw`) and nothing
+ * documents that they never echo a request header.
+ */
+export function redactSecrets(value: unknown, secrets: readonly string[]): { value: unknown; changed: boolean } {
+  const wanted = secrets.filter((secret) => secret.length >= MIN_SECRET_LENGTH);
+  let changed = false;
+  const walk = (node: unknown): unknown => {
+    if (typeof node === 'string') {
+      let text = node;
+      for (const secret of wanted) text = text.split(secret).join(REDACTED);
+      if (text !== node) changed = true;
+      return text;
+    }
+    if (Array.isArray(node)) return node.map(walk);
+    if (node !== null && typeof node === 'object' && Object.getPrototypeOf(node) === Object.prototype) {
+      return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, walk(child)]));
+    }
+    return node;
+  };
+  const result = walk(value);
+  return { value: result, changed };
+}
+
 /**
  * The instant (epoch milliseconds) at which a token should be replaced: its documented expiry minus a safety margin.
  *

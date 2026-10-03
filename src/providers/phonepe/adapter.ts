@@ -45,7 +45,7 @@ import {
   type UpdateSubscriptionInput,
   type WebhookRequest,
 } from '../../schemas.js';
-import { PhonePeTokenManager } from './auth.js';
+import { PhonePeTokenManager, redactSecrets } from './auth.js';
 import {
   GENERATED_SUBSCRIPTION_ID_PREFIX,
   GENERATED_SUBSCRIPTION_ID_RANDOM_BYTES,
@@ -315,13 +315,15 @@ export class PhonePeProvider extends BaseProvider {
           url,
           headers: {
             [HeaderName.Authorization]: `${PHONEPE_AUTH_SCHEME} ${token}`,
+            // Every PhonePe page lists `Content-Type: application/json` among the request headers, bodiless calls included.
+            [HeaderName.ContentType]: ContentType.Json,
             [HeaderName.Accept]: ContentType.Json,
-            ...(call.body !== undefined ? { [HeaderName.ContentType]: ContentType.Json } : {}),
           },
           ...(call.body !== undefined ? { body: JSON.stringify(call.body) } : {}),
           idempotent: call.idempotent,
         });
-      } catch (error) {
+      } catch (caught) {
+        const error = this.scrubbed(caught, token);
         if (error instanceof SubscriptionError && error.code === ErrorCode.Auth && error.httpStatus === HTTP_UNAUTHORIZED) {
           REJECTED_TOKEN_ERRORS.add(error);
           this.#tokens.invalidate(token);
@@ -335,6 +337,21 @@ export class PhonePeProvider extends BaseProvider {
       if (call.repeatOn401 && isRejectedToken(error)) return attempt();
       throw error;
     }
+  }
+
+  /** The error with the access token and the client secret removed from its message and `raw` (should PhonePe ever echo them). */
+  private scrubbed(error: unknown, token: string): unknown {
+    if (!(error instanceof SubscriptionError)) return error;
+    const secrets = [token, this.#clientSecret];
+    const message = redactSecrets(error.message, secrets);
+    const raw = redactSecrets(error.raw, secrets);
+    if (!message.changed && !raw.changed) return error;
+    return new SubscriptionError(error.code, message.value as string, {
+      provider: this.name,
+      httpStatus: error.httpStatus,
+      providerCode: error.providerCode,
+      raw: raw.value,
+    });
   }
 
   private async api<S extends z.ZodType>(call: ApiRequest, schema: S, what: string): Promise<z.output<S>> {

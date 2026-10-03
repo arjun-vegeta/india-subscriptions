@@ -140,10 +140,11 @@ export function sha256Hex(text: string): string {
 /** The `Authorization` value PhonePe sends with a webhook: `SHA256(username:password)` [G-UATCHECK, SDK CommonUtils]. */
 export const WEBHOOK_AUTHORIZATION = sha256Hex(`${WEBHOOK_USERNAME}:${WEBHOOK_PASSWORD}`);
 
-export function webhookRequest(body: unknown, authorization: string | undefined = WEBHOOK_AUTHORIZATION): WebhookRequest {
+/** `authorization: null` sends no Authorization header at all. */
+export function webhookRequest(body: unknown, authorization: string | null = WEBHOOK_AUTHORIZATION): WebhookRequest {
   return {
     rawBody: typeof body === 'string' ? body : JSON.stringify(body),
-    headers: authorization === undefined ? {} : { authorization },
+    headers: authorization === null ? {} : { authorization },
   };
 }
 

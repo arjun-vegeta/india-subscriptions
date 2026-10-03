@@ -119,6 +119,11 @@ export const PaytmResultInfoSchema = z.looseObject({
 });
 export type PaytmResultInfo = z.output<typeof PaytmResultInfoSchema>;
 
+/** An error answer (HTTP 4xx/5xx) read only far enough to quote Paytm's message and code. */
+export const PaytmErrorEnvelopeSchema = z.looseObject({
+  body: z.looseObject({ resultInfo: PaytmResultInfoSchema.nullish() }).nullish(),
+});
+
 /** A response is `{ head, body }`; the adapter reads `body` only. */
 export function paytmEnvelope<S extends z.ZodType>(body: S) {
   return z.looseObject({ head: z.unknown().optional(), body });

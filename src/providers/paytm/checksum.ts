@@ -34,6 +34,7 @@ const SALT_PATTERN = /^[\x20-\x7e]{4}$/;
 const HASH_ENCODING = 'hex';
 const TEXT_ENCODING = 'latin1';
 const BODY_ENCODING = 'base64';
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const JOIN = '|';
 
 /** A random 4-character salt, as the official library draws it. */
@@ -80,6 +81,9 @@ export function generateChecksum(payload: string, merchantKey: string, salt: str
  */
 export function verifyChecksum(payload: string, merchantKey: string, checksum: string): boolean {
   const key = keyBytes(merchantKey);
+  // Canonical base64 only: Node's decoder silently ignores everything after the first "=", which would let a damaged or
+  // padded checksum through.
+  if (checksum === '' || !CANONICAL_BASE64.test(checksum)) return false;
   let plain: string;
   try {
     const decipher = createDecipheriv(CIPHER, key, IV);
@@ -125,4 +129,88 @@ export function assertChecksum(payload: string, merchantKey: string, checksum: s
       provider: Provider.Paytm,
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// The exact text of a JSON member
+// ---------------------------------------------------------------------------
+
+const WHITESPACE = /\s/;
+const NUMBER_OR_LITERAL_END = /[\s,}\]]/;
+
+function skipWhitespace(text: string, from: number): number {
+  let index = from;
+  while (index < text.length && WHITESPACE.test(text.charAt(index))) index += 1;
+  return index;
+}
+
+/** The index just after the string literal that starts at `from`, or -1 when it never ends. */
+function skipString(text: string, from: number): number {
+  let index = from + 1;
+  while (index < text.length) {
+    const char = text.charAt(index);
+    if (char === '\\') index += 2;
+    else if (char === '"') return index + 1;
+    else index += 1;
+  }
+  return -1;
+}
+
+/** The index just after the JSON value that starts at `from`, or -1 when the text ends first. */
+function skipValue(text: string, from: number): number {
+  const first = text.charAt(from);
+  if (first === '"') return skipString(text, from);
+  if (first === '{' || first === '[') {
+    let depth = 0;
+    let index = from;
+    while (index < text.length) {
+      const char = text.charAt(index);
+      if (char === '"') {
+        index = skipString(text, index);
+        if (index === -1) return -1;
+        continue;
+      }
+      if (char === '{' || char === '[') depth += 1;
+      else if (char === '}' || char === ']') {
+        depth -= 1;
+        if (depth === 0) return index + 1;
+      }
+      index += 1;
+    }
+    return -1;
+  }
+  let index = from;
+  while (index < text.length && !NUMBER_OR_LITERAL_END.test(text.charAt(index))) index += 1;
+  return index === from ? -1 : index;
+}
+
+/**
+ * The exact characters of the top-level member `name` of a JSON object, as they appear in `json`: not parsed and
+ * serialised again. JSON responses and refund webhooks are signed over their `body`; checking the signature against the
+ * text Paytm actually sent is the only way to be sure which bytes were signed. `undefined` when there is no such member.
+ */
+export function jsonMemberText(json: string, name: string): string | undefined {
+  let index = skipWhitespace(json, 0);
+  if (json.charAt(index) !== '{') return undefined;
+  index = skipWhitespace(json, index + 1);
+  while (index < json.length && json.charAt(index) !== '}') {
+    if (json.charAt(index) !== '"') return undefined;
+    const keyEnd = skipString(json, index);
+    if (keyEnd === -1) return undefined;
+    let key: unknown;
+    try {
+      key = JSON.parse(json.slice(index, keyEnd));
+    } catch {
+      return undefined;
+    }
+    index = skipWhitespace(json, keyEnd);
+    if (json.charAt(index) !== ':') return undefined;
+    index = skipWhitespace(json, index + 1);
+    const valueEnd = skipValue(json, index);
+    if (valueEnd === -1) return undefined;
+    if (key === name) return json.slice(index, valueEnd);
+    index = skipWhitespace(json, valueEnd);
+    if (json.charAt(index) === ',') index = skipWhitespace(json, index + 1);
+  }
+  return undefined;
 }

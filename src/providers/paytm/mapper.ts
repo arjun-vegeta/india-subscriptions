@@ -44,7 +44,6 @@ import {
   PAYTM_INTERVAL_FOR_FREQUENCY,
   PAYTM_MIN_CYCLE_DAYS,
   PAYTM_MOBILE_DIGITS,
-  PAYTM_PRE_NOTIFY_ALREADY_SENT,
   PAYTM_SLASH_DATETIME_PATTERN,
   PAYTM_SUBSTATUS_RESUMED,
   PaytmAmountType,
@@ -54,7 +53,6 @@ import {
   PaytmNotificationStatus,
   PaytmRefundWebhookStatus,
   PaytmSubscriptionStatus,
-  PaytmTxnStatus,
   SUBSCRIPTION_EVENT_MAP,
   SUBSCRIPTION_STATUS_MAP,
   type ErrorTable,
@@ -708,7 +706,3 @@ export function mapRefundWebhook(body: PaytmRefundWebhookBody, raw: unknown): Su
 export function rupees(paiseAmount: number): string {
   return paiseToRupeeString(paiseAmount);
 }
-
-export { PAYTM_ENDED_STATUSES, ChargeStatus as MappedChargeStatus };
-export const PRE_NOTIFY_ALREADY_SENT = PAYTM_PRE_NOTIFY_ALREADY_SENT;
-export const TXN_STATUS_NO_RECORD = PaytmTxnStatus.NoRecordFound;

@@ -143,7 +143,7 @@ export const PhonePeSetupRequestSchema = z
         merchantSubscriptionId: MerchantIdSchema,
         authWorkflowType: z.enum(PhonePeAuthWorkflowType),
         amountType: z.enum(PhonePeAmountType),
-        /** Epoch-millisecond-free: paise, at most INR 15,000. */
+        /** Paise, at most INR 15,000. */
         maxAmount: z.number().int().positive().max(MAX_MANDATE_PAISE),
         frequency: z.enum(PhonePeFrequency),
         productType: z.literal(PhonePeProductType.UpiMandate),
