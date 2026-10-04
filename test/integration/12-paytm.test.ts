@@ -384,16 +384,18 @@ describe('Paytm merchant mode: the caller holds the reference, not Paytm\'s subs
     expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Cancelled);
   });
 
-  // DEFECT (low): `Subscriptions.get` resolves the schedule BEFORE asking the gateway only for gateways whose every debit is
-  // merchant-raised (PayU). Paytm is "optional" (merchant by default, gateway on request), so a lookup by the merchant's own
-  // reference asks Paytm with the reference, which Paytm does not know as a subscription id, and falls back to the schedule's
-  // synthesised view: `providerStatus: gateway_status_unavailable`, and a mandate the customer or Paytm ended is never noticed.
-  it.fails('a lookup by the REFERENCE reads the live mandate too: the same cancelled mandate shows as cancelled', async () => {
+  // `Subscriptions.get` resolves the schedule first for every gateway that can be merchant-scheduled, so a lookup by the
+  // merchant's reference reads the live mandate by the id the schedule holds, exactly like a lookup by Paytm's id.
+  it('a lookup by the REFERENCE reads the live mandate too: a mandate cancelled or paused at Paytm shows so', async () => {
     const t = setupPaytm();
     const subscription = await t.create();
     await t.authoriseAndVerify(subscription);
     const mandate = t.fake.subscriptions.get(subscription.id);
     if (!mandate) throw new Error('no mandate');
+    mandate.status = 'SUSPENDED';
+    const paused = await t.subs.get(Provider.Paytm, PT_REFERENCE);
+    expect(paused.providerStatus).toBe('SUSPENDED');
+    expect(paused.id).toBe(subscription.id);
     mandate.status = 'REJECT';
     expect((await t.subs.get(Provider.Paytm, PT_REFERENCE)).status).toBe(SubscriptionStatus.Cancelled);
   });
@@ -507,10 +509,8 @@ describe('Paytm: a subscription that starts now (no startAt, no trial)', () => {
 });
 
 describe('Paytm merchant mode: changing the price', () => {
-  // DEFECT (low): Paytm's merchant-collected mandate is VARIABLE with a ceiling, so a price change within the ceiling needs no
-  // call to Paytm at all; `PaytmProvider.updateSubscription` refuses every update, so the facade (which asks the gateway
-  // first) refuses it too and the schedule cannot be re-priced. Cashfree and PayU accept an amount within their ceiling.
-  it.fails('update({ amount }) within the mandate ceiling re-prices the schedule: the next renew carries the new amount', async () => {
+  // A merchant-collected mandate is VARIABLE (a ceiling only), so a price change within it lives in the schedule.
+  it('update({ amount }) within the mandate ceiling re-prices the schedule: the next renew carries the new amount', async () => {
     const t = setupPaytm();
     const subscription = await t.subs.create(Provider.Paytm, {
       reference: PT_REFERENCE,
@@ -524,6 +524,30 @@ describe('Paytm merchant mode: changing the price', () => {
     await t.tickAt(plusHours(PT_DUE, -48));
     await t.tickAt(PT_DUE);
     expect(t.fake.debits.get(chargeIdFor(t.scheduleId, 0, 1))?.amount).toBe('599.00');
+  });
+});
+
+describe('Paytm: the limits of a price change', () => {
+  it('above the ceiling is VALIDATION naming the ceiling and nothing changes; other fields stay UNSUPPORTED; gateway mode cannot be re-priced', async () => {
+    const t = setupPaytm();
+    const subscription = await t.subs.create(Provider.Paytm, {
+      reference: PT_REFERENCE,
+      plan: { name: 'Pro monthly', amount: PT_AMOUNT, maxAmount: 99900, interval: { unit: IntervalUnit.Month, count: 1 } },
+      customer: CUSTOMER,
+      startAt: PT_DUE,
+    });
+    await t.authoriseAndVerify(subscription);
+    const above = await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { amount: 100000 }));
+    expect(above.code).toBe(ErrorCode.Validation);
+    expect(above.message).toContain('99900');
+    expect((await t.scheduler.get(t.scheduleId))?.amount).toBe(PT_AMOUNT);
+    expect((await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { amount: 59900, mandateEndsAt: '2030-01-01T00:00:00.000Z' }))).code).toBe(ErrorCode.Unsupported);
+    expect((await t.subs.update(Provider.Paytm, subscription.id, { amount: 99900 })).amount).toBe(99900);
+
+    const gateway = setupPaytm({ scheduling: SchedulingMode.Gateway, startAt: '2026-02-01T05:00:00.000Z' });
+    const fixed = await gateway.create();
+    await gateway.authoriseAndVerify(fixed);
+    expect((await rejection(() => gateway.subs.update(Provider.Paytm, fixed.id, { amount: 100 }))).code).toBe(ErrorCode.Unsupported);
   });
 });
 

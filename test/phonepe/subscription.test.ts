@@ -546,6 +546,33 @@ describe('verifyCheckout', () => {
   });
 });
 
+describe('updateSubscription', () => {
+  const VARIABLE = { ...SUBSCRIPTION_STATUS_SC_SUBSTATUS, merchantSubscriptionId: REF, amountType: 'VARIABLE', maxAmount: 99900 };
+
+  it('a VARIABLE mandate takes an amount up to its ceiling (no write; the subscription is returned) and refuses one above it, naming the ceiling', async () => {
+    const t = makeProvider([route(HttpMethod.Get, statusPath(REF), { json: VARIABLE })]);
+    expect(await t.provider.updateSubscription(REF, { amount: 59900 })).toMatchObject({ id: REF, maxAmount: 99900 });
+    expect(t.apiCalls()).toHaveLength(1);
+    const above = makeProvider([route(HttpMethod.Get, statusPath(REF), { json: VARIABLE })]);
+    const refused = await rejection(() => above.provider.updateSubscription(REF, { amount: 100000 }));
+    expect(refused.code).toBe(ErrorCode.Validation);
+    expect(refused.message).toContain('99900');
+  });
+
+  it('a FIXED mandate cannot be re-priced, and the message says why', async () => {
+    const t = makeProvider([route(HttpMethod.Get, statusPath(REF), { json: { ...VARIABLE, amountType: 'FIXED', maxAmount: 49900 } })]);
+    const refused = await rejection(() => t.provider.updateSubscription(REF, { amount: 29900 }));
+    expect(refused.code).toBe(ErrorCode.Unsupported);
+    expect(refused.message).toMatch(/FIXED/);
+  });
+
+  it('any other field is UNSUPPORTED without a request', async () => {
+    const t = makeProvider([]);
+    expect((await rejection(() => t.provider.updateSubscription(REF, { amount: 100, mandateEndsAt: '2030-01-01T00:00:00.000Z' }))).code).toBe(ErrorCode.Unsupported);
+    expect(t.calls).toHaveLength(0);
+  });
+});
+
 describe('cancelSubscription', () => {
   const ACTIVE = { ...SUBSCRIPTION_STATUS_SC_SUBSTATUS, merchantSubscriptionId: REF };
   const CANCELLED = { ...ACTIVE, state: 'CANCELLED' };
@@ -636,7 +663,7 @@ describe('operations PhonePe does not have', () => {
     ['getPlan', (p: ReturnType<typeof makeProvider>['provider']) => p.getPlan('plan_1')],
     ['pauseSubscription', (p: ReturnType<typeof makeProvider>['provider']) => p.pauseSubscription(REF)],
     ['resumeSubscription', (p: ReturnType<typeof makeProvider>['provider']) => p.resumeSubscription(REF)],
-    ['updateSubscription', (p: ReturnType<typeof makeProvider>['provider']) => p.updateSubscription(REF, { amount: 100 })],
+    ['updateSubscription', (p: ReturnType<typeof makeProvider>['provider']) => p.updateSubscription(REF, { planId: 'plan_2' })],
     ['listCharges', (p: ReturnType<typeof makeProvider>['provider']) => p.listCharges(REF)],
   ])('%s is UNSUPPORTED and makes no request', async (_name, call) => {
     const t = makeProvider([]);

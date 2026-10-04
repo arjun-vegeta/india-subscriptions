@@ -998,7 +998,7 @@ describe('unsupported operations', () => {
   it('updateSubscription, createPlan, getPlan and listCharges are UNSUPPORTED and send nothing', async () => {
     const { provider, calls } = makeProvider([]);
     for (const call of [
-      () => provider.updateSubscription('130010', { amount: 100 }),
+      () => provider.updateSubscription('130010', { planId: 'plan_2' }),
       () => provider.createPlan({ name: 'x', amount: 100, interval: { unit: 'month', count: 1 } }),
       () => provider.getPlan('p'),
       () => provider.listCharges('130010'),
@@ -1006,6 +1006,24 @@ describe('unsupported operations', () => {
       expect((await errorOf(call())).code).toBe(ErrorCode.Unsupported);
     }
     expect(calls).toHaveLength(0);
+  });
+
+  it('updateSubscription: a merchant-collected mandate takes an amount up to its ceiling (no write, the subscription is returned), refuses one above it with the ceiling named, and refuses any other field', async () => {
+    const t = makeProvider([{ url: STATUS_URL, json: statusAnswer() }]);
+    expect(await t.provider.updateSubscription('130010', { amount: 49900 })).toMatchObject({ id: '130010', maxAmount: 49900 });
+    expect(t.calls).toHaveLength(1);
+    const above = makeProvider([{ url: STATUS_URL, json: statusAnswer() }]);
+    const refused = await errorOf(above.provider.updateSubscription('130010', { amount: 49901 }));
+    expect(refused.code).toBe(ErrorCode.Validation);
+    expect(refused.message).toContain('49900');
+    const other = makeProvider([]);
+    expect((await errorOf(other.provider.updateSubscription('130010', { amount: 100, mandateEndsAt: '2030-01-01T00:00:00.000Z' }))).code).toBe(ErrorCode.Unsupported);
+    expect(other.calls).toHaveLength(0);
+  });
+
+  it('updateSubscription: a subscription Paytm collects itself (FIX) cannot be re-priced', async () => {
+    const t = makeProvider([{ url: STATUS_URL, json: statusAnswer({ amountType: 'FIX' }) }]);
+    expect((await errorOf(t.provider.updateSubscription('130010', { amount: 100 }))).code).toBe(ErrorCode.Unsupported);
   });
 
   it('an empty update is VALIDATION, not UNSUPPORTED (the input is checked first)', async () => {

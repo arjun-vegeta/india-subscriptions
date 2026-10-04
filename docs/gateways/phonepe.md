@@ -142,7 +142,8 @@ Redeem has no documented idempotency, so the adapter **reads the order first**:
 
 - **Customers** pause, un-pause and revoke in their UPI app. PhonePe tells you through webhooks. A pause that came from the customer is undone only by the customer's un-pause: the scheduler marks who paused and never lets a gateway event undo **your** pause. After a pause and un-pause, PhonePe's documentation requires a new notification and 24 hours before the next debit; the scheduler notifies before every debit anyway.
 - **You** can only **cancel**. `subs.cancel` stops billing first and then cancels the mandate (PhonePe answers 204 and the status is read afterwards). Cancelling twice is fine. A mandate the customer never authorised cannot be cancelled at PhonePe (`NOT_FOUND`); the facade then stops the schedule and returns its own view of the subscription.
-- `pause`, `resume`, `update` throw `UNSUPPORTED` on the adapter. Through the facade, pause and resume are the scheduler's. `CancelMode.AtPeriodEnd` is `UNSUPPORTED`.
+- `pause` and `resume` throw `UNSUPPORTED` on the adapter; through the facade they are the scheduler's. `CancelMode.AtPeriodEnd` is `UNSUPPORTED`.
+- `update` accepts only `amount`, and only for a **variable** mandate (the plan's `maxAmount` above its `amount`): within the ceiling the new amount goes to the billing schedule (PhonePe holds only the ceiling), above it is `VALIDATION`. A **fixed** mandate debits exactly its setup amount, so it is `UNSUPPORTED`; so is every other field.
 
 ## Authorisation and checkout
 

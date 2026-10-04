@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { z } from 'zod';
 import {
   CancelMode,
+  ChangeTiming,
   ContentType,
   DigestEncoding,
   ErrorCode,
@@ -20,6 +21,7 @@ import { formEncode, withQuery, type HttpResponse } from '../../http.js';
 import { BaseProvider, type GatewayErrorInfo, type ProviderOptions } from '../../provider.js';
 import {
   CancelSubscriptionOptionsSchema,
+  UpdateSubscriptionInputSchema,
   CreateChargeInputSchema,
   CreateSubscriptionInputSchema,
   NotifyChargeInputSchema,
@@ -60,6 +62,7 @@ import {
   PHONEPE_DETAILS_QUERY,
   PHONEPE_GRANT_TYPE,
   PHONEPE_TOKEN_URLS,
+  PhonePeAmountType,
   PhonePeErrorCode,
   PhonePeOrderState,
   PhonePePath,
@@ -549,10 +552,39 @@ export class PhonePeProvider extends BaseProvider {
     );
   }
 
-  override updateSubscription(_subscriptionId: string, _input: UpdateSubscriptionInput): Promise<Subscription> {
-    return Promise.reject(
-      unsupported(this.name, 'updating subscriptions', 'a PhonePe mandate cannot be changed after setup; cancel it and set a new one up'),
-    );
+  /**
+   * A PhonePe mandate cannot be changed after setup, but a VARIABLE one (a `maxAmount` above the plan amount) is only a
+   * ceiling: each notification names its own amount. So an `amount` within the ceiling needs no call: the subscription is
+   * returned (the facade mirrors the amount into the billing schedule), and one above it is `VALIDATION`. A FIXED mandate
+   * (`maxAmount` equal to the plan amount) debits exactly that amount, and every other change is `UNSUPPORTED`.
+   */
+  override async updateSubscription(subscriptionId: string, rawInput: UpdateSubscriptionInput): Promise<Subscription> {
+    const input = parseInput(UpdateSubscriptionInputSchema, rawInput, 'subscription update', this.name);
+    const others = [input.planId, input.quantity, input.remainingCycles, input.nextChargeAt, input.mandateEndsAt, input.notifyCustomer];
+    if (input.amount === undefined || others.some((value) => value !== undefined) || input.timing !== ChangeTiming.Immediately) {
+      throw unsupported(
+        this.name,
+        'updating subscriptions beyond the amount',
+        'a PhonePe mandate cannot be changed after setup (only the amount of a VARIABLE mandate, within its ceiling); cancel it and set a new one up',
+      );
+    }
+    const current = await this.getSubscription(assertSubscriptionId(subscriptionId, 'subscriptionId'));
+    const raw = current.raw as { amountType?: unknown; paymentFlow?: { amountType?: unknown } } | undefined;
+    const amountType = raw?.amountType ?? raw?.paymentFlow?.amountType;
+    if (amountType !== PhonePeAmountType.Variable) {
+      throw unsupported(
+        this.name,
+        amountType === PhonePeAmountType.Fixed ? 'changing the amount of a FIXED mandate' : 'changing the amount of a mandate whose amount type is not known',
+        'a FIXED PhonePe mandate debits exactly the amount it was set up with: cancel it and set a new one up (give the plan a larger maxAmount to allow price changes)',
+      );
+    }
+    if (current.maxAmount !== undefined && input.amount > current.maxAmount) {
+      throw invalid(
+        `amount (${input.amount} paise) is above this mandate's ceiling (${current.maxAmount} paise): a new mandate is needed for a higher amount`,
+        this.name,
+      );
+    }
+    return current;
   }
 
   // -------------------------------------------------------------------------

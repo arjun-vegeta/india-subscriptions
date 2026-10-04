@@ -191,8 +191,8 @@ export class Subscriptions {
   async get(provider: Provider, subscriptionId: string): Promise<Subscription> {
     const adapter = this.provider(provider);
     const scheduler = this.schedulerFor(provider);
-    // A gateway that is only ever billed through the scheduler may not know the id the caller holds (PayU: the reference,
-    // until the mandate exists): resolve the schedule first and ask the gateway by the id the schedule holds.
+    // A gateway that can be billed through the scheduler may not know the id the caller holds (PayU, Paytm: the reference):
+    // resolve the schedule first and ask the gateway by the id the schedule holds. No schedule (gateway-scheduled): delegate.
     const early =
       scheduler
         ? await this.findSchedule(scheduler, provider, subscriptionId)

@@ -435,8 +435,10 @@ describe('Paytm: every flag', () => {
     const before = t.fake.requests.length;
     expect((await rejection(() => t.subs.cancel(Provider.Paytm, subscription.id, { mode: CancelMode.AtPeriodEnd }))).code).toBe(ErrorCode.Unsupported);
     expect((await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { planId: 'x', timing: ChangeTiming.Immediately }))).code).toBe(ErrorCode.Unsupported);
-    expect((await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { amount: 100 }))).code).toBe(ErrorCode.Unsupported);
     expect(t.fake.requests).toHaveLength(before);
+    // An amount change is only possible for a merchant-collected mandate: here Paytm collects, so it reads the mandate and refuses.
+    expect((await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { amount: 100 }))).code).toBe(ErrorCode.Unsupported);
+    expect(t.fake.requests.length - before).toBe(1);
     expect((await rejection(() => t.subs.charges.list(Provider.Paytm, subscription.id))).code).toBe(ErrorCode.Unsupported);
   });
 

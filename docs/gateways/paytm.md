@@ -169,7 +169,7 @@ Payment modes read from Paytm map to unified methods like this. Paytm Wallet, ba
 
 - **Pause and resume** exist as Paytm APIs (`ACTIVE` and `SUSPENDED`). They take no date, so `resumeAt` and `nextChargeAt` throw `UNSUPPORTED`. For a merchant-scheduled subscription the facade uses the scheduler instead.
 - **Cancel** is permanent ("cannot be reactivated once cancelled"). Repeating it is safe: if the call fails, the state is read and a mandate that is already over is returned as it is. `CancelMode.AtPeriodEnd` throws `UNSUPPORTED`. After a cancel, Paytm's status is `REJECT`, which maps to `cancelled`.
-- **Update** throws `UNSUPPORTED`: Paytm documents no modify API. Cancel and create a new subscription. A Paytm-collected subscription's `autoRenewal` cannot be edited either.
+- **Update** accepts only `amount`, in merchant mode, within the mandate's ceiling (`plan.maxAmount`, else the plan amount): Paytm holds only the ceiling, so the new amount goes to the billing schedule. Above the ceiling is `VALIDATION` (a new mandate is needed). Every other field is `UNSUPPORTED`, and so is any update of a Paytm-collected subscription, whose fixed `autoRenewal` cannot be edited: cancel and create a new one.
 
 ## Authorisation and checkout
 

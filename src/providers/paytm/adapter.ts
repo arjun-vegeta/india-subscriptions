@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { z } from 'zod';
 import {
   CancelMode,
+  ChangeTiming,
   CheckoutKind,
   ContentType,
   Currency,
@@ -771,9 +772,46 @@ export class PaytmProvider extends BaseProvider {
     return this.afterAction(subscriptionId, SubscriptionStatus.Cancelled);
   }
 
-  override async updateSubscription(_subscriptionId: string, rawInput: UpdateSubscriptionInput): Promise<Subscription> {
-    parseInput(UpdateSubscriptionInputSchema, rawInput, 'subscription update', this.name);
-    throw unsupported(this.name, 'updating subscriptions', 'Paytm documents no modify API: cancel the subscription and create a new one');
+  /**
+   * Paytm documents no modify API, but a merchant-collected mandate is VARIABLE: it holds only a ceiling, and each debit's
+   * amount is the merchant's. So in merchant mode an `amount` within the ceiling needs no call: the subscription is returned
+   * (so the facade mirrors the amount into the billing schedule), and one above the ceiling is `VALIDATION`. Anything else,
+   * and any update in gateway mode (Paytm's fixed auto-collection cannot be re-priced), is `UNSUPPORTED`.
+   */
+  override async updateSubscription(subscriptionId: string, rawInput: UpdateSubscriptionInput): Promise<Subscription> {
+    const input = parseInput(UpdateSubscriptionInputSchema, rawInput, 'subscription update', this.name);
+    const others = (
+      [
+        ['planId', input.planId],
+        ['quantity', input.quantity],
+        ['remainingCycles', input.remainingCycles],
+        ['nextChargeAt', input.nextChargeAt],
+        ['mandateEndsAt', input.mandateEndsAt],
+        ['notifyCustomer', input.notifyCustomer],
+      ] as const
+    ).filter(([, value]) => value !== undefined);
+    if (input.amount === undefined || others.length > 0 || input.timing !== ChangeTiming.Immediately) {
+      throw unsupported(
+        this.name,
+        'updating subscriptions beyond the amount',
+        'Paytm documents no modify API: only the amount of a merchant-collected mandate can change, within its ceiling; otherwise cancel the subscription and create a new one',
+      );
+    }
+    const current = await this.getSubscription(subscriptionId);
+    if (current.scheduling !== SchedulingMode.Merchant) {
+      throw unsupported(
+        this.name,
+        'changing the amount of a subscription Paytm collects itself',
+        "Paytm's fixed auto-collection cannot be re-priced: cancel the subscription and create a new one",
+      );
+    }
+    if (current.maxAmount !== undefined && input.amount > current.maxAmount) {
+      throw invalid(
+        `amount (${input.amount} paise) is above this mandate's ceiling (${current.maxAmount} paise): a new mandate is needed for a higher amount`,
+        this.name,
+      );
+    }
+    return current;
   }
 
   // -------------------------------------------------------------------------

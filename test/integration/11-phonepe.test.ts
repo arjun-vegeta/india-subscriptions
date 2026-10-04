@@ -610,11 +610,9 @@ describe('PhonePe: a subscription that starts now (no startAt, no trial)', () =>
   });
 });
 
-describe('PhonePe: changing the price of a VARIABLE mandate', () => {
-  // DEFECT (low): a VARIABLE PhonePe mandate (plan.maxAmount above plan.amount) lets the merchant notify any amount up to the
-  // ceiling, so a price change within it lives in the schedule alone. `PhonePeProvider.updateSubscription` refuses every
-  // update, and the facade asks the gateway first, so the schedule cannot be re-priced.
-  it.fails('update({ amount }) within the ceiling re-prices the schedule: the next notification carries the new amount', async () => {
+describe('PhonePe: changing the price of a mandate', () => {
+  // A VARIABLE mandate is only a ceiling: each notification names its own amount, so a price change lives in the schedule.
+  it('update({ amount }) within the ceiling re-prices the schedule: the next notification carries the new amount', async () => {
     const t = setupPhonePe();
     const subscription = await t.subs.create(Provider.PhonePe, {
       reference: PP_REFERENCE,
@@ -627,6 +625,21 @@ describe('PhonePe: changing the price of a VARIABLE mandate', () => {
     expect(updated.amount).toBe(59900);
     await t.tickAt(plusHours(PP_DUE, -48));
     expect(t.fake.orders.get(notificationIdFor(t.scheduleId, 0, 1, 1))?.amount).toBe(59900);
+    // Above the ceiling: VALIDATION naming it; nothing changes.
+    const above = await rejection(() => t.subs.update(Provider.PhonePe, subscription.id, { amount: 100000 }));
+    expect(above.code).toBe(ErrorCode.Validation);
+    expect(above.message).toContain('99900');
+    expect((await t.scheduler.get(t.scheduleId))?.amount).toBe(59900);
+  });
+
+  it('a FIXED mandate (maxAmount equal to the amount) cannot be re-priced: UNSUPPORTED, and the message says why', async () => {
+    const t = setupPhonePe();
+    await t.create();
+    await t.authoriseAndVerify();
+    const error = await rejection(() => t.subs.update(Provider.PhonePe, PP_REFERENCE, { amount: 29900 }));
+    expect(error.code).toBe(ErrorCode.Unsupported);
+    expect(error.message).toMatch(/FIXED/);
+    expect((await t.scheduler.get(t.scheduleId))?.amount).toBe(PP_AMOUNT);
   });
 });
 
