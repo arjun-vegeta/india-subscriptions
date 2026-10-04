@@ -18,7 +18,8 @@ It does not route a new payment to the best gateway, take one-time payments, or 
 | [Razorpay](./gateways/razorpay.md) | Razorpay |
 | [Cashfree](./gateways/cashfree.md) | Cashfree (periodic plans) or this library (on-demand plans) |
 | [PayU](./gateways/payu.md) | This library |
-| [PhonePe](./gateways/phonepe.md), [Paytm](./gateways/paytm.md) | In progress | Not yet known |
+| [PhonePe](./gateways/phonepe.md) | This library |
+| [Paytm](./gateways/paytm.md) | This library by default, or Paytm for plain fixed plans |
 
 ## Sixty seconds
 
@@ -67,7 +68,7 @@ That is the whole shape. The rest of the documentation is about doing it safely:
 | Use it from Python, Go or anything else | [Using it from any language](./getting-started/any-language.md) |
 | Understand mandates, UPI Autopay, eNACH and the Rs 15,000 rule | [How recurring payments work in India](./concepts/recurring-payments.md) |
 | See every status and what your app should do | [The subscription lifecycle](./concepts/lifecycle.md) |
-| Pick a gateway | [Razorpay](./gateways/razorpay.md), [Cashfree](./gateways/cashfree.md), [PayU](./gateways/payu.md) |
+| Pick a gateway | [Razorpay](./gateways/razorpay.md), [Cashfree](./gateways/cashfree.md), [PayU](./gateways/payu.md), [PhonePe](./gateways/phonepe.md), [Paytm](./gateways/paytm.md) |
 | Run the billing scheduler | [Running the scheduler](./guides/scheduler.md) |
 | Look something up | [Reference](./reference/index.md) |
 | Add a gateway | [Adding a gateway](./contributing/adding-a-gateway.md) |

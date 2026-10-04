@@ -34,8 +34,8 @@ A gateway with `capabilities.merchantCharges: true` is billed by the scheduler, 
 2. `createCharge` with a `chargeId` must be safe to repeat: the scheduler may re-send the same id after an unknown outcome. Use `OUTCOME_UNKNOWN` for anything that may have taken effect.
 3. `getCharge` answers `NOT_FOUND` only when the gateway has no trace of the debit.
 4. Ids sent to the gateway are at most `MAX_GATEWAY_ID_LENGTH` characters of `GATEWAY_ID_PATTERN`.
-5. Webhook events about a debit carry the merchant's debit id in `charge.id` or `charge.reference`.
-6. `merchantPreDebitNotification: true` means the scheduler calls `notifyCharge`; `merchantChargeLeadHours` means the gateway notifies and the charge is raised ahead of the due date.
+5. Webhook events about a debit carry the merchant's debit id in `charge.id` or `charge.reference`; the scheduler then finds the schedule through `SchedulerStore.findScheduleByChargeId`, which matters when the webhook names no subscription (PayU).
+6. `merchantPreDebitNotification: true` means the scheduler calls `notifyCharge`; if the gateway ties the notice and the debit to one order (PhonePe), `notifyCharge` returns it as `ChargeNotification.chargeId` and the scheduler debits under that id. `merchantChargeLeadHours` means the gateway notifies and the charge is raised ahead of the due date.
 
 Read the full text in the source: this page only summarises it.
 

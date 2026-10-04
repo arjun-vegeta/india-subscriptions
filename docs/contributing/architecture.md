@@ -22,6 +22,8 @@ flowchart TB
     RZP["razorpay/"]
     CF["cashfree/"]
     PU["payu/"]
+    PP["phonepe/"]
+    PT["paytm/"]
   end
   Main --> Sched
   Main --> Provider
@@ -33,6 +35,8 @@ flowchart TB
   RZP --> Provider
   CF --> Provider
   PU --> Provider
+  PP --> Provider
+  PT --> Provider
   Adapters --> Gateways["Gateway HTTP APIs"]
 ```
 
