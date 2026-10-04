@@ -271,6 +271,28 @@ describe('PhonePe: the customer and the merchant change the mandate', () => {
     expect(t.fake.notifyRequests).toHaveLength(1);
   });
 
+  it('a customer pause that outlasts the notification: on resume the stale notification is dropped and a fresh one is sent (no attempt is burnt, no stale order is redeemed)', async () => {
+    const t = setupPhonePe();
+    await t.create();
+    await t.authoriseAndVerify();
+    await t.tickAt(plusHours(PP_DUE, -48));
+    const stale = notificationIdFor(t.scheduleId, 0, 1, 1);
+    t.clock.set(plusHours(PP_DUE, -30));
+    await t.subs.webhooks.handle(Provider.PhonePe, t.fake.mandateWebhook(PP_REFERENCE, 'paused'));
+    // Three days later the notification's window (open until due + 48h) has closed.
+    t.clock.set(plusHours(PP_DUE, 72));
+    await t.subs.webhooks.handle(Provider.PhonePe, t.fake.mandateWebhook(PP_REFERENCE, 'unpaused'));
+    await t.tickAt(plusHours(PP_DUE, 72));
+    await t.tickAt(plusHours(PP_DUE, 73));
+    const fresh = t.fake.notifyRequests.filter((id) => id !== stale);
+    expect(fresh).toHaveLength(1);
+    expect(t.fake.redeemRequests).not.toContain(stale);
+    expect(await t.cycle(0)).toMatchObject({ attempt: 1, chargeId: fresh[0] });
+    await t.tickAt(plusHours(PP_DUE, 97));
+    expect(t.fake.redeemRequests).toEqual(fresh);
+    expect(t.fake.debits.size).toBe(1);
+  });
+
   it('a merchant pause is NOT undone by the customer\'s un-pause event', async () => {
     const t = setupPhonePe();
     await t.create();
