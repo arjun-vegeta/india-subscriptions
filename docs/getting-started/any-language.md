@@ -7,7 +7,7 @@ The library is TypeScript. Applications in other languages run the **service**, 
 ```mermaid
 flowchart LR
   App["Your application (any language)"] -- "JSON over HTTP, API key" --> Svc["india-subscriptions serve"]
-  Svc -- "gateway APIs" --> GW["Razorpay, Cashfree, PayU"]
+  Svc -- "gateway APIs" --> GW["Razorpay, Cashfree, PayU, PhonePe, Paytm"]
   GW -- "webhooks (signed by the gateway)" --> Svc
   Svc -- "events webhook (signed by the service)" --> App
 ```
@@ -126,7 +126,7 @@ There are two different streams, and it helps to keep them apart.
 
 | Stream | From | To | Signed by |
 |---|---|---|---|
-| Gateway webhooks | Razorpay, Cashfree, PayU | The service (`POST /v1/{provider}/webhooks`) | The gateway |
+| Gateway webhooks | Any configured gateway | The service (`POST /v1/{provider}/webhooks`) | The gateway |
 | Events webhook | The service | Your application (`EVENTS_WEBHOOK_URL`) | The service, with `EVENTS_WEBHOOK_SECRET` |
 
 Register `https://<your-service>/v1/razorpay/webhooks` at the gateway. The service verifies the gateway's signature, applies the event to the billing scheduler, and, if you set `EVENTS_WEBHOOK_URL` and `EVENTS_WEBHOOK_SECRET`, **posts the normalised events to your application** as JSON. Your application only has to check one signature scheme whichever gateway sent the event.

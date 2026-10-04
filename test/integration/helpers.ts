@@ -1,5 +1,8 @@
 import { createHash, createHmac } from 'node:crypto';
+import { expect } from 'vitest';
 import { z } from 'zod';
+import { HeaderName } from '../../src/constants.js';
+import { createHandler } from '../../src/server/index.js';
 import { buildOpenApiDocument } from '../../src/server/openapi.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -342,4 +345,39 @@ export function published(operationId: string): PublishedOperation {
     }
   }
   throw new Error(`operation ${operationId} is not in the OpenAPI document`);
+}
+
+
+// ---------------------------------------------------------------------------
+// The HTTP handler in front of a client, with the published schemas checked on every JSON exchange
+// ---------------------------------------------------------------------------
+
+export const HTTP_API_KEY = 'integration-api-key-0123456789';
+const HTTP_BASE = 'http://localhost';
+
+export function httpApi(client: Subscriptions, onEvents?: Parameters<typeof createHandler>[0]['onEvents']) {
+  const handler = createHandler({ client, apiKey: HTTP_API_KEY, onEvents });
+  return async (method: string, path: string, options: { json?: unknown; body?: string; headers?: Record<string, string>; auth?: boolean } = {}) => {
+    const headers: Record<string, string> = { ...(options.auth === false ? {} : { [HeaderName.Authorization]: `Bearer ${HTTP_API_KEY}` }), ...options.headers };
+    let body = options.body;
+    if (options.json !== undefined) {
+      body = JSON.stringify(options.json);
+      headers[HeaderName.ContentType] = ContentType.Json;
+    }
+    const response = await handler(new Request(`${HTTP_BASE}${path}`, { method, headers, body }));
+    const text = await response.text();
+    return { status: response.status, text, json: text ? (JSON.parse(text) as any) : undefined };
+  };
+}
+
+/** Sends `json` only after it validates against the published request schema, and checks the answer likewise. */
+export async function httpExchange(call: ReturnType<typeof httpApi>, operationId: string, method: string, path: string, json?: unknown) {
+  const schemas = published(operationId);
+  if (json !== undefined && schemas.request) expect(schemas.request.safeParse(json).success, `request body of ${operationId} against the published schema`).toBe(true);
+  const reply = await call(method, path, json === undefined ? {} : { json });
+  const validator = schemas.response[String(reply.status)];
+  expect(validator, `a published response schema for ${operationId} ${reply.status}`).toBeDefined();
+  const verdict = validator!.safeParse(reply.json);
+  expect(verdict.success, `${operationId} ${reply.status} body against the published schema: ${verdict.success ? '' : verdict.error.message}`).toBe(true);
+  return reply;
 }

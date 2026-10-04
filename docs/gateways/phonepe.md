@@ -107,7 +107,7 @@ PhonePe has no trial or plan object. The mandate is set up with one of two verif
 | No `upfrontAmount` | **₹2 verification debit** (`PENNY_DROP`, fixed) | PhonePe's dashboard documentation says it is credited back during setup; the API pages do not say so. If it is not returned, refund it. |
 | `upfrontAmount` (at least ₹1) | That amount is debited at setup (`TRANSACTION`) | The first payment, collected with the authorisation. |
 
-**The first recurring charge cannot happen at sign-up.** Every debit needs a pre-debit notification, and PhonePe allows the debit only 24 hours or more after it. The notification and the debit use the **same order id**, and the debit window runs from 24 hours after the notification until its expiry (PhonePe's retry window is 48 hours). So without an upfront amount, the first real charge is at least a day after sign-up, trial or not. With an upfront amount, the customer pays at sign-up and the first recurring charge follows a cycle later.
+**A recurring charge cannot happen at sign-up.** Every debit needs a pre-debit notification, and PhonePe allows the debit only 24 hours or more after it. The notification and the debit use the **same order id**, and the debit window runs from 24 hours after the notification until its expiry (PhonePe's retry window is 48 hours). So without an upfront amount, the customer's first real charge is at least a day after sign-up, trial or not. An upfront amount is the only way to take money at sign-up. It does not move the date of the first recurring debit, which is the subscription's `startAt` (now, when you pass no trial); pass `trial` or `startAt` if the upfront amount is meant to pay for the first period.
 
 The mandate's end date is `mandateEndsAt`, else seven days after the last debit when you give `totalCycles`, else **29 years** (PhonePe's documented maximum is 30). `authorizeBy` sets how long the setup page lives and must be 300 to 3600 seconds away; outside that it is refused, not clamped.
 
@@ -215,7 +215,7 @@ A refund state PhonePe adds later is `pending`.
 In the PhonePe Business Dashboard, add your webhook URL and set a username and password. PhonePe sends `Authorization: sha256(username:password)` (lower-case hex), which the adapter compares in constant time.
 
 ::: danger This header does not cover the body
-It identifies the sender and nothing more. It does not sign the payload, so **a captured webhook can be replayed** and a body altered in transit would not be detected. Serve the endpoint over **HTTPS only**, and de-duplicate on `event.id`. PhonePe's HMAC webhook mode is not implemented, because its algorithm is not documented.
+It identifies the sender and nothing more. It does not sign the payload, so **a captured webhook can be replayed** and a body altered in transit would not be detected. Serve the endpoint over **HTTPS only**, and de-duplicate on `event.id`. PhonePe's HMAC webhook mode is not implemented, because its algorithm is not documented. The capability `signedWebhooks: yes` means the **sender** is authenticated, not the body.
 :::
 
 | PhonePe event | Unified event |

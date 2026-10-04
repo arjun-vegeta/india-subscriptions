@@ -62,8 +62,8 @@ export default withMermaid(
             { text: 'Razorpay', link: '/gateways/razorpay' },
             { text: 'Cashfree', link: '/gateways/cashfree' },
             { text: 'PayU', link: '/gateways/payu' },
-            { text: 'PhonePe (in progress)', link: '/gateways/phonepe' },
-            { text: 'Paytm (in progress)', link: '/gateways/paytm' },
+            { text: 'PhonePe', link: '/gateways/phonepe' },
+            { text: 'Paytm', link: '/gateways/paytm' },
           ],
         },
         {

@@ -63,8 +63,9 @@ describe('structure', () => {
   });
 
 
-  it('keeps the stubs plainly marked', () => {
-    for (const gateway of ['phonepe', 'paytm']) expect(read(`gateways/${gateway}.md`)).toContain('adapter is being written');
+  it('says plainly what is risky about PhonePe webhooks and Paytm checksums', () => {
+    expect(read('gateways/phonepe.md')).toContain('a captured webhook can be replayed');
+    expect(read('gateways/phonepe.md')).toContain('HTTPS only');
   });
 
 });

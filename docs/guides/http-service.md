@@ -66,7 +66,7 @@ Keep secrets in your secret manager or an untracked `.env`, never in the image. 
 An nginx location that exposes only the webhook routes looks like this:
 
 ```text
-location ~ ^/v1/(razorpay|cashfree|payu)/webhooks$ {
+location ~ ^/v1/(razorpay|cashfree|payu|phonepe|paytm)/webhooks$ {
     proxy_pass http://127.0.0.1:8787;
     proxy_request_buffering off;
 }

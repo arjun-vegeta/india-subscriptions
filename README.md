@@ -2,8 +2,9 @@
 
 One headless API for subscriptions on Indian payment gateways: plans, free
 trials, upfront amounts, mandate authorisation, recurring charges, pause,
-resume, cancel, refunds and webhooks. You bring your own Razorpay, Cashfree or
-PayU keys; money always moves directly between the gateway and you.
+resume, cancel, refunds and webhooks. You bring your own gateway keys
+(Razorpay, Cashfree, PayU, PhonePe or Paytm); money always moves directly
+between the gateway and you.
 
 - **Node / TypeScript**: import the package.
 - **Any other language**: run the same code as a small self-hosted HTTP
@@ -21,24 +22,24 @@ site: see [docs/README.md](docs/README.md).
 | Install and build the full flow | [Installation](docs/getting-started/installation.md), [Your first subscription](docs/getting-started/first-subscription.md) |
 | Use it from Python or any language | [Using it from any language](docs/getting-started/any-language.md) |
 | Understand mandates, trials, statuses, the scheduler | [Concepts](docs/concepts/recurring-payments.md) |
-| Pick a gateway | [Razorpay](docs/gateways/razorpay.md), [Cashfree](docs/gateways/cashfree.md), [PayU](docs/gateways/payu.md) |
+| Pick a gateway | [Razorpay](docs/gateways/razorpay.md), [Cashfree](docs/gateways/cashfree.md), [PayU](docs/gateways/payu.md), [PhonePe](docs/gateways/phonepe.md), [Paytm](docs/gateways/paytm.md) |
 | Go live | [Going-live checklist](docs/guides/going-live.md) |
 | Look things up | [Reference](docs/reference/index.md) |
 
 ## What each gateway supports
 
-| | Razorpay | Cashfree | PayU |
-|---|---|---|---|
-| Who raises each recurring debit | Razorpay | Cashfree (periodic plans) or this library (on-demand plans) | This library |
-| Free trial | Yes | Yes | Yes, with a ₹2 consent debit |
-| Upfront amount at sign-up | Yes | UPI and cards only | Yes |
-| Quantity | Yes | No | No |
-| Pause and resume | Yes | Yes (periodic plans; on-demand through the scheduler) | Yes, through the scheduler |
-| Cancel at period end | Yes | No | No |
-| Change plan | Yes (not for UPI or bank mandates) | Periodic plans | No |
-| Refunds | Yes | Yes | Yes (not for eNACH) |
-| Signed webhooks | Yes | Yes | Payments and card/UPI mandates only |
-| Payment methods | UPI Autopay, cards, eMandate | UPI Autopay, cards, eNACH | UPI Autopay, cards, eNACH |
+| | Razorpay | Cashfree | PayU | PhonePe | Paytm |
+|---|---|---|---|---|---|
+| Who raises each recurring debit | Razorpay | Cashfree (periodic plans) or this library (on-demand) | This library | This library | This library (default), or Paytm for fixed plans |
+| Free trial | Yes | Yes | Yes, with a ₹2 consent debit | Yes, with a ₹2 verification debit | Yes |
+| Upfront amount at sign-up | Yes | UPI and cards only | Yes | Yes | Yes (not eNACH-only) |
+| Quantity | Yes | No | No | No | No |
+| Pause and resume | Yes | Yes (on-demand through the scheduler) | Through the scheduler | Through the scheduler; the customer in their UPI app | Yes |
+| Cancel at period end | Yes | No | No | No | No |
+| Change plan | Yes (not UPI or bank mandates) | Periodic plans | No | No | No |
+| Refunds | Yes | Yes | Yes (not eNACH) | Yes | Yes (not eNACH) |
+| Signed webhooks | Yes | Yes | Payments and card/UPI mandates only | Sender hash only; the body is not covered | Yes |
+| Payment methods | UPI Autopay, cards, eMandate | UPI Autopay, cards, eNACH | UPI Autopay, cards, eNACH | UPI Autopay | UPI Autopay, cards, eNACH |
 
 The table is a summary. `subs.capabilities(provider)` returns the same
 information at runtime, and the generated
@@ -182,7 +183,7 @@ automatically. See [Trials, delayed starts and upfront amounts](docs/concepts/tr
 
 ## Gateways that expect you to raise each debit
 
-PayU, and Cashfree on-demand plans, hold the customer's mandate but do not
+PayU, PhonePe, Paytm (by default) and Cashfree on-demand plans hold the customer's mandate but do not
 schedule charges. For these the library includes a billing scheduler that
 sends the advance notice RBI rules require, raises each debit, retries
 failures, and never debits twice for one cycle. See

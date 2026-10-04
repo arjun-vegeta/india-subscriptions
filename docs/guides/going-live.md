@@ -6,7 +6,7 @@ After this page you will know what must be true before a real customer pays, and
 
 - [ ] You read [How recurring payments work in India](../concepts/recurring-payments.md) and know which instruments and limits your plans need (for example, whether any debit exceeds ₹15,000).
 - [ ] You walked through the [security checklist](./security.md).
-- [ ] The gateway has enabled subscriptions on your account in **both** test and live mode (Razorpay: both; Cashfree: UPI Autopay is not self-serve and must be switched on for sandbox and production; PayU: ask your key account manager).
+- [ ] The gateway has enabled subscriptions on your account in **both** test and live mode (Razorpay: both; Cashfree: UPI Autopay is not self-serve and must be switched on for sandbox and production; PayU: ask your key account manager; Paytm: subscriptions are for enterprise merchants and must be enabled on your merchant id).
 - [ ] You have test keys in a separate environment from live keys.
 
 ## 2. Run the gateway's checks in test mode
@@ -39,6 +39,22 @@ Work through the list for each gateway you will use. If a gateway behaves differ
 - [ ] Complete a card consent, `verifyCheckout`, notice and debit on the test merchant. Know that PayU's test environment never captures a debit.
 - [ ] On a merchant account with those flows enabled: UPI and eNACH registration, webhook delivery and signatures, mandate status and revoke, a refund, and a captured debit.
 - [ ] Confirm the pre-debit lead time with PayU. The test environment enforces none.
+
+### PhonePe
+
+- [ ] Set up PhonePe's UAT sandbox: install the test app, pick a template, share your webhook URL with PhonePe's integration team.
+- [ ] Create a subscription, approve the mandate in the test app, and check that the return URL carries `merchantSubscriptionId` and `verifyCheckout` reads an `ACTIVE` mandate.
+- [ ] Notify, wait, redeem with the same order id; check one order-status path serves the notice, the debit and the refund, and what a repeated redeem does.
+- [ ] Pause, un-pause and revoke in the test app and watch the webhooks. Serve the webhook over HTTPS only.
+- [ ] Cancel a mandate that was never authorised and see the answer.
+
+### Paytm
+
+- [ ] Get subscriptions enabled on your staging merchant id; check each payment mode you need is enabled.
+- [ ] Make one successful call to confirm your checksum setup.
+- [ ] Create a merchant-mode subscription with a trial longer than a few days and raise the first debit: does Renew accept it inside the grace window? Does Transaction Status show the Renew order?
+- [ ] Re-send a renew id and check Paytm refuses it. Try Paytm's own collection with a plain fixed plan.
+- [ ] With a card and with UPI, check whether Pre-Notify is needed and how early.
 
 ### The browser helper
 

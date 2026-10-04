@@ -477,10 +477,15 @@ function missingScheduler(provider: Provider, created?: Subscription, cancelled?
   );
 }
 
-/** True when the request can only be served by the billing scheduler, which is knowable before calling the gateway. */
+/**
+ * True when the request can only be served by the billing scheduler, which is knowable before calling the gateway: the
+ * effective mode is the plan's requested `scheduling`, else the gateway's default (the first of `capabilities.scheduling`; a
+ * plan id gives no mode either). The adapter's answer is still checked after the call (see `create`).
+ */
 function mustBeMerchantScheduled(adapter: SubscriptionProvider, input: CreateSubscriptionInput): boolean {
   if (merchantSchedulingOf(adapter.capabilities) === MerchantScheduling.Always) return true;
-  return typeof input.plan === 'object' && input.plan !== null && input.plan.scheduling === SchedulingMode.Merchant;
+  const requested = typeof input.plan === 'object' && input.plan !== null ? input.plan.scheduling : undefined;
+  return (requested ?? adapter.capabilities.scheduling[0]) === SchedulingMode.Merchant;
 }
 
 /** How much of a gateway's billing goes through the scheduler. */

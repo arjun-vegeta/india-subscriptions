@@ -369,3 +369,35 @@ describe('The curl commands (executed against the real request handler)', () => 
     executed.push('curl-commands');
   });
 });
+
+describe('The gateway configuration samples (executed)', () => {
+  it('build real providers; the scheduler-driven gateways report pause and resume through the facade', () => {
+    process.env.PHONEPE_CLIENT_ID = 'cid';
+    process.env.PHONEPE_CLIENT_SECRET = 'secret';
+    process.env.PHONEPE_CLIENT_VERSION = '1';
+    process.env.PAYTM_MID = 'dummymid';
+    process.env.PAYTM_MERCHANT_KEY = '0123456789abcdef';
+    process.env.PAYU_KEY = 'k';
+    process.env.PAYU_SALT = 's';
+    process.env.CASHFREE_CLIENT_ID = 'id';
+    process.env.CASHFREE_CLIENT_SECRET = 'secret';
+    const cases: Array<[string, string, string]> = [
+      ['docs/gateways/phonepe.md', 'phonepe(', 'phonepe'],
+      ['docs/gateways/paytm.md', 'paytm(', 'paytm'],
+    ];
+    for (const [page, needle, name] of cases) {
+      const { loader: sampleLoader } = loader(new Map([['config.ts', block(page, needle).code]]));
+      const { subs } = sampleLoader.load('config.ts') as { subs: Main.Subscriptions };
+      expect(subs.providers).toEqual([name]);
+      const effective = subs.capabilities(name as Main.Provider);
+      expect(effective.pause && effective.resume, `${name}: pause and resume come from the scheduler`).toBe(true);
+      expect(effective.merchantCharges).toBe(true);
+    }
+    for (const page of ['razorpay', 'cashfree', 'payu']) {
+      const { loader: sampleLoader } = loader(new Map([['config.ts', block(`docs/gateways/${page}.md`, 'export const gateway').code]]));
+      const { gateway } = sampleLoader.load('config.ts') as { gateway: { name: string } };
+      expect(gateway.name).toBe(page);
+    }
+    executed.push('gateway-configuration');
+  });
+});

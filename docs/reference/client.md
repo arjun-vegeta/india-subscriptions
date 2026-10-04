@@ -14,10 +14,10 @@ export const subs = createSubscriptions({
 
 | Option | Meaning |
 |---|---|
-| `providers` | The gateway adapters: `razorpay(...)`, `cashfree(...)`, `payu(...)`. At least one. A gateway listed twice throws `CONFIG`. |
+| `providers` | The gateway adapters: `razorpay(...)`, `cashfree(...)`, `payu(...)`, `phonepe(...)`, `paytm(...)`. At least one. A gateway listed twice throws `CONFIG`. |
 | `scheduler` | Optional. A ready `BillingScheduler`, or just its options (`store`, `onEvent`, `now`, policy defaults): the client then builds the scheduler for exactly the providers above. Required to create merchant-scheduled subscriptions. See [the billing scheduler](./scheduler.md). |
 
-Each adapter factory takes the gateway's config and optionally `{ fetch, now, timeoutMs, maxRetries }`: a custom `fetch`, a clock, a per-request timeout (default 30000 ms) and the number of automatic retries of requests that are safe to repeat (default 2; writes are never retried). The configs are in the gateway pages: [Razorpay](../gateways/razorpay.md#configuration), [Cashfree](../gateways/cashfree.md#configuration), [PayU](../gateways/payu.md#configuration).
+Each adapter factory takes the gateway's config and optionally `{ fetch, now, timeoutMs, maxRetries }`: a custom `fetch`, a clock, a per-request timeout (default 30000 ms) and the number of automatic retries of requests that are safe to repeat (default 2; writes are never retried). The configs are in the gateway pages: [Razorpay](../gateways/razorpay.md#configuration), [Cashfree](../gateways/cashfree.md#configuration), [PayU](../gateways/payu.md#configuration), [PhonePe](../gateways/phonepe.md#configuration), [Paytm](../gateways/paytm.md#configuration).
 
 ## Members
 

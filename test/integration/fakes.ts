@@ -1,4 +1,10 @@
 import { expect } from 'vitest';
+import { phonepe } from '../../src/providers/phonepe/index.js';
+import { paytm } from '../../src/providers/paytm/index.js';
+import { FakePhonePe } from '../phonepe/fake-gateway.js';
+import { CLIENT_ID, CLIENT_SECRET, CLIENT_VERSION, RETURN_URL as PHONEPE_RETURN_URL, WEBHOOK_PASSWORD, WEBHOOK_USERNAME } from '../phonepe/helpers.js';
+import { FakePaytm } from '../paytm/fake-gateway.js';
+import { KEY as PAYTM_KEY, MID as PAYTM_MID, SALT as PAYTM_SALT } from '../paytm/helpers.js';
 import type { WebhookRequest } from '../../src/schemas.js';
 import { ChargeStatus, Environment, ErrorCode, IntervalUnit, PaymentMethod, Provider, SchedulingMode } from '../../src/constants.js';
 import {
@@ -31,6 +37,7 @@ import {
   type Reply,
 } from './helpers.js';
 import type { RecordedCall } from '../helpers/mock-fetch.js';
+import type { FetchLike } from '../../src/http.js';
 
 /**
  * Stateful fake gateways shared by the scenario tests: they answer the real adapters' HTTP calls with
@@ -433,3 +440,100 @@ export function recurringDebitWebhook(txnid: string, status: PayUPaymentStatus):
   return form({ ...fields, hash: sha512Hex(`${PAYU_ACCOUNT.salt}|${fields.status}||||||${fields.udf5}|${fields.udf4}|${fields.udf3}|${fields.udf2}|${fields.udf1}|${fields.email}|${fields.firstname}|${fields.productinfo}|${fields.amount}|${fields.txnid}|${PAYU_ACCOUNT.key}`) });
 }
 
+
+
+// ---------------------------------------------------------------------------
+// PhonePe and Paytm: the adapters' own stateful fakes (test/phonepe, test/paytm) behind the real facade and scheduler
+// ---------------------------------------------------------------------------
+
+export const PP_T0 = '2026-01-01T05:00:00.000Z';
+export const PP_DUE = '2026-01-20T04:30:00.000Z';
+export const PP_SECOND_DUE = '2026-02-20T04:30:00.000Z';
+export const PP_REFERENCE = 'pp_sub_1';
+export const PP_AMOUNT = 49900;
+
+export const PHONEPE_CONFIG = {
+  clientId: CLIENT_ID,
+  clientSecret: CLIENT_SECRET,
+  clientVersion: CLIENT_VERSION,
+  environment: Environment.Test,
+  redirectUrl: PHONEPE_RETURN_URL,
+  webhookUsername: WEBHOOK_USERNAME,
+  webhookPassword: WEBHOOK_PASSWORD,
+} as const;
+
+export function phonepeProvider(fetch: FetchLike, clock: Pick<Clock, 'now'>) {
+  return phonepe(PHONEPE_CONFIG, { fetch, now: clock.now, maxRetries: 0 });
+}
+
+export function setupPhonePe(options: { totalCycles?: number; onEvent?: (event: SchedulerEvent) => void; upfrontAmount?: number; startAt?: string } = {}) {
+  const clock = new Clock(PP_T0);
+  const fake = new FakePhonePe(clock.nowMs);
+  const calls: RecordedCall[] = [];
+  const wired = wire(phonepeProvider(fake.fetch, clock), clock, calls, options.onEvent);
+  const scheduleId = scheduleIdFor(Provider.PhonePe, PP_REFERENCE);
+  const scheduler = wired.subs.scheduler!;
+  const create = () =>
+    wired.subs.create(Provider.PhonePe, {
+      reference: PP_REFERENCE,
+      plan: { name: 'Pro monthly', amount: PP_AMOUNT, interval: { unit: IntervalUnit.Month, count: 1 } },
+      customer: CUSTOMER,
+      startAt: options.startAt ?? PP_DUE,
+      ...(options.totalCycles !== undefined ? { totalCycles: options.totalCycles } : {}),
+      ...(options.upfrontAmount !== undefined ? { upfrontAmount: options.upfrontAmount } : {}),
+    });
+  /** The customer authorises at PhonePe and comes back: the return is verified through the facade. */
+  const authoriseAndVerify = () => {
+    fake.authorise(PP_REFERENCE);
+    return wired.subs.verifyCheckout(Provider.PhonePe, { merchantSubscriptionId: PP_REFERENCE }, { expectedSubscriptionId: PP_REFERENCE });
+  };
+  const tickAt = (iso: string) => {
+    clock.set(iso);
+    return wired.subs.tick();
+  };
+  const cycle = async (index: number) => (await scheduler.listCycles(scheduleId))[index];
+  return { fake, ...wired, scheduler, scheduleId, create, authoriseAndVerify, tickAt, cycle };
+}
+
+export const PT_T0 = '2026-01-01T05:00:00.000Z';
+export const PT_DUE = '2026-01-20T04:30:00.000Z';
+export const PT_SECOND_DUE = '2026-02-20T04:30:00.000Z';
+export const PT_REFERENCE = 'pt_sub_1';
+export const PT_AMOUNT = 49900;
+
+export const PAYTM_CONFIG = { mid: PAYTM_MID, merchantKey: PAYTM_KEY, website: 'WEBSTAGING', environment: Environment.Test } as const;
+
+export function paytmProvider(fetch: FetchLike, clock: Pick<Clock, 'now'>) {
+  return paytm(PAYTM_CONFIG, { fetch, now: clock.now, maxRetries: 0, generateSalt: () => PAYTM_SALT });
+}
+
+export function setupPaytm(options: { totalCycles?: number; onEvent?: (event: SchedulerEvent) => void; scheduling?: SchedulingMode; startAt?: string } = {}) {
+  const clock = new Clock(PT_T0);
+  const fake = new FakePaytm(clock.nowMs);
+  const calls: RecordedCall[] = [];
+  const wired = wire(paytmProvider(fake.fetch, clock), clock, calls, options.onEvent);
+  const scheduleId = scheduleIdFor(Provider.Paytm, PT_REFERENCE);
+  const scheduler = wired.subs.scheduler!;
+  const create = () =>
+    wired.subs.create(Provider.Paytm, {
+      reference: PT_REFERENCE,
+      plan: {
+        name: 'Pro monthly',
+        amount: PT_AMOUNT,
+        interval: { unit: IntervalUnit.Month, count: 1 },
+        ...(options.scheduling !== undefined ? { scheduling: options.scheduling } : {}),
+      },
+      customer: CUSTOMER,
+      startAt: options.startAt ?? PT_DUE,
+      ...(options.totalCycles !== undefined ? { totalCycles: options.totalCycles } : {}),
+    });
+  /** The customer authorises at Paytm; the signed callback is verified through the facade. */
+  const authoriseAndVerify = (subscription: { id: string; reference?: string }) =>
+    wired.subs.verifyCheckout(Provider.Paytm, fake.authorise(subscription), { expectedSubscriptionId: subscription.id });
+  const tickAt = (iso: string) => {
+    clock.set(iso);
+    return wired.subs.tick();
+  };
+  const cycle = async (index: number) => (await scheduler.listCycles(scheduleId))[index];
+  return { fake, ...wired, scheduler, scheduleId, create, authoriseAndVerify, tickAt, cycle };
+}

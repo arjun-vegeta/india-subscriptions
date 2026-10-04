@@ -82,6 +82,16 @@ A free-trial consent on PayU is a real ₹2 payment that is **not** refunded aut
 
 `OUTCOME_UNKNOWN` on a refund means it may have happened. Read the charge (`charges.get`) and check `refundedAmount` before sending it again.
 
+## PhonePe and Paytm
+
+| | PhonePe | Paytm |
+|---|---|---|
+| Pause | `UNSUPPORTED` on the adapter; through the facade the scheduler pauses. The **customer** pauses and un-pauses in their UPI app, and a webhook tells you. | Paytm's Pause API (no date, so `resumeAt` is `UNSUPPORTED`) for Paytm-collected subscriptions; the scheduler for merchant-collected ones. |
+| Resume | Through the scheduler. A customer's un-pause resumes billing; **your** pause is never undone by a gateway event. | Paytm's Resume API (no date), or the scheduler |
+| Change plan, amount, quantity | `UNSUPPORTED`: cancel and create a new mandate | `UNSUPPORTED`: cancel and create a new subscription (Paytm documents no modify API) |
+| Cancel | Immediately only (`CancelMode.AtPeriodEnd` is `UNSUPPORTED`). A never-authorised mandate answers `NOT_FOUND` at PhonePe; the facade then just stops the schedule. | Immediately only. Permanent. Repeating is safe. |
+| Refund | `chargeId` is the debit's order id; only a completed debit; not older than 90 days | Only a successful debit; **not** for eNACH debits |
+
 ## Reading state
 
 `subs.get` returns the subscription with its status, `nextChargeAt`, `paidCycles` and the gateway's own `providerStatus`. `subs.charges.list` returns the debits (newest first where the gateway orders them; PayU has no listing, so read debits by id). Use them to reconcile when a webhook might have been missed.

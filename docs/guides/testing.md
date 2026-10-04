@@ -102,6 +102,8 @@ Use each gateway's test mode while you build.
 | Gateway | How to test | Repeatable script |
 |---|---|---|
 | Razorpay | Test-mode keys. Use the Dashboard's **Charge this now** to simulate charges and failures. A test subscription can be updated only before any test charge beyond the authorisation. | `RAZORPAY_KEY_ID=rzp_test_xxx RAZORPAY_KEY_SECRET=xxx npx tsx scripts/razorpay-test-mode-check.mts`. API only (no checkout). Test-mode keys only; it leaves one plan and one cancelled subscription per run, because plans cannot be deleted. |
+| PhonePe | UAT sandbox with PhonePe's test app and templates. The template must be set before you call the APIs. | None yet. |
+| Paytm | Staging merchant id and key (subscriptions must be enabled on it). Test data appears in the Dashboard. | None yet. |
 | Cashfree | Sandbox keys. Use an **on-demand** plan: raise a charge, then call Cashfree's Simulate Payment API. Periodic charges only run on their real dates. | None yet. |
 | PayU | The public test merchant PayU prints in its documentation, or your own test account. | `PAYU_TEST_KEY=... PAYU_TEST_SALT=... npx tsx scripts/payu-test-env-check.mts`. It refuses to run unless the environment is test, talks to PayU's test hosts only, never prints the salt, and (with Playwright installed) runs the browser flow: one ₹2 consent and one ₹1 test debit. PayU's test environment never captures a card debit, so a successful recurring debit cannot be observed there. |
 
