@@ -286,6 +286,9 @@ export const PAYTM_DEBIT_REASON_MAX_LENGTH = 50;
 export const PAYTM_INVOICE_NUMBER_PATTERN = /^[A-Za-z0-9]{1,15}$/;
 export const PAYTM_REFERENCE_ID_MAX_LENGTH = 50;
 
+/** "Pipe character is not allowed" (1008): no request value may hold it. [init-sub] [codes-pdf] */
+export const PAYTM_PIPE = '|';
+
 /** The merchant key is the AES-128 key itself: exactly 16 bytes. [chk-src] */
 export const PAYTM_MERCHANT_KEY_BYTES = 16;
 
@@ -401,12 +404,18 @@ export const PAYTM_BANK_MANDATE_MODES: readonly string[] = [PaytmPaymentMode.Ban
 // Result codes [§1.6, §3.3, §6, §8, §9]
 // ---------------------------------------------------------------------------
 
-/** `resultStatus` of the Theia-style APIs. [init-sub] [renew] */
+/** `resultStatus` of the Theia-style APIs, and `status` of the subscription-service ones. [init-sub] [renew] [fetch-status] */
 export const PaytmResultStatus = {
   Success: 'S',
   Failure: 'F',
   Unknown: 'U',
 } as const;
+
+/** The statuses of an answer that did not succeed, in both of Paytm's spellings. */
+export const PAYTM_FAILURE_STATUSES: readonly string[] = [PaytmResultStatus.Failure, 'FAILURE', PaytmResultStatus.Unknown];
+
+/** `providerStatus` when Paytm's answer carries no status at all. */
+export const PAYTM_PROVIDER_STATUS_UNKNOWN = 'UNKNOWN';
 
 /** `resultStatus` of the Transaction Status and Refund APIs. [txn-status] [refund] */
 export const PaytmTxnStatus = {
@@ -443,23 +452,15 @@ export const PaytmSuccessCode = {
 
 /** The result codes the adapter acts on by name. */
 export const PaytmCode = {
-  /** Renew: a debit with this order id already exists. [renew] */
-  RenewDuplicateOrderId: '325',
-  /** Renew: another collection for the subscription is in progress. [renew] */
-  RenewInProgress: '931',
   /** Pre-Notify: this reference id was already used, i.e. an earlier try of the same notification got through. [prenotify] */
   PreNotifyDuplicateReference: '3049',
   /** Pre-Notify: a notification for this debit was already sent (under another reference). [prenotify] */
   PreNotifyAlreadySent: '3046',
-  /** Subscription not found. [fetch-status] [prenotify] */
-  SubscriptionNotFound: '3004',
   /** Transaction Status: no such order. [txn-status] */
   TxnNoRecord: '331',
   TxnInvalidOrderId: '334',
   TxnInvalidMid: '335',
   TxnServerDown: '501',
-  /** Refund: the refund already exists or is in progress. [refund] */
-  RefundAlreadyRaised: '617',
 } as const;
 
 /** What a result code means in Paytm's reference pages, as an error code of this library. */
@@ -585,6 +586,12 @@ export const TXN_STATUS_ERRORS: ErrorTable = {
   '9999': ErrorCode.ProviderUnavailable,
 };
 
+/**
+ * Code 501 is "Server Down" on the Transaction Status page and "Your Payment has declined by your bank" in Paytm's generic
+ * response-code list. A 501 whose message says the bank declined is a failed debit; any other 501 is an outage. [txn-status] [codes-pdf]
+ */
+export const PAYTM_DECLINED_MESSAGE_PATTERN = /declin/i;
+
 /** Refund. A refund id is unique at Paytm, so repeating a refund is safe and an unlisted failure is a plain provider error. [refund] */
 export const REFUND_ERRORS: ErrorTable = {
   '330': ErrorCode.Auth,
@@ -641,17 +648,6 @@ export const PaytmNotificationStatus = {
 /** The form-post field that carries the checksum; it is never part of what is signed. [chk-src] [chk-impl] */
 export const PAYTM_CHECKSUM_FIELD = 'CHECKSUMHASH';
 export const JSON_BODY_START = '{';
-
-/** The kinds of notification Paytm sends. */
-export const PaytmWebhookKind = {
-  SubscriptionStatus: 'subscription_status',
-  Payment: 'payment',
-  PreNotify: 'pre_notify',
-  RefundArn: 'refund_arn',
-  AcceptRefund: 'accept_refund',
-  SuccessRefund: 'success_refund',
-} as const;
-export type PaytmWebhookKind = (typeof PaytmWebhookKind)[keyof typeof PaytmWebhookKind];
 
 /** `status` of the JSON refund webhooks. [wh-accept-refund] [wh-success-refund] */
 export const PaytmRefundWebhookStatus = {

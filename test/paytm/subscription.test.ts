@@ -4,6 +4,7 @@ import {
   CheckoutKind,
   ErrorCode,
   GATEWAY_STATUS_UNAVAILABLE,
+  IntervalUnit,
   PaymentMethod,
   SchedulingMode,
   SubscriptionStatus,
@@ -74,6 +75,8 @@ const MERCHANT_BODY = {
   subscriptionEnableRetry: '1',
   subscriptionRetryCount: '3',
 };
+
+type Interval = { unit: IntervalUnit; count: number };
 
 const BASE_INPUT = { reference: 'ORDER_1', plan: { ...MONTHLY_PLAN }, customer: CUSTOMER };
 
@@ -318,7 +321,8 @@ describe('createSubscription: local rejections, before any request', () => {
   });
 
   it('an interval Paytm has no unit for, listing the ones it has', async () => {
-    for (const interval of [{ unit: 'day', count: 3 }, { unit: 'week', count: 2 }, { unit: 'month', count: 5 }, { unit: 'year', count: 2 }]) {
+    const unsupportedIntervals: Interval[] = [{ unit: 'day', count: 3 }, { unit: 'week', count: 2 }, { unit: 'month', count: 5 }, { unit: 'year', count: 2 }];
+    for (const interval of unsupportedIntervals) {
       await rejected({ ...BASE_INPUT, plan: { ...MONTHLY_PLAN, interval } }, ErrorCode.Validation, /no multiplier/);
     }
   });
@@ -340,6 +344,12 @@ describe('createSubscription: local rejections, before any request', () => {
       ErrorCode.Validation,
       /UPI Autopay does not support/,
     );
+  });
+
+  it('a pipe character in any value Paytm would read (code 1008), and a mandate that ends before it starts', async () => {
+    await rejected({ ...BASE_INPUT, customer: { ...CUSTOMER, name: 'Ashish|Kumar' } }, ErrorCode.Validation, /customer|userInfo|firstName|\|/);
+    await rejected({ ...BASE_INPUT, returnUrl: 'https://merchant.example/return?a=1|2' }, ErrorCode.Validation, /1008/);
+    await rejected({ ...BASE_INPUT, mandateEndsAt: '2026-11-10T00:00:00+05:30' }, ErrorCode.Validation, /before its start date/);
   });
 
   it('a trial that is not in the future, and both trial and startAt', async () => {
@@ -441,7 +451,7 @@ describe('createSubscription: Paytm-collected (plan.scheduling = gateway)', () =
 
   it('takes the unit of a bi-monthly plan from the plan: two months is the UPI-safe date, one month is not', async () => {
     const { provider, calls } = makeProvider([createRoute]);
-    const plan = { ...GATEWAY_PLAN, interval: { unit: 'month', count: 2 } };
+    const plan = { ...GATEWAY_PLAN, interval: { unit: 'month', count: 2 } as Interval };
     await errorOf(provider.createSubscription({ ...BASE_INPUT, plan, startAt: NEXT_CYCLE }));
     await provider.createSubscription({ ...BASE_INPUT, plan, startAt: '2027-01-17T05:00:00.000Z' });
     expect(sent(calls[0] as never).body).toMatchObject({ subscriptionFrequencyUnit: 'BI_MONTHLY', subscriptionStartDate: '2027-01-17' });
@@ -449,7 +459,7 @@ describe('createSubscription: Paytm-collected (plan.scheduling = gateway)', () =
 });
 
 describe('createSubscription: frequency units', () => {
-  const cases: [string, { unit: string; count: number }][] = [
+  const cases: [string, Interval][] = [
     ['DAY', { unit: 'day', count: 1 }],
     ['WEEK', { unit: 'week', count: 1 }],
     ['MONTH', { unit: 'month', count: 1 }],
@@ -563,6 +573,83 @@ describe('hosts', () => {
     expect(sent(calls[0] as never).head).toMatchObject({ clientId: 'C11', channelId: 'WEB' });
     expect(Object.keys(sent(calls[1] as never).head)).toEqual(['tokenType', 'clientId', 'signature']);
     expect(sent(calls[1] as never).head).toMatchObject({ tokenType: 'AES', clientId: 'C11' });
+  });
+});
+
+describe('every API on the production hosts, and write safety', () => {
+  const ANSWERS = {
+    create: INITIATE_SUCCESS,
+    status: statusAnswer(),
+    modify: reply({ resultInfo: { status: 'SUCCESS', code: '3006', message: 'SUCCESS' } }),
+    cancel: reply({ resultInfo: { code: '200', message: 'SUCCESS', status: 'SUCCESS' } }),
+    preNotify: reply({ resultInfo: { code: '3006', message: 'SUCCESS', status: 'SUCCESS' } }),
+    renew: reply({ resultInfo: { resultStatus: 'S', resultCode: '900', resultMsg: 'Subscription Txn accepted.' } }),
+    txn: reply({ resultInfo: { resultStatus: 'TXN_SUCCESS', resultCode: '01', resultMsg: 'Txn Success' }, txnId: 'T1', txnAmount: '499.00', paymentMode: 'UPI' }),
+    refund: reply({ resultInfo: { resultStatus: 'PENDING', resultCode: '601', resultMsg: 'pending' }, refundId: 'R1' }),
+  };
+
+  it('create, status, pause, resume, cancel, pre-notify and renew go to secure.paytmpayments.com; transaction status and refund to securegw.paytmpayments.in', async () => {
+    const { provider, calls } = makeProvider(
+      [
+        { url: /^https:\/\/secure\.paytmpayments\.com\/subscription\/create\?mid=/, json: ANSWERS.create },
+        { url: 'https://secure.paytmpayments.com/subscription/checkStatus', json: ANSWERS.status },
+        { url: 'https://secure.paytmpayments.com/subscription/subscription/status/modify', json: ANSWERS.modify },
+        { url: 'https://secure.paytmpayments.com/subscription/checkStatus', json: ANSWERS.status },
+        { url: 'https://secure.paytmpayments.com/subscription/subscription/status/modify', json: ANSWERS.modify },
+        { url: 'https://secure.paytmpayments.com/subscription/checkStatus', json: ANSWERS.status },
+        { url: 'https://secure.paytmpayments.com/subscription/cancel', json: ANSWERS.cancel },
+        { url: 'https://secure.paytmpayments.com/subscription/checkStatus', json: ANSWERS.status },
+        { url: 'https://secure.paytmpayments.com/subscription/checkStatus', json: ANSWERS.status },
+        { url: 'https://secure.paytmpayments.com/subscription/preNotify', json: ANSWERS.preNotify },
+        { url: /^https:\/\/secure\.paytmpayments\.com\/subscription\/renew\?mid=/, json: ANSWERS.renew },
+        { url: 'https://securegw.paytmpayments.in/v3/order/status', json: ANSWERS.txn },
+        { url: 'https://securegw.paytmpayments.in/v3/order/status', json: ANSWERS.txn },
+        { url: 'https://securegw.paytmpayments.in/refund/apply', json: ANSWERS.refund },
+      ],
+      { environment: 'live', website: 'DEFAULT' },
+    );
+    await provider.createSubscription(BASE_INPUT);
+    await provider.getSubscription('130010');
+    await provider.pauseSubscription('130010');
+    await provider.resumeSubscription('130010');
+    await provider.cancelSubscription('130010');
+    await provider.notifyCharge({ subscriptionId: '130010', notificationId: 'n_1', amount: 49900, debitAt: '2026-11-19T04:30:00.000Z' });
+    await provider.createCharge({ subscriptionId: '130010', chargeId: 'c_1', amount: 49900 });
+    await provider.getCharge('130010', 'c_1');
+    await provider.refundCharge({ chargeId: 'c_1', refundId: 'r_1' });
+    for (const call of calls) {
+      const request = sent(call as never);
+      expect(request.url.origin === 'https://secure.paytmpayments.com' || request.url.origin === 'https://securegw.paytmpayments.in').toBe(true);
+    }
+    expect(calls.map((call) => new URL((call as { url: string }).url).pathname)).toContain('/subscription/subscription/status/modify');
+  });
+
+  it('puts an order id with @ and . in the query exactly as in the body (the query is percent-encoded, the body is not)', async () => {
+    const { provider, calls } = makeProvider([{ url: /\/subscription\/create/, json: INITIATE_SUCCESS }]);
+    await provider.createSubscription({ ...BASE_INPUT, reference: 'ord@2026.11-a_b' });
+    const call = calls[0] as { url: string };
+    expect(new URL(call.url).searchParams.get('orderId')).toBe('ord@2026.11-a_b');
+    expect(sent(calls[0] as never).body.orderId).toBe('ord@2026.11-a_b');
+  });
+
+  it('never repeats a write by itself: a 503 on create, renew, pre-notify, pause or cancel is one request, even with retries enabled', async () => {
+    const calls503 = async (run: (p: ReturnType<typeof makeProvider>['provider']) => Promise<unknown>) => {
+      const { provider, calls } = makeProvider(
+        [
+          { url: /.*/, status: 503, text: 'busy' },
+          { url: /.*/, status: 503, text: 'busy' },
+          { url: /.*/, json: statusAnswer() },
+        ],
+        {},
+        { maxRetries: 2 },
+      );
+      (provider as unknown as { http: { sleep: () => Promise<void> } }).http.sleep = async () => undefined;
+      await run(provider).catch(() => undefined);
+      return calls.filter((call) => !/checkStatus/.test(call.url)).length;
+    };
+    expect(await calls503((p) => p.createSubscription(BASE_INPUT))).toBe(1);
+    expect(await calls503((p) => p.createCharge({ subscriptionId: '1', chargeId: 'c_1', amount: 100 }))).toBe(1);
+    expect(await calls503((p) => p.pauseSubscription('1'))).toBe(1);
   });
 });
 

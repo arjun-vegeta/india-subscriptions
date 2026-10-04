@@ -39,11 +39,14 @@ import {
   PAYTM_DERIVED_CUST_ID_PREFIX,
   PAYTM_ENDED_STATUSES,
   PAYTM_EVENT_ID_SEPARATOR,
+  PAYTM_FAILURE_STATUSES,
   PAYTM_FREQUENCY_FOR_INTERVAL,
   PAYTM_INDIA_COUNTRY_CODE,
   PAYTM_INTERVAL_FOR_FREQUENCY,
   PAYTM_MIN_CYCLE_DAYS,
   PAYTM_MOBILE_DIGITS,
+  PAYTM_PIPE,
+  PAYTM_PROVIDER_STATUS_UNKNOWN,
   PAYTM_SLASH_DATETIME_PATTERN,
   PAYTM_SUBSTATUS_RESUMED,
   PaytmAmountType,
@@ -114,14 +117,12 @@ export interface BodyFailure {
   message: string;
 }
 
-const FAILURE_STATUSES: readonly string[] = ['F', 'FAILURE', 'U'];
-
 /** `undefined` for a successful answer, otherwise the error it stands for. */
 export function classifyResult(view: ResultView, spec: ApiResultSpec): BodyFailure | undefined {
   if (view.code === undefined && view.status === undefined) {
     return { code: spec.noVerdict, message: 'Paytm answered without a result' };
   }
-  const failedStatus = view.status !== undefined && FAILURE_STATUSES.includes(view.status.toUpperCase());
+  const failedStatus = view.status !== undefined && PAYTM_FAILURE_STATUSES.includes(view.status.toUpperCase());
   if (view.code === spec.successCode && !failedStatus) return undefined;
   const message = view.message ?? 'no message';
   if (spec.unknownStatus !== undefined && view.status === spec.unknownStatus) {
@@ -270,6 +271,29 @@ export function buildUserInfo(customer: Customer, orderId: string): UserInfoResu
 }
 
 // ---------------------------------------------------------------------------
+// Request text
+// ---------------------------------------------------------------------------
+
+/** The path of the first string in `value` that holds the pipe character, or `undefined`. Paytm rejects it (code 1008). */
+export function findPipe(value: unknown, path = 'body'): string | undefined {
+  if (typeof value === 'string') return value.includes(PAYTM_PIPE) ? path : undefined;
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const found = findPipe(item, `${path}[${index}]`);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [name, item] of Object.entries(value)) {
+      const found = findPipe(item, `${path}.${name}`);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Mandate dates
 // ---------------------------------------------------------------------------
 
@@ -347,7 +371,7 @@ function customerOf(id: string | null | undefined, email: string | null | undefi
 
 export function mapStatusSubscription(subscriptionId: string, body: PaytmStatusBody): Subscription {
   const status = mapSubscriptionStatus(body.status);
-  const providerStatus = body.status ?? FALLBACK_PROVIDER_STATUS;
+  const providerStatus = body.status ?? PAYTM_PROVIDER_STATUS_UNKNOWN;
   const scheduling = schedulingOf(body.amountType);
   const ceiling = paise(body.maxAmount);
   const interval = intervalFromFrequency(body.frequencyUnit, body.frequency);
@@ -382,9 +406,6 @@ export function mapStatusSubscription(subscriptionId: string, body: PaytmStatusB
   };
 }
 
-/** `providerStatus` when Paytm's status answer has none. */
-const FALLBACK_PROVIDER_STATUS = 'UNKNOWN';
-
 // ---------------------------------------------------------------------------
 // Transaction Status / callback / webhook -> Charge
 // ---------------------------------------------------------------------------
@@ -404,7 +425,7 @@ export function mapTransactionCharge(
   context: { chargeId: string; subscriptionId?: string; kind?: ChargeKind },
 ): Charge {
   const view = resultView(body.resultInfo);
-  const providerStatus = view.status ?? FALLBACK_PROVIDER_STATUS;
+  const providerStatus = view.status ?? PAYTM_PROVIDER_STATUS_UNKNOWN;
   let status = chargeStatusOf(view.status);
   const amount = paise(body.txnAmount) ?? 0;
   const refunded = paise(body.refundAmt) ?? 0;
@@ -452,7 +473,7 @@ export function mapRenewCharge(input: {
     subscriptionId: input.subscriptionId,
     kind: ChargeKind.Recurring,
     status: ChargeStatus.Pending,
-    providerStatus: input.view.message ?? input.view.status ?? FALLBACK_PROVIDER_STATUS,
+    providerStatus: input.view.message ?? input.view.status ?? PAYTM_PROVIDER_STATUS_UNKNOWN,
     amount: input.amount,
     currency: Currency.INR,
     ...(input.scheduledAt !== undefined ? { scheduledAt: input.scheduledAt } : {}),
@@ -475,7 +496,7 @@ export function mapCallbackCharge(callback: PaytmCallback, context: { subscripti
     // A trial's token debit is not recorded as an upfront amount by Paytm; a real upfront amount is.
     kind: context.upfrontPaise !== undefined && context.upfrontPaise > 0 ? ChargeKind.Upfront : ChargeKind.Authorization,
     status,
-    providerStatus: callback.STATUS ?? FALLBACK_PROVIDER_STATUS,
+    providerStatus: callback.STATUS ?? PAYTM_PROVIDER_STATUS_UNKNOWN,
     amount,
     currency: Currency.INR,
     ...(paidAt ? { paidAt } : {}),

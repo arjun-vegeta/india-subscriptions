@@ -473,6 +473,13 @@ describe('getCharge: Transaction Status', () => {
     }
   });
 
+  it('code 501 is "Server Down" on the status page but "declined by your bank" in the generic list: only a decline message makes it a failed debit', async () => {
+    const declined = makeProvider([{ url: TXN_URL, json: txn('TXN_FAILURE', '501', 'Your Payment has declined by your bank') }]);
+    expect(await declined.provider.getCharge('130010', 'c_1')).toMatchObject({ status: ChargeStatus.Failed, failureCode: '501' });
+    const down = makeProvider([{ url: TXN_URL, json: txn('TXN_FAILURE', '501', 'Server Down') }]);
+    expect(await errorOf(down.provider.getCharge('130010', 'c_1'))).toMatchObject({ code: ErrorCode.ProviderUnavailable });
+  });
+
   it('a failure without txnAmount has amount 0; an answer without any result is UNEXPECTED_RESPONSE', async () => {
     const { provider } = makeProvider([{ url: TXN_URL, json: reply({ resultInfo: { resultStatus: 'TXN_FAILURE', resultCode: '227', resultMsg: 'declined' }, orderId: 'c_1' }) }]);
     expect(await provider.getCharge('130010', 'c_1')).toMatchObject({ status: ChargeStatus.Failed, amount: 0 });

@@ -58,6 +58,7 @@ import {
   PAYTM_BASE_URLS,
   PAYTM_CHECKSUM_FIELD,
   PAYTM_CURRENCY,
+  PAYTM_DECLINED_MESSAGE_PATTERN,
   PAYTM_ENDED_STATUSES,
   PAYTM_GATEWAY_EXPIRY_BUFFER_DAYS,
   PAYTM_GENERATED_ORDER_ID_PREFIX,
@@ -98,12 +99,12 @@ import {
   PaytmResultStatus,
   PaytmSuccessCode,
   PaytmTxnStatus,
-  PaytmWebhookKind,
   } from './constants.js';
 import {
   buildUserInfo,
   classifyResult,
   deriveExpiryDate,
+  findPipe,
   frequencyUnitFor,
   isBankMandateMode,
   isUpiSafeStartDate,
@@ -347,6 +348,10 @@ export class PaytmProvider extends BaseProvider {
    * HTTP 200 for failures too, so the caller reads `resultInfo`.
    */
   private async call<S extends z.ZodType<{ body: unknown }>>(spec: ApiCall<S>): Promise<z.output<S>['body']> {
+    const pipe = findPipe(spec.body);
+    if (pipe !== undefined) {
+      throw invalid(`${pipe} contains the character "|", which Paytm rejects (code 1008): remove it before sending`, this.name);
+    }
     const bodyText = JSON.stringify(spec.body);
     const signature = generateChecksum(bodyText, this.#key, this.#generateSalt());
     const head: Record<string, string> =
@@ -444,7 +449,7 @@ export class PaytmProvider extends BaseProvider {
     }
 
     const methods = input.paymentMethods;
-    const unusable = methods?.filter((method) => PAYTM_MODES_FOR_METHOD[method].length === 0 || !PAYTM_PAYMENT_METHODS.includes(method));
+    const unusable = methods?.filter((method) => !PAYTM_PAYMENT_METHODS.includes(method));
     if (unusable !== undefined && unusable.length > 0) {
       throw invalid(
         `Paytm subscriptions here support ${PAYTM_PAYMENT_METHODS.join(', ')}; ${unusable.join(', ')} cannot be requested (paper mandates need Paytm's separate mandate-form integration)`,
@@ -561,6 +566,10 @@ export class PaytmProvider extends BaseProvider {
       mandateYears: this.#config.mandateYears,
       bufferDays: expiryBuffer,
     });
+
+    if (expiryDate < startDate) {
+      throw invalid(`the mandate would end (${expiryDate}) before its start date (${startDate}): mandateEndsAt must be later`, this.name);
+    }
 
     const callbackUrl = input.returnUrl ?? this.#config.callbackUrl;
     const body: PaytmInitiateRequest = parseInput(
@@ -923,7 +932,8 @@ export class PaytmProvider extends BaseProvider {
       });
     }
     const verdict = view.status?.toUpperCase();
-    const mapped = view.code !== undefined ? TXN_STATUS_ERRORS[view.code] : undefined;
+    const declined = view.code === PaytmCode.TxnServerDown && PAYTM_DECLINED_MESSAGE_PATTERN.test(view.message ?? '');
+    const mapped = view.code !== undefined && !declined ? TXN_STATUS_ERRORS[view.code] : undefined;
     if (verdict === PaytmTxnStatus.NoRecordFound) {
       throw this.bodyError(
         { code: ErrorCode.NotFound, message: view.message ?? 'no record found', ...(view.code !== undefined ? { providerCode: view.code } : {}) },
@@ -1150,33 +1160,25 @@ export class PaytmProvider extends BaseProvider {
     return [this.formWebhook(parseResponse(PaytmFormSchema, json, 'webhook body', this.name))];
   }
 
+  /**
+   * Which documented key-value notification this is is decided by which schema the verified fields satisfy: each requires the
+   * fields only its own kind carries (`REFERENCEID` + `NOTIFICATIONSTATUS`; `ORDERID` + `REFID`; `SUBS_ID` + `STATUS`;
+   * `ORDERID` + `STATUS`), tried from the most specific to the least. Nothing is read from a form before its checksum verified.
+   */
   private formWebhook(form: PaytmForm): SubscriptionEvent {
     this.verifyForm(form, 'webhook');
-    switch (this.webhookKind(form)) {
-      case PaytmWebhookKind.PreNotify:
-        return mapPreNotifyWebhook(parseResponse(PaytmPreNotifyWebhookSchema, form, 'pre-notify callback', this.name), form);
-      case PaytmWebhookKind.RefundArn:
-        return mapRefundArnWebhook(parseResponse(PaytmRefundArnWebhookSchema, form, 'refund ARN webhook', this.name), form);
-      case PaytmWebhookKind.SubscriptionStatus:
-        return mapSubscriptionWebhook(parseResponse(PaytmSubscriptionWebhookSchema, form, 'subscription status webhook', this.name), form);
-      case PaytmWebhookKind.Payment:
-        return mapPaymentWebhook(parseResponse(PaytmPaymentWebhookSchema, form, 'payment webhook', this.name), form);
-      default:
-        throw new SubscriptionError(ErrorCode.UnexpectedResponse, `${this.name} sent a webhook this adapter does not recognise`, {
-          provider: this.name,
-          raw: form,
-        });
-    }
-  }
-
-  /** Which documented key-value notification this is, from the fields it carries (read only after the checksum verified). */
-  private webhookKind(form: PaytmForm): PaytmWebhookKind | undefined {
-    const has = (name: string): boolean => Object.hasOwn(form, name);
-    if (has('NOTIFICATIONSTATUS') || has('REFERENCEID')) return PaytmWebhookKind.PreNotify;
-    if (has('REFID') && (has('REFUNDID') || has('ARN'))) return PaytmWebhookKind.RefundArn;
-    if (has('SUBS_ID') && !has('TXNID')) return PaytmWebhookKind.SubscriptionStatus;
-    if (has('ORDERID') && has('STATUS')) return PaytmWebhookKind.Payment;
-    return undefined;
+    const preNotify = PaytmPreNotifyWebhookSchema.safeParse(form);
+    if (preNotify.success) return mapPreNotifyWebhook(preNotify.data, form);
+    const refundArn = PaytmRefundArnWebhookSchema.safeParse(form);
+    if (refundArn.success) return mapRefundArnWebhook(refundArn.data, form);
+    const subscription = PaytmSubscriptionWebhookSchema.safeParse(form);
+    if (subscription.success) return mapSubscriptionWebhook(subscription.data, form);
+    const payment = PaytmPaymentWebhookSchema.safeParse(form);
+    if (payment.success) return mapPaymentWebhook(payment.data, form);
+    throw new SubscriptionError(ErrorCode.UnexpectedResponse, `${this.name} sent a webhook this adapter does not recognise`, {
+      provider: this.name,
+      raw: form,
+    });
   }
 
   private refundWebhook(text: string, envelope: z.output<typeof PaytmJsonEnvelopeSchema>): SubscriptionEvent {
