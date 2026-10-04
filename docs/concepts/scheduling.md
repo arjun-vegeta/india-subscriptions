@@ -9,7 +9,7 @@ After this page you will know who raises each debit on each gateway, what the bi
 | Who raises each debit | The gateway, on the plan's schedule | You: in practice, this library's billing scheduler |
 | Who sends the pre-debit notice | The gateway | You (PayU), or the gateway once you raise a charge (Cashfree on-demand) |
 | Retries | The gateway's | The scheduler's |
-| Gateways | Razorpay; Cashfree periodic plans | PayU; Cashfree on-demand plans |
+| Gateways | Razorpay; Cashfree periodic plans; Paytm in its own collection mode | PayU, PhonePe; Cashfree on-demand plans; Paytm by default |
 | What you run | Nothing extra | `tick()` from a cron job, or the service's own timer |
 
 The facade (`Subscriptions`) hides the difference. You call `create`, `get`, `pause`, `cancel` the same way, and for a merchant-scheduled subscription the facade also registers a schedule, activates it when the customer authorises, mirrors pause, resume and cancel, and merges the schedule's state (trialing, next charge, paid cycles) into what it returns. Creating a merchant-scheduled subscription **without** a scheduler fails with `CONFIG` before anything is sent to the gateway.
@@ -28,7 +28,7 @@ Gateways want debits raised in three styles, chosen from their `capabilities`:
 
 | Style | Capabilities | What the scheduler does |
 |---|---|---|
-| Notify, then charge (PayU) | `merchantPreDebitNotification` | `notifyCharge` at due minus the lead; `createCharge` on the due date after the minimum notice |
+| Notify, then charge (PayU, PhonePe, Paytm) | `merchantPreDebitNotification` | `notifyCharge` at due minus the lead; `createCharge` on the due date after the minimum notice. If the notification returns a `chargeId` (PhonePe), the debit uses **that** id, because the notice and the debit are one order at the gateway. |
 | Charge in advance (Cashfree on-demand) | `merchantChargeLeadHours` greater than 0 | No `notifyCharge`. `createCharge` is called 48 hours before the due date with `scheduledAt` set; the gateway notifies and debits. If the schedule is already too close to the due date (late activation, a retry, a resume), the debit date becomes now plus the lead. |
 | Charge on due | Neither | `createCharge` on the due date |
 
@@ -60,7 +60,7 @@ A scheduler that double-debits a customer is worse than one that does nothing, s
 
 - **The debit id is deterministic** per schedule, cycle and attempt. Asking twice for the same debit means the same id.
 - **The cycle is saved as `charging` with that id before the gateway is called.** If the process dies mid-call, the next tick finds a cycle in `charging` and knows money may be moving.
-- **When the outcome is unknown, it asks before acting.** It calls `getCharge`. Only a `NOT_FOUND` answer, and only after a grace period (`unknownOutcomeGraceMinutes`, 30 by default), lets it send the debit again, and then with the **same** id. A gateway's refusal of that re-sent id proves nothing, so it never books a failure for it.
+- **When the outcome is unknown, it asks before acting.** It calls `getCharge`. Only a `NOT_FOUND` answer, and only after a grace period (`unknownOutcomeGraceMinutes`, 30 by default), lets it send the debit again, and then with the **same** id. A gateway's refusal of that re-sent id (a duplicate-id error, under any code) proves nothing, so it never books a failure for it: only a definite gateway status settles it.
 
 Every state change also happens under a per-schedule lock, after re-reading the schedule, so two workers cannot both act on one schedule. That is why a store must implement the lock correctly: see [Running the scheduler](../guides/scheduler.md).
 

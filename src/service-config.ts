@@ -17,6 +17,9 @@ import { SubscriptionError } from './errors.js';
 import { CashfreeConfigSchema, type CashfreeConfig } from './providers/cashfree/schemas.js';
 import { ConsentHashLayout } from './providers/payu/constants.js';
 import { PayUConfigSchema, type PayUConfig } from './providers/payu/schemas.js';
+import { PAYTM_DEBIT_REASON_MAX_LENGTH, PaytmChannelId } from './providers/paytm/constants.js';
+import { PaytmConfigSchema, type PaytmConfig } from './providers/paytm/schemas.js';
+import { PhonePeConfigSchema, type PhonePeConfig } from './providers/phonepe/schemas.js';
 import { RAZORPAY_MAX_DURATION_YEARS } from './providers/razorpay/constants.js';
 import { RazorpayConfigSchema, type RazorpayConfig } from './providers/razorpay/schemas.js';
 
@@ -48,6 +51,32 @@ export const EnvVar = {
   PayuAcceptUnsignedWebhooks: 'PAYU_ACCEPT_UNSIGNED_WEBHOOKS',
   PayuPaymentUrl: 'PAYU_PAYMENT_URL',
   PayuApiUrl: 'PAYU_API_URL',
+
+  PhonepeClientId: 'PHONEPE_CLIENT_ID',
+  PhonepeClientSecret: 'PHONEPE_CLIENT_SECRET',
+  PhonepeClientVersion: 'PHONEPE_CLIENT_VERSION',
+  PhonepeEnvironment: 'PHONEPE_ENVIRONMENT',
+  PhonepeWebhookUsername: 'PHONEPE_WEBHOOK_USERNAME',
+  PhonepeWebhookPassword: 'PHONEPE_WEBHOOK_PASSWORD',
+  PhonepeRedirectUrl: 'PHONEPE_REDIRECT_URL',
+  PhonepeApiUrl: 'PHONEPE_API_URL',
+  PhonepeTokenUrl: 'PHONEPE_TOKEN_URL',
+
+  PaytmMid: 'PAYTM_MID',
+  PaytmMerchantKey: 'PAYTM_MERCHANT_KEY',
+  PaytmWebsite: 'PAYTM_WEBSITE',
+  PaytmEnvironment: 'PAYTM_ENVIRONMENT',
+  PaytmCallbackUrl: 'PAYTM_CALLBACK_URL',
+  PaytmChannelId: 'PAYTM_CHANNEL_ID',
+  PaytmClientId: 'PAYTM_CLIENT_ID',
+  PaytmGraceDays: 'PAYTM_GRACE_DAYS',
+  PaytmRetryCount: 'PAYTM_RETRY_COUNT',
+  PaytmMandateYears: 'PAYTM_MANDATE_YEARS',
+  PaytmDebitReason: 'PAYTM_DEBIT_REASON',
+  PaytmSubscriptionBaseUrl: 'PAYTM_SUBSCRIPTION_BASE_URL',
+  PaytmTransactionStatusBaseUrl: 'PAYTM_TRANSACTION_STATUS_BASE_URL',
+  PaytmRefundBaseUrl: 'PAYTM_REFUND_BASE_URL',
+  PaytmCheckoutBaseUrl: 'PAYTM_CHECKOUT_BASE_URL',
 
   SchedulerStoreFile: 'SCHEDULER_STORE_FILE',
   SchedulerTickSeconds: 'SCHEDULER_TICK_SECONDS',
@@ -98,6 +127,34 @@ const GATEWAY_VARS: Record<EnvGateway, readonly EnvVar[]> = {
     EnvVar.PayuPaymentUrl,
     EnvVar.PayuApiUrl,
   ],
+  [Provider.PhonePe]: [
+    EnvVar.PhonepeClientId,
+    EnvVar.PhonepeClientSecret,
+    EnvVar.PhonepeClientVersion,
+    EnvVar.PhonepeEnvironment,
+    EnvVar.PhonepeWebhookUsername,
+    EnvVar.PhonepeWebhookPassword,
+    EnvVar.PhonepeRedirectUrl,
+    EnvVar.PhonepeApiUrl,
+    EnvVar.PhonepeTokenUrl,
+  ],
+  [Provider.Paytm]: [
+    EnvVar.PaytmMid,
+    EnvVar.PaytmMerchantKey,
+    EnvVar.PaytmWebsite,
+    EnvVar.PaytmEnvironment,
+    EnvVar.PaytmCallbackUrl,
+    EnvVar.PaytmChannelId,
+    EnvVar.PaytmClientId,
+    EnvVar.PaytmGraceDays,
+    EnvVar.PaytmRetryCount,
+    EnvVar.PaytmMandateYears,
+    EnvVar.PaytmDebitReason,
+    EnvVar.PaytmSubscriptionBaseUrl,
+    EnvVar.PaytmTransactionStatusBaseUrl,
+    EnvVar.PaytmRefundBaseUrl,
+    EnvVar.PaytmCheckoutBaseUrl,
+  ],
 };
 
 /** The variables a gateway cannot work without. */
@@ -105,6 +162,13 @@ const GATEWAY_REQUIRED_VARS: Record<EnvGateway, readonly EnvVar[]> = {
   [Provider.Razorpay]: [EnvVar.RazorpayKeyId, EnvVar.RazorpayKeySecret],
   [Provider.Cashfree]: [EnvVar.CashfreeClientId, EnvVar.CashfreeClientSecret, EnvVar.CashfreeEnvironment],
   [Provider.PayU]: [EnvVar.PayuKey, EnvVar.PayuSalt, EnvVar.PayuEnvironment],
+  [Provider.PhonePe]: [
+    EnvVar.PhonepeClientId,
+    EnvVar.PhonepeClientSecret,
+    EnvVar.PhonepeClientVersion,
+    EnvVar.PhonepeEnvironment,
+  ],
+  [Provider.Paytm]: [EnvVar.PaytmMid, EnvVar.PaytmMerchantKey, EnvVar.PaytmWebsite, EnvVar.PaytmEnvironment],
 };
 
 /** Which variable feeds which field of each adapter's config, to name the variable when the adapter's schema objects. */
@@ -134,6 +198,34 @@ const CONFIG_FIELD_VARS: Record<EnvGateway, Record<string, EnvVar>> = {
     acceptUnsignedWebhooks: EnvVar.PayuAcceptUnsignedWebhooks,
     paymentUrl: EnvVar.PayuPaymentUrl,
     apiUrl: EnvVar.PayuApiUrl,
+  },
+  [Provider.PhonePe]: {
+    clientId: EnvVar.PhonepeClientId,
+    clientSecret: EnvVar.PhonepeClientSecret,
+    clientVersion: EnvVar.PhonepeClientVersion,
+    environment: EnvVar.PhonepeEnvironment,
+    webhookUsername: EnvVar.PhonepeWebhookUsername,
+    webhookPassword: EnvVar.PhonepeWebhookPassword,
+    redirectUrl: EnvVar.PhonepeRedirectUrl,
+    apiUrl: EnvVar.PhonepeApiUrl,
+    tokenUrl: EnvVar.PhonepeTokenUrl,
+  },
+  [Provider.Paytm]: {
+    mid: EnvVar.PaytmMid,
+    merchantKey: EnvVar.PaytmMerchantKey,
+    website: EnvVar.PaytmWebsite,
+    environment: EnvVar.PaytmEnvironment,
+    callbackUrl: EnvVar.PaytmCallbackUrl,
+    channelId: EnvVar.PaytmChannelId,
+    clientId: EnvVar.PaytmClientId,
+    graceDays: EnvVar.PaytmGraceDays,
+    retryCount: EnvVar.PaytmRetryCount,
+    mandateYears: EnvVar.PaytmMandateYears,
+    debitReason: EnvVar.PaytmDebitReason,
+    subscriptionBaseUrl: EnvVar.PaytmSubscriptionBaseUrl,
+    transactionStatusBaseUrl: EnvVar.PaytmTransactionStatusBaseUrl,
+    refundBaseUrl: EnvVar.PaytmRefundBaseUrl,
+    checkoutBaseUrl: EnvVar.PaytmCheckoutBaseUrl,
   },
 };
 
@@ -254,6 +346,90 @@ const PayuEnvSchema = z
     }),
   );
 
+/** The webhook username and password go together: one without the other is a half-configured webhook. */
+function requireTogether(
+  env: Record<string, string | undefined>,
+  first: EnvVar,
+  second: EnvVar,
+  context: z.RefinementCtx,
+): void {
+  for (const [present, missing] of [[first, second], [second, first]] as const) {
+    if (env[present] !== undefined && env[missing] === undefined) {
+      context.addIssue({ code: 'custom', path: [missing], message: `is required when ${present} is set` });
+    }
+  }
+}
+
+const PhonepeEnvSchema = z
+  .object({
+    [EnvVar.PhonepeClientId]: required(),
+    [EnvVar.PhonepeClientSecret]: required(),
+    [EnvVar.PhonepeClientVersion]: required(),
+    [EnvVar.PhonepeEnvironment]: environmentText,
+    [EnvVar.PhonepeWebhookUsername]: z.string().optional(),
+    [EnvVar.PhonepeWebhookPassword]: z.string().optional(),
+    [EnvVar.PhonepeRedirectUrl]: urlText.optional(),
+    [EnvVar.PhonepeApiUrl]: urlText.optional(),
+    [EnvVar.PhonepeTokenUrl]: urlText.optional(),
+  })
+  .superRefine((env, context) => requireTogether(env, EnvVar.PhonepeWebhookUsername, EnvVar.PhonepeWebhookPassword, context))
+  .transform(
+    (env): PhonePeConfig => ({
+      clientId: env[EnvVar.PhonepeClientId],
+      clientSecret: env[EnvVar.PhonepeClientSecret],
+      clientVersion: env[EnvVar.PhonepeClientVersion],
+      environment: env[EnvVar.PhonepeEnvironment],
+      webhookUsername: env[EnvVar.PhonepeWebhookUsername],
+      webhookPassword: env[EnvVar.PhonepeWebhookPassword],
+      redirectUrl: env[EnvVar.PhonepeRedirectUrl],
+      apiUrl: env[EnvVar.PhonepeApiUrl],
+      tokenUrl: env[EnvVar.PhonepeTokenUrl],
+    }),
+  );
+
+const PaytmEnvSchema = z
+  .object({
+    [EnvVar.PaytmMid]: required(),
+    [EnvVar.PaytmMerchantKey]: required(),
+    [EnvVar.PaytmWebsite]: required(),
+    [EnvVar.PaytmEnvironment]: environmentText,
+    [EnvVar.PaytmCallbackUrl]: urlText.optional(),
+    [EnvVar.PaytmChannelId]: z
+      .enum(PaytmChannelId, { error: `must be one of ${Object.values(PaytmChannelId).join(', ')}` })
+      .optional(),
+    [EnvVar.PaytmClientId]: z.string().optional(),
+    [EnvVar.PaytmGraceDays]: wholeNumber(0, 365).optional(),
+    [EnvVar.PaytmRetryCount]: wholeNumber(1, 10).optional(),
+    [EnvVar.PaytmMandateYears]: wholeNumber(1, 30).optional(),
+    [EnvVar.PaytmDebitReason]: z
+      .string()
+      .max(PAYTM_DEBIT_REASON_MAX_LENGTH, { error: `must be at most ${PAYTM_DEBIT_REASON_MAX_LENGTH} characters` })
+      .optional(),
+    [EnvVar.PaytmSubscriptionBaseUrl]: urlText.optional(),
+    [EnvVar.PaytmTransactionStatusBaseUrl]: urlText.optional(),
+    [EnvVar.PaytmRefundBaseUrl]: urlText.optional(),
+    [EnvVar.PaytmCheckoutBaseUrl]: urlText.optional(),
+  })
+  .transform(
+    (env): PaytmConfig => ({
+      mid: env[EnvVar.PaytmMid],
+      merchantKey: env[EnvVar.PaytmMerchantKey],
+      website: env[EnvVar.PaytmWebsite],
+      environment: env[EnvVar.PaytmEnvironment],
+      callbackUrl: env[EnvVar.PaytmCallbackUrl],
+      channelId: env[EnvVar.PaytmChannelId],
+      clientId: env[EnvVar.PaytmClientId],
+      graceDays: env[EnvVar.PaytmGraceDays],
+      retryCount: env[EnvVar.PaytmRetryCount],
+      mandateYears: env[EnvVar.PaytmMandateYears],
+      debitReason: env[EnvVar.PaytmDebitReason],
+      subscriptionBaseUrl: env[EnvVar.PaytmSubscriptionBaseUrl],
+      transactionStatusBaseUrl: env[EnvVar.PaytmTransactionStatusBaseUrl],
+      refundBaseUrl: env[EnvVar.PaytmRefundBaseUrl],
+      checkoutBaseUrl: env[EnvVar.PaytmCheckoutBaseUrl],
+    }),
+  );
+
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
@@ -274,6 +450,8 @@ export interface ServiceConfig {
     [Provider.Razorpay]?: RazorpayConfig;
     [Provider.Cashfree]?: CashfreeConfig;
     [Provider.PayU]?: PayUConfig;
+    [Provider.PhonePe]?: PhonePeConfig;
+    [Provider.Paytm]?: PaytmConfig;
   };
   /** Path of the scheduler's `FileSchedulerStore`. Absent: the billing scheduler is off. */
   schedulerStoreFile?: string;
@@ -295,7 +473,13 @@ export type EnvironmentVariables = Readonly<Record<string, string | undefined>>;
  * they are tried and listed. A gateway added to `Provider` joins this list once
  * its variables are defined below.
  */
-export const GATEWAY_ORDER = [Provider.Razorpay, Provider.Cashfree, Provider.PayU] as const;
+export const GATEWAY_ORDER = [
+  Provider.Razorpay,
+  Provider.Cashfree,
+  Provider.PayU,
+  Provider.PhonePe,
+  Provider.Paytm,
+] as const;
 /** A gateway that can be configured from environment variables. */
 export type EnvGateway = (typeof GATEWAY_ORDER)[number];
 
@@ -303,6 +487,8 @@ const GATEWAY_ENV_SCHEMAS = {
   [Provider.Razorpay]: { env: RazorpayEnvSchema, config: RazorpayConfigSchema },
   [Provider.Cashfree]: { env: CashfreeEnvSchema, config: CashfreeConfigSchema },
   [Provider.PayU]: { env: PayuEnvSchema, config: PayUConfigSchema },
+  [Provider.PhonePe]: { env: PhonepeEnvSchema, config: PhonePeConfigSchema },
+  [Provider.Paytm]: { env: PaytmEnvSchema, config: PaytmConfigSchema },
 } as const;
 
 type Values = Record<string, string>;
@@ -410,10 +596,11 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
     );
   }
 
-  const { razorpay, cashfree, payu } = {
+  const { razorpay, cashfree, payu, phonepe } = {
     razorpay: gateways[Provider.Razorpay],
     cashfree: gateways[Provider.Cashfree],
     payu: gateways[Provider.PayU],
+    phonepe: gateways[Provider.PhonePe],
   };
   if (razorpay && !razorpay.webhookSecret) {
     warnings.push(`${EnvVar.RazorpayWebhookSecret} is not set: webhooks from razorpay will be rejected.`);
@@ -423,6 +610,12 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
   }
   if (payu && !payu.successUrl) {
     warnings.push(`${EnvVar.PayuSuccessUrl} is not set: every payu subscription must carry its own returnUrl.`);
+  }
+
+  if (phonepe && !phonepe.webhookUsername) {
+    warnings.push(
+      `${EnvVar.PhonepeWebhookUsername} and ${EnvVar.PhonepeWebhookPassword} are not set: webhooks from phonepe will be rejected.`,
+    );
   }
 
   const host = base?.[EnvVar.Host] ?? DEFAULT_HOST;

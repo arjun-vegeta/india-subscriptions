@@ -59,7 +59,7 @@ Policies are set as defaults on the scheduler (and per schedule when you registe
 | `chargeLeadHours` | none | For charge-in-advance gateways: raise the charge at least this far ahead. |
 | `authorizationTimeoutHours` | none | Cancel a schedule still awaiting authorisation after this long. A customer who authorises later revives it. |
 | `authorizationPollMinutes` | 60 | How often to ask the gateway whether a waiting mandate is live. 0 turns it off. |
-| `debitAtIstTime` | none | Debit at this `HH:mm` IST on the due date. Pick an off-peak time for UPI. |
+| `debitAtIstTime` | none | Debit at this `HH:mm` IST on the due date. NPCI restricts UPI Autopay debits during peak hours (10:00 to 13:00 and 17:00 to 21:30 IST), so pick an off-peak time for UPI mandates. The first cycle is never moved earlier than its contractual instant. |
 | `lockTtlMs`, `lockWaitMs` | 60000, 5000 | Lock lifetime if its owner dies, and how long API calls wait for a busy lock before `CONFLICT`. |
 
 The complete, current list with types is in [Scheduler records and options](../reference/generated/scheduler-records.md#schedulerconfig).

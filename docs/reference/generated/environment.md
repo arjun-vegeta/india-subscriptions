@@ -49,6 +49,40 @@
 | `PAYU_PAYMENT_URL` | no |  | Optional: replaces the PayU _payment URL (a proxy or mock server). |
 | `PAYU_API_URL` | no |  | Optional: replaces the PayU postservice URL, including ?form=2 (a proxy or mock server). |
 
+## PhonePe
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PHONEPE_CLIENT_ID` | yes |  | PhonePe Business Dashboard client id (Developer Settings). |
+| `PHONEPE_CLIENT_SECRET` | yes |  | PhonePe client secret. |
+| `PHONEPE_CLIENT_VERSION` | yes |  | The client version issued with the credentials (a number such as 1, or text). |
+| `PHONEPE_ENVIRONMENT` | yes |  | test (PhonePe sandbox/UAT) or live (production). |
+| `PHONEPE_WEBHOOK_USERNAME` | yes |  | Webhook username from the dashboard ("SHA (Username & Password)"); set with the password, or PhonePe webhooks are rejected. |
+| `PHONEPE_WEBHOOK_PASSWORD` | yes |  | Webhook password; set together with the username. |
+| `PHONEPE_REDIRECT_URL` | no |  | Optional: default redirect URL for subscriptions without a returnUrl. |
+| `PHONEPE_API_URL` | no |  | Optional: replaces the PhonePe PG host (a proxy or mock server). |
+| `PHONEPE_TOKEN_URL` | no |  | Optional: replaces the PhonePe OAuth token URL (a proxy or mock server). |
+
+## Paytm
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PAYTM_MID` | yes |  | Paytm merchant id (different for staging and production). |
+| `PAYTM_MERCHANT_KEY` | yes |  | Paytm merchant key: exactly 16 bytes, the AES key of Paytm's checksum (also verifies webhooks). |
+| `PAYTM_WEBSITE` | yes |  | websiteName: WEBSTAGING on staging, DEFAULT on production, or the name Paytm gave you. |
+| `PAYTM_ENVIRONMENT` | yes |  | test (staging hosts) or live (production hosts). |
+| `PAYTM_CALLBACK_URL` | no |  | Optional: default callback URL for subscriptions without a returnUrl. |
+| `PAYTM_CHANNEL_ID` | no |  | Optional: head.channelId of the Theia-style APIs, WEB or WAP (omitted by default). |
+| `PAYTM_CLIENT_ID` | no |  | Optional: head.clientId, only for merchants with more than one key. |
+| `PAYTM_GRACE_DAYS` | no |  | Optional: subscriptionGraceDays for merchant-collected subscriptions (0-365; default derived from the schedule). |
+| `PAYTM_RETRY_COUNT` | no |  | Optional: subscriptionRetryCount for merchant-collected subscriptions (1-10, default 3). |
+| `PAYTM_MANDATE_YEARS` | no |  | Optional: years a subscription without an end date stays valid (1-30, default 5). |
+| `PAYTM_DEBIT_REASON` | no |  | Optional: reason shown in the pre-debit notification (at most 50 characters, default "Subscription renewal"). |
+| `PAYTM_SUBSCRIPTION_BASE_URL` | no |  | Optional: replaces the Paytm subscription-service host (a proxy or mock server). |
+| `PAYTM_TRANSACTION_STATUS_BASE_URL` | no |  | Optional: replaces the Paytm Transaction Status API host. |
+| `PAYTM_REFUND_BASE_URL` | no |  | Optional: replaces the Paytm Refund API host. |
+| `PAYTM_CHECKOUT_BASE_URL` | no |  | Optional: replaces the host customers are sent to for authorisation. |
+
 ## Billing scheduler
 
 | Variable | Required | Default | Description |

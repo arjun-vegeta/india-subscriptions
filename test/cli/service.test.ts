@@ -488,3 +488,103 @@ describe('createTickLoop', () => {
     expect(logger.lines.join('\n')).not.toContain('hunter2');
   });
 });
+
+describe('all five gateways', () => {
+  const PHONEPE_SECRET = 'phonepe-client-secret-value';
+  const PAYTM_KEY = 'PAYTMKEY0123456A'; // 16 bytes
+  const allFive: EnvironmentVariables = {
+    ...baseEnv,
+    ...payuEnv,
+    [EnvVar.CashfreeClientId]: 'cf_id',
+    [EnvVar.CashfreeClientSecret]: 'cashfree-client-secret',
+    [EnvVar.CashfreeEnvironment]: Environment.Test,
+    [EnvVar.PhonepeClientId]: 'pp_id',
+    [EnvVar.PhonepeClientSecret]: PHONEPE_SECRET,
+    [EnvVar.PhonepeClientVersion]: '1',
+    [EnvVar.PhonepeEnvironment]: Environment.Test,
+    [EnvVar.PaytmMid]: 'MID123',
+    [EnvVar.PaytmMerchantKey]: PAYTM_KEY,
+    [EnvVar.PaytmWebsite]: 'WEBSTAGING',
+    [EnvVar.PaytmEnvironment]: Environment.Test,
+  };
+  const secrets = [...ALL_SECRETS, PHONEPE_SECRET, PAYTM_KEY, 'cashfree-client-secret'];
+
+  it('builds each new gateway on its own', async () => {
+    for (const [provider, extra] of [
+      [Provider.PhonePe, Object.fromEntries(Object.entries(allFive).filter(([k]) => k.startsWith('PHONEPE_')))],
+      [Provider.Paytm, Object.fromEntries(Object.entries(allFive).filter(([k]) => k.startsWith('PAYTM_')))],
+    ] as const) {
+      const service = await buildService({ [EnvVar.ApiKey]: API_KEY, ...extra }, { logger: silentLogger });
+      expect(service.client.providers).toEqual([provider]);
+      expect(service.client.capabilities(provider).provider).toBe(provider);
+    }
+  });
+
+  it('answers /v1/providers with five capability sets', async () => {
+    running = await runServe({ env: allFive, logger: silentLogger });
+    const health = await (await fetch(`${running.url}/v1/health`)).json();
+    expect(health).toMatchObject({ status: 'ok' });
+    const response = await fetch(`${running.url}/v1/providers`, { headers: authed });
+    expect(response.status).toBe(200);
+    const capabilities = (await response.json()) as { provider: string; scheduling: string[]; merchantCharges: boolean }[];
+    expect(capabilities.map((c) => c.provider).sort()).toEqual(['cashfree', 'paytm', 'payu', 'phonepe', 'razorpay']);
+    const by = Object.fromEntries(capabilities.map((c) => [c.provider, c]));
+    expect(by.phonepe?.scheduling).toEqual(['merchant']);
+    expect(by.paytm?.scheduling).toEqual(['merchant', 'gateway']);
+    expect(by.razorpay?.merchantCharges).toBe(false);
+    for (const provider of ['phonepe', 'paytm']) {
+      const one = await fetch(`${running.url}/v1/${provider}/capabilities`, { headers: authed });
+      expect(((await one.json()) as { provider: string }).provider).toBe(provider);
+    }
+  });
+
+  it('says what the missing scheduler means for each gateway, and prints no secret', async () => {
+    const service = await buildService(allFive, { logger: silentLogger });
+    const report = service.describe('http://127.0.0.1:1').join('\n');
+    expect(report).toContain('gateways enabled: razorpay, cashfree, payu, phonepe, paytm');
+    expect(report).toContain('billing scheduler: OFF');
+    expect(report).toContain('payu, phonepe bill through the scheduler, so creating a subscription there will be refused');
+    expect(report).toContain('paytm bills through the scheduler unless a plan asks for scheduling "gateway"');
+    expect(report).toContain('cashfree subscriptions on plans with scheduling "merchant" will be refused');
+    expect(report).not.toContain('razorpay bill');
+    for (const secret of secrets) expect(report).not.toContain(secret);
+  });
+
+  it('with a store file the scheduler is on and the report no longer warns', async () => {
+    const service = await buildService({ ...allFive, [EnvVar.SchedulerStoreFile]: join(dir, 'five.json') }, { logger: silentLogger });
+    const report = service.describe('http://127.0.0.1:1').join('\n');
+    expect(report).toContain('billing scheduler: on');
+    expect(report).not.toContain('refused');
+    await service.close();
+  });
+
+  it.each([
+    [Provider.PhonePe, 'phonepe bills through the scheduler, so creating a subscription there will be refused'],
+    [Provider.Paytm, 'paytm bills through the scheduler unless a plan asks for scheduling "gateway": those subscriptions will be refused'],
+  ])('the startup log for %s alone', async (provider, sentence) => {
+    const env = {
+      [EnvVar.ApiKey]: API_KEY,
+      ...Object.fromEntries(Object.entries(allFive).filter(([k]) => k.startsWith(provider === Provider.PhonePe ? 'PHONEPE_' : 'PAYTM_'))),
+    };
+    const service = await buildService(env, { logger: silentLogger });
+    expect(service.describe('http://127.0.0.1:1').join('\n')).toContain(`billing scheduler: OFF (${EnvVar.SchedulerStoreFile} is not set; ${sentence})`);
+  });
+
+  it('refuses to create a PhonePe or Paytm subscription without a scheduler, before calling the gateway', async () => {
+    const gateway = mockFetch([]);
+    running = await runServe({ env: allFive, fetch: gateway.fetch, logger: silentLogger });
+    const body = JSON.stringify({
+      plan: { name: 'Pro', amount: 49900, interval: { unit: 'month', count: 1 } },
+      customer: { name: 'Asha', email: 'asha@example.com', phone: '9876543210' },
+    });
+    const response = await fetch(`${running.url}/v1/phonepe/subscriptions`, {
+      method: 'POST',
+      headers: { ...authed, 'content-type': 'application/json' },
+      body,
+    });
+    const json = (await response.json()) as { error: { code: string; message: string } };
+    expect(json.error.code).toBe(ErrorCode.Config);
+    expect(json.error.message).toContain('merchant-scheduled');
+    expect(gateway.calls).toHaveLength(0);
+  });
+});

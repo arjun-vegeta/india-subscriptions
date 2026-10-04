@@ -80,7 +80,7 @@ PayU has no trial feature for merchant-triggered debits. The mandate is register
 | Nothing or `trial` | ₹2.00 with `free_trial=1` | PayU documents no automatic refund. **You refund it** with `charges.refund`. PayU's pages disagree on whether UPI is ₹0 or ₹2; the adapter uses ₹2, which is valid on every method. |
 | `upfrontAmount` | That amount, at least ₹1 | The first instalment, collected with the registration. For eNACH this works on a small set of banks only. |
 
-The mandate's start date is the first debit date, and its end date comes from `mandateEndsAt`, else seven days after the last cycle when you give `totalCycles`, else five years after the first debit. The mandate ceiling (`billingAmount`) is the plan's `maxAmount`, or its `amount`. For cards, PayU states that a fixed plan's debit must equal that amount, so leave `maxAmount` unset on card plans.
+The mandate's start date is the first debit date. For UPI, PayU's documentation says to send the current date and that any other value is ignored, so a trial on UPI is not at risk from the start date the adapter sends: the scheduler decides when the first debit happens. The end date comes from `mandateEndsAt`, else seven days after the last cycle when you give `totalCycles`, else five years after the first debit. The mandate ceiling (`billingAmount`) is the plan's `maxAmount`, or its `amount`. For cards, PayU states that a fixed plan's debit must equal that amount, so leave `maxAmount` unset on card plans.
 
 ### Pre-debit notification and the debit
 

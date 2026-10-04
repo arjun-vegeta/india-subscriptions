@@ -2,7 +2,7 @@
 
 After this page you will know the contract an adapter must meet, the files to create, how to prove it with the conformance suite, and the method that keeps an adapter honest: read the documentation first, write down the facts, build against documented samples, then verify in the sandbox.
 
-PhonePe and Paytm are being added this way. Their pages ([PhonePe](../gateways/phonepe.md), [Paytm](../gateways/paytm.md)) are stubs until the adapters land.
+PhonePe and Paytm were added this way. Their pages ([PhonePe](../gateways/phonepe.md), [Paytm](../gateways/paytm.md)) show the result: a verification list with the open assumptions, and a plain note that neither has met its sandbox.
 
 ## The method
 
@@ -60,21 +60,53 @@ Then register it:
 ## Tests
 
 - Adapter tests against documented samples, asserting the exact request (method, URL, headers, body) and the normalised result. No real network calls: use `test/helpers/mock-fetch.ts`.
-- Signature tests that compute the expected value independently with `node:crypto`.
-- **The conformance suite**, for merchant-scheduled gateways: `test/helpers/merchant-adapter-conformance.ts` runs the contract above through the real facade and the real scheduler against a scripted fake of the gateway. Write a harness (an adapter plus a scripted gateway) and call `describeMerchantAdapterConformance(harness)` in a test file. `test/integration/conformance.test.ts` shows how it is used.
+- Signature tests that compute the expected value independently with `node:crypto`. If the gateway has its own signing scheme (as Paytm's checksum does), add known-answer vectors from an independent implementation.
 - The integration tests in `test/integration/`, which wire the real adapters through the real facade, including `10-exports.test.ts` for the public surface.
+- **The conformance suite**, for merchant-scheduled gateways. Walk through it as follows.
+
+### Passing the conformance suite
+
+`test/helpers/merchant-adapter-conformance.ts` runs the adapter contract above through the **real** facade and the **real** scheduler against a scripted fake of the gateway. The suite never looks inside the adapter. You supply a `MerchantAdapterHarness` and call `describeMerchantAdapterConformance(harness)` in a test file; `test/integration/conformance.test.ts` does exactly that for every merchant-scheduled adapter.
+
+1. **Write a fake gateway** with the same HTTP surface the adapter calls (see `test/integration/fakes.ts` for the existing ones). It keeps real state: which mandates exist, which notifications and debits it holds, and what it would answer. Drive it by the same `fetch` you give the adapter.
+2. **Implement `ConformanceGateway` on it.** The suite drives the fake through a small, gateway-neutral interface:
+
+| Method | What the fake does |
+|---|---|
+| `authorise(subscription)` | The customer authorises the mandate; returns what the merchant receives: a checkout result, a webhook, or both |
+| `chargeRequestIds()`, `notificationIds()` | Every debit and notification request that reached the gateway, repeats included |
+| `debitCount()` | How many times the customer would be debited. It must count a duplicate that the fake executes. |
+| `holdNextCharge()`, `settle(chargeId, outcome)` | Keep the next debit in flight until the suite settles it as `succeeded` or `failed` |
+| `loseNextChargeAnswer()`, `loseNextChargeRequest()` | The debit is executed but the answer is lost, or the request never arrives: `OUTCOME_UNKNOWN` |
+| `hideDebitsUntil(iso)` (optional) | The status lookup does not see debits it holds until then (eventual consistency) |
+| `debitWebhook(chargeId, outcome)` | The webhook for the end of a debit, signed as the adapter requires |
+| `mandateWebhook(event)` (optional) | The customer paused, resumed or cancelled in their app |
+| `dictatedChargeIds()` (optional) | For gateways where the notification dictates the debit id |
+
+3. **Write the harness.** Name it, give a start instant and a first-charge instant at least four days apart, and set the flags: `rejectsDuplicateIds` (does the gateway refuse a debit id it already holds? if it executes duplicates, the adapter must protect itself) and `notificationDictatesChargeId`. Its `setup(clock)` builds a fresh adapter and gateway on the suite's clock (`ProviderOptions.now`) and returns a valid `CreateSubscriptionInput` with an inline plan.
+4. **Run it.** The suite checks that one debit is raised per cycle, that ids fit `MAX_GATEWAY_ID_LENGTH` and `GATEWAY_ID_PATTERN`, that a lost answer is reconciled with `getCharge` and a lost request is re-sent under the same id with exactly one debit resulting, that a lagging status API never causes a second debit, that `getCharge` answers `NOT_FOUND` only for a debit the gateway has no trace of, that a webhook settles the cycle and a redelivery changes nothing, that a failed debit is retried under a **new** id, that customer pause, resume and cancel reach the schedule, and that cancel stops billing and can be repeated.
+
+```ts fragment reason="the harness is test code that imports vitest, which the documentation does not install"
+describeMerchantAdapterConformance({
+  name: 'NewGateway',
+  startAt: '2026-01-01T05:00:00.000Z',
+  firstChargeAt: '2026-01-20T04:30:00.000Z',
+  flags: { rejectsDuplicateIds: true, notificationDictatesChargeId: false },
+  setup: (clock) => ({ adapter, gateway, createInput }), // built on clock.now and a scripted fake
+});
+```
 
 ## Documentation
 
-1. Add the adapter to `ADAPTER_FACTORIES` in `scripts/generate-docs-reference.ts`. The capability matrix then includes it.
-2. Replace the stub page in `docs/gateways/` with a full page, following [Razorpay](../gateways/razorpay.md), [Cashfree](../gateways/cashfree.md) or [PayU](../gateways/payu.md): configuration, capabilities, how trials, upfront amounts and authorisation debits work, payment methods and their limits, status and webhook mappings, and gateway-specific behaviour. Put the generated regions in the page (`<!-- generated:begin capabilities <gateway> -->` and friends; the region names are in the generator).
+1. Add the adapter to `ADAPTER_FACTORIES` in `scripts/generate-docs-reference.ts`, and its mapping tables to `regionContent` there. The capability matrix then includes it, and the tests require its page to carry the generated regions.
+2. Write the gateway page in `docs/gateways/`, following [Razorpay](../gateways/razorpay.md), [Cashfree](../gateways/cashfree.md), [PayU](../gateways/payu.md), [PhonePe](../gateways/phonepe.md) or [Paytm](../gateways/paytm.md): configuration, capabilities, how trials, upfront amounts and authorisation debits work, payment methods and their limits, status and webhook mappings, and gateway-specific behaviour. Put the generated regions in the page (`<!-- generated:begin capabilities <gateway> -->` and friends; the region names are in the generator).
 3. Run `npm run docs:reference` and `npx vitest run test/docs`.
 
 ## Checklist
 
 - [ ] Fact sheet written, with sources and contradictions.
 - [ ] Adapter, mapper, schemas and constants, with no magic strings.
-- [ ] Tests from documented samples; conformance suite if merchant-scheduled.
+- [ ] Tests from documented samples; the conformance harness passes if merchant-scheduled.
 - [ ] `capabilities` match what the adapter really does.
 - [ ] Config, env vars, exports, OpenAPI and Python models updated.
 - [ ] Gateway page, verification list and generated reference updated.

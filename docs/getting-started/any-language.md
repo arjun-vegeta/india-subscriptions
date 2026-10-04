@@ -131,7 +131,7 @@ There are two different streams, and it helps to keep them apart.
 
 Register `https://<your-service>/v1/razorpay/webhooks` at the gateway. The service verifies the gateway's signature, applies the event to the billing scheduler, and, if you set `EVENTS_WEBHOOK_URL` and `EVENTS_WEBHOOK_SECRET`, **posts the normalised events to your application** as JSON. Your application only has to check one signature scheme whichever gateway sent the event.
 
-If you would rather receive the gateway's webhook in your own application, forward the exact raw body and headers to `POST /v1/{provider}/webhooks/parse` (the Python client wraps this as `parse_webhook`), which returns normalised events.
+If you would rather receive the gateway's webhook in your own application, forward the exact raw body and headers to `POST /v1/{provider}/webhooks/parse` (the Python client wraps this as `parse_webhook`). The service verifies the signature, **applies each event to the billing scheduler** (so a mandate that was authorised, paused or cancelled at the gateway is reflected in billing), and returns the normalised events. Forwarding the same webhook twice is safe, and a bad signature answers 401 and changes nothing.
 
 ### What the service posts
 

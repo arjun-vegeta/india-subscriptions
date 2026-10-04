@@ -24,7 +24,7 @@ Each adapter factory takes the gateway's config and optionally `{ fetch, now, ti
 | Member | Meaning |
 |---|---|
 | `subs.providers` | The configured gateways. |
-| `subs.provider(name)` | The adapter, for anything the client does not wrap. Throws `CONFIG` if the gateway is not configured. |
+| `subs.provider(name)` | The adapter, for anything the client does not wrap. Throws `CONFIG` if the gateway is not configured. `subs.provider(name).capabilities` is the **raw** adapter view; `subs.capabilities(name)` is the effective one. |
 | `subs.capabilities(name)` | What the gateway can do **through this client**: the adapter's capabilities plus what the facade and scheduler add. With a scheduler, merchant-scheduled gateways report `pause` and `resume` as true. See the [capability matrix](./generated/capabilities.md). |
 | `subs.scheduler` | The `BillingScheduler`, if configured. |
 
@@ -55,7 +55,7 @@ For a merchant-scheduled subscription the client also registers a billing schedu
 
 ### `subs.get(provider, subscriptionId)` : `Subscription`
 
-The current subscription. For merchant-scheduled subscriptions the schedule's state is merged in and the schedule is brought in step with the gateway (a mandate that is live starts billing; a dead one stops it). Errors: `NOT_FOUND`. PayU accepts your reference or the composite id.
+The current subscription. For merchant-scheduled gateways with a scheduler configured, **your own reference works as well as the gateway's id**, including before the customer has authorised (PayU, for example, only knows the mandate id afterwards). Gateway-scheduled subscriptions (Razorpay, Cashfree periodic plans) must be read by the gateway's id. For merchant-scheduled subscriptions the schedule's state is merged in and the schedule is brought in step with the gateway (a mandate that is live starts billing; a dead one stops it). When the gateway answers not-found for a mandate the schedule tracks (not authorised yet, or PayU's "Consent is Not Mandated" for a working card mandate), the facade returns the **schedule's view**, built from the schedule alone, with `providerStatus` set to the constant `GATEWAY_STATUS_UNAVAILABLE` (`gateway_status_unavailable`) so you can tell it from a gateway's answer; its `status` is derived from the schedule. Errors: `NOT_FOUND`.
 
 ### `subs.verifyCheckout(provider, result, { expectedSubscriptionId })` : `CheckoutVerification`
 
@@ -89,15 +89,15 @@ Runs the billing scheduler once. Rejects with `CONFIG` when no scheduler is conf
 | `subs.charges.list(provider, subscriptionId, { limit? })` | `Charge[]` | `limit` 1 to 100. `UNSUPPORTED` on PayU. |
 | `subs.charges.get(provider, subscriptionId, chargeId)` | `Charge` | On PayU, by your transaction id; an unknown debit is `NOT_FOUND`. |
 | `subs.charges.create(provider, input)` | `Charge` | Raises a debit yourself: `CreateChargeInput`. With a scheduler you normally never call this. `UNSUPPORTED` on Razorpay. Reusing a `chargeId` must never debit twice. |
-| `subs.charges.notify(provider, input)` | `ChargeNotification` | The pre-debit notification (`NotifyChargeInput`). PayU only; `UNSUPPORTED` elsewhere. eNACH needs none: an accepted notification is returned without a request. |
+| `subs.charges.notify(provider, input)` | `ChargeNotification` | The pre-debit notification (`NotifyChargeInput`). PayU, PhonePe and Paytm; `UNSUPPORTED` elsewhere. Where bank mandates need none, an accepted notification is returned without a request. When the result carries a `chargeId` (PhonePe), the notification **dictates the id of the debit that follows**: pass that id to `charges.create` and `charges.get`. |
 | `subs.charges.refund(provider, input)` | `Refund` | `RefundInput`. See [Refunds](../guides/managing-subscriptions.md#refunds). |
 
 ## Webhooks
 
 | Method | Meaning |
 |---|---|
-| `subs.webhooks.parse(provider, { rawBody, headers })` | Verifies the signature and returns the normalised `SubscriptionEvent[]`. Pure: stores nothing. Throws `SIGNATURE_INVALID`, or `CONFIG` if the webhook secret is not configured. |
-| `subs.webhooks.handle(provider, { rawBody, headers })` | `parse`, then applies each event to the billing scheduler. Use this in your webhook route. |
+| `subs.webhooks.parse(provider, { rawBody, headers })` | Verifies the signature and returns the normalised `SubscriptionEvent[]`. Pure: stores nothing and does not touch the scheduler. Throws `SIGNATURE_INVALID`, or `CONFIG` if the webhook secret is not configured. |
+| `subs.webhooks.handle(provider, { rawBody, headers })` | `parse`, then applies each event to the billing scheduler. Use this in your webhook route. The HTTP service's `POST /v1/{provider}/webhooks/parse` route does the same as `handle`: it verifies, applies to the scheduler and normalises. |
 
 ## Other exports
 

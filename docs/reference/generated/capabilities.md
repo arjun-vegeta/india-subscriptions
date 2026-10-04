@@ -8,26 +8,26 @@ What each gateway adapter can do, read from the adapters themselves with dummy c
 
 ## Adapters
 
-| Capability | Razorpay | Cashfree | PayU | Meaning |
-|---|---|---|---|---|
-| `scheduling` | `gateway` | `gateway`, `merchant` | `merchant` | Scheduling modes available; the first is the default. |
-| `gatewayPlans` | yes | yes | no | The gateway stores plan objects (otherwise plans exist only in your code). |
-| `trial` | yes | yes | yes | Free trials are supported. |
-| `upfrontAmount` | yes | yes | yes | An upfront amount can be collected with the authorisation. |
-| `quantity` | yes | no | no | A subscription can bill several units of a plan. |
-| `pause` | yes | yes | no | A subscription can be paused. |
-| `resume` | yes | yes | no | A paused subscription can be resumed. |
-| `cancelAtPeriodEnd` | yes | no | no | A subscription can be cancelled at the end of the paid period. |
-| `changePlan` | yes | yes | no | A subscription can move to another plan. |
-| `merchantCharges` | no | yes | yes | The merchant can raise debits itself (`createCharge`). |
-| `merchantPreDebitNotification` | no | no | yes | The merchant must send the pre-debit notification itself (`notifyCharge`). |
-| `merchantChargeLeadHours` | not set | `48` | not set | Hours before the debit date by which a merchant-raised charge must be created (with `scheduledAt` set), for gateways that send the pre-debit notification themselves once the charge exists. Absent or 0 means a charge can be raised on the due date itself. |
-| `merchantChargeMaxAheadHours` | not set | `312` | not set | Furthest ahead, in hours, that a merchant-raised charge may be scheduled. |
-| `listCharges` | yes | yes | no | The charges of a subscription can be listed. |
-| `refunds` | yes | yes | yes | Charges can be refunded. |
-| `signedWebhooks` | yes | yes | no | Webhooks carry a signature this library verifies. |
-| `idempotencyKeys` | no | yes | no | Create calls accept an idempotency key. |
-| `paymentMethods` | `card`, `upi`, `enach` | `upi`, `card`, `enach` | `card`, `upi`, `enach` | The payment methods mandates can be authorised with. |
+| Capability | Razorpay | Cashfree | PayU | PhonePe | Paytm | Meaning |
+|---|---|---|---|---|---|---|
+| `scheduling` | `gateway` | `gateway`, `merchant` | `merchant` | `merchant` | `merchant`, `gateway` | Scheduling modes available; the first is the default. |
+| `gatewayPlans` | yes | yes | no | no | no | The gateway stores plan objects (otherwise plans exist only in your code). |
+| `trial` | yes | yes | yes | yes | yes | Free trials are supported. |
+| `upfrontAmount` | yes | yes | yes | yes | yes | An upfront amount can be collected with the authorisation. |
+| `quantity` | yes | no | no | no | no | A subscription can bill several units of a plan. |
+| `pause` | yes | yes | no | no | yes | A subscription can be paused. |
+| `resume` | yes | yes | no | no | yes | A paused subscription can be resumed. |
+| `cancelAtPeriodEnd` | yes | no | no | no | no | A subscription can be cancelled at the end of the paid period. |
+| `changePlan` | yes | yes | no | no | no | A subscription can move to another plan. |
+| `merchantCharges` | no | yes | yes | yes | yes | The merchant can raise debits itself (`createCharge`). |
+| `merchantPreDebitNotification` | no | no | yes | yes | yes | The merchant must send the pre-debit notification itself (`notifyCharge`). |
+| `merchantChargeLeadHours` | not set | `48` | not set | not set | not set | Hours before the debit date by which a merchant-raised charge must be created (with `scheduledAt` set), for gateways that send the pre-debit notification themselves once the charge exists. Absent or 0 means a charge can be raised on the due date itself. |
+| `merchantChargeMaxAheadHours` | not set | `312` | not set | not set | not set | Furthest ahead, in hours, that a merchant-raised charge may be scheduled. |
+| `listCharges` | yes | yes | no | no | no | The charges of a subscription can be listed. |
+| `refunds` | yes | yes | yes | yes | yes | Charges can be refunded. |
+| `signedWebhooks` | yes | yes | no | yes | yes | Webhooks carry a signature this library verifies. |
+| `idempotencyKeys` | no | yes | no | no | no | Create calls accept an idempotency key. |
+| `paymentMethods` | `card`, `upi`, `enach` | `upi`, `card`, `enach` | `card`, `upi`, `enach` | `upi` | `upi`, `card`, `enach` | The payment methods mandates can be authorised with. |
 
 ## What the facade reports
 
@@ -43,3 +43,5 @@ No differences: every gateway reports its adapter's capabilities.
 |---|---|---|---|
 | PayU | `pause` | no | yes |
 | PayU | `resume` | no | yes |
+| PhonePe | `pause` | no | yes |
+| PhonePe | `resume` | no | yes |

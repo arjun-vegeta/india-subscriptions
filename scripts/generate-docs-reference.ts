@@ -24,6 +24,10 @@ import { cashfree } from '../src/providers/cashfree/index.js';
 import * as CashfreeConstants from '../src/providers/cashfree/constants.js';
 import { payu } from '../src/providers/payu/index.js';
 import * as PayUConstants from '../src/providers/payu/constants.js';
+import { paytm } from '../src/providers/paytm/index.js';
+import * as PaytmConstants from '../src/providers/paytm/constants.js';
+import { phonepe } from '../src/providers/phonepe/index.js';
+import * as PhonePeConstants from '../src/providers/phonepe/constants.js';
 import { razorpay } from '../src/providers/razorpay/index.js';
 import * as RazorpayMapper from '../src/providers/razorpay/mapper.js';
 import { MemorySchedulerStore } from '../src/scheduler/memory-store.js';
@@ -591,6 +595,9 @@ const ADAPTER_FACTORIES: Partial<Record<Provider, () => SubscriptionProvider>> =
   [Provider.Razorpay]: () => razorpay({ keyId: 'rzp_test_dummy', keySecret: 'dummy' }),
   [Provider.Cashfree]: () => cashfree({ clientId: 'dummy', clientSecret: 'dummy', environment: Environment.Test }),
   [Provider.PayU]: () => payu({ key: 'dummy', salt: 'dummy', environment: Environment.Test }),
+  [Provider.PhonePe]: () => phonepe({ clientId: 'dummy', clientSecret: 'dummy', clientVersion: 1, environment: Environment.Test }),
+  [Provider.Paytm]: () =>
+    paytm({ mid: 'dummymid', merchantKey: '0123456789abcdef', website: 'WEBSTAGING', environment: Environment.Test }),
 };
 
 /** The gateways with an adapter, in the order of `Provider`. */
@@ -613,6 +620,8 @@ const PROVIDER_LABEL: Record<string, string> = {
   [Provider.Razorpay]: 'Razorpay',
   [Provider.Cashfree]: 'Cashfree',
   [Provider.PayU]: 'PayU',
+  [Provider.PhonePe]: 'PhonePe',
+  [Provider.Paytm]: 'Paytm',
 };
 
 type CapabilityKey = Exclude<keyof Capabilities, 'provider'>;
@@ -721,6 +730,30 @@ const ENV_SAMPLES: Record<(typeof EnvVar)[keyof typeof EnvVar], string> = {
   [EnvVar.PayuAcceptUnsignedWebhooks]: 'false',
   [EnvVar.PayuPaymentUrl]: 'https://test.payu.in/_payment',
   [EnvVar.PayuApiUrl]: 'https://test.payu.in/merchant/postservice.php?form=2',
+  [EnvVar.PhonepeClientId]: 'dummy-client-id',
+  [EnvVar.PhonepeClientSecret]: 'dummy-client-secret',
+  [EnvVar.PhonepeClientVersion]: '1',
+  [EnvVar.PhonepeEnvironment]: Environment.Test,
+  [EnvVar.PhonepeWebhookUsername]: 'dummy-user',
+  [EnvVar.PhonepeWebhookPassword]: 'dummy-password',
+  [EnvVar.PhonepeRedirectUrl]: 'https://example.com/phonepe/return',
+  [EnvVar.PhonepeApiUrl]: 'https://api-preprod.phonepe.com/apis/pg-sandbox',
+  [EnvVar.PhonepeTokenUrl]: 'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token',
+  [EnvVar.PaytmMid]: 'dummymid',
+  [EnvVar.PaytmMerchantKey]: '0123456789abcdef',
+  [EnvVar.PaytmWebsite]: 'WEBSTAGING',
+  [EnvVar.PaytmEnvironment]: Environment.Test,
+  [EnvVar.PaytmCallbackUrl]: 'https://example.com/paytm/return',
+  [EnvVar.PaytmChannelId]: 'WEB',
+  [EnvVar.PaytmClientId]: 'dummy-client',
+  [EnvVar.PaytmGraceDays]: '3',
+  [EnvVar.PaytmRetryCount]: '3',
+  [EnvVar.PaytmMandateYears]: '5',
+  [EnvVar.PaytmDebitReason]: 'Subscription renewal',
+  [EnvVar.PaytmSubscriptionBaseUrl]: 'https://securestage.paytmpayments.com',
+  [EnvVar.PaytmTransactionStatusBaseUrl]: 'https://securegw-stage.paytmpayments.in',
+  [EnvVar.PaytmRefundBaseUrl]: 'https://securegw-stage.paytmpayments.in',
+  [EnvVar.PaytmCheckoutBaseUrl]: 'https://securestage.paytmpayments.com',
   [EnvVar.SchedulerStoreFile]: '/var/lib/india-subscriptions/scheduler.json',
   [EnvVar.SchedulerTickSeconds]: '300',
   [EnvVar.EventsWebhookUrl]: 'https://app.example.com/billing-events',
@@ -734,12 +767,14 @@ function envGroup(name: EnvName): string {
   if (name.startsWith('RAZORPAY_')) return 'Razorpay';
   if (name.startsWith('CASHFREE_')) return 'Cashfree';
   if (name.startsWith('PAYU_')) return 'PayU';
+  if (name.startsWith('PHONEPE_')) return 'PhonePe';
+  if (name.startsWith('PAYTM_')) return 'Paytm';
   if (name.startsWith('SCHEDULER_')) return 'Billing scheduler';
   if (name.startsWith('EVENTS_WEBHOOK_')) return 'Events webhook';
   return 'Service';
 }
 
-const ENV_GROUPS = ['Service', 'Razorpay', 'Cashfree', 'PayU', 'Billing scheduler', 'Events webhook'];
+const ENV_GROUPS = ['Service', 'Razorpay', 'Cashfree', 'PayU', 'PhonePe', 'Paytm', 'Billing scheduler', 'Events webhook'];
 
 function messageOf(action: () => unknown): string | undefined {
   try {
@@ -904,6 +939,41 @@ function regionContent(name: string): string[] {
         '',
         ...mapTable(PayUConstants.EVENT_BY_UPI_ACTION, ['UPI mandate `action`', 'Unified event']),
       ];
+    case 'phonepe-subscription-status':
+      return [
+        ...mapTable(PhonePeConstants.SUBSCRIPTION_STATE_TO_STATUS, ['PhonePe mandate state', 'Unified status']),
+        '',
+        ...mapTable(
+          PhonePeConstants.SETUP_ORDER_STATE_TO_STATUS as Record<string, string>,
+          ['Setup order state (before the mandate exists)', 'Unified status'],
+        ),
+      ];
+    case 'phonepe-charge-status':
+      return mapTable(PhonePeConstants.ORDER_STATE_TO_CHARGE_STATUS, ['PhonePe order state', 'Unified charge status']);
+    case 'phonepe-refund-status':
+      return mapTable(PhonePeConstants.REFUND_STATE_TO_STATUS, ['PhonePe refund state', 'Unified refund status']);
+    case 'phonepe-frequencies':
+      return table(
+        ['Plan interval', 'PhonePe frequency'],
+        PhonePeConstants.FREQUENCY_BY_INTERVAL.map((entry) => [`${entry.count} ${entry.unit}`, code(entry.frequency)]),
+      );
+    case 'paytm-subscription-status':
+      return mapTable(PaytmConstants.SUBSCRIPTION_STATUS_MAP, ['Paytm subscription status', 'Unified status']);
+    case 'paytm-charge-status':
+      return mapTable(PaytmConstants.PAYTM_CHARGE_STATUS_MAP, ['Paytm transaction status', 'Unified charge status']);
+    case 'paytm-payment-modes':
+      return mapTable(PaytmConstants.PAYMENT_MODE_MAP, ['Paytm payment mode', 'Unified payment method']);
+    case 'paytm-webhook-events':
+      return [
+        ...mapTable(PaytmConstants.SUBSCRIPTION_EVENT_MAP, ['Status in the subscription status webhook', 'Unified event']),
+        '',
+        ...mapTable(PaytmConstants.PAYMENT_EVENT_MAP, ['Status in the payment webhook', 'Unified event']),
+      ];
+    case 'paytm-frequencies':
+      return table(
+        ['Plan interval', 'Paytm frequency unit'],
+        PaytmConstants.PAYTM_FREQUENCY_FOR_INTERVAL.map((entry) => [`${entry.count} ${entry.unit}`, code(entry.frequency)]),
+      );
     default:
       throw new Error(`Unknown generated region "${name}"`);
   }

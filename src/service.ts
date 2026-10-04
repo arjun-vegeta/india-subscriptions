@@ -4,7 +4,7 @@
  * and testable without spawning a process.
  */
 import type { Server } from 'node:http';
-import { ErrorCode, Provider } from './constants.js';
+import { ErrorCode, Provider, SchedulingMode } from './constants.js';
 import { Subscriptions, createSubscriptions } from './client.js';
 import { SubscriptionError, isSubscriptionError } from './errors.js';
 import {
@@ -17,6 +17,8 @@ import type { FetchLike } from './http.js';
 import type { SubscriptionProvider } from './provider.js';
 import { cashfree } from './providers/cashfree/index.js';
 import { payu } from './providers/payu/index.js';
+import { paytm } from './providers/paytm/index.js';
+import { phonepe } from './providers/phonepe/index.js';
 import { razorpay } from './providers/razorpay/index.js';
 import { BillingScheduler } from './scheduler/scheduler.js';
 import type { TickResult } from './scheduler/schemas.js';
@@ -101,14 +103,24 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
   const providerOptions = options.fetch ? { fetch: options.fetch } : {};
 
   const providers: SubscriptionProvider[] = [];
-  const { razorpay: razorpayConfig, cashfree: cashfreeConfig, payu: payuConfig } = {
+  const {
+    razorpay: razorpayConfig,
+    cashfree: cashfreeConfig,
+    payu: payuConfig,
+    phonepe: phonepeConfig,
+    paytm: paytmConfig,
+  } = {
     razorpay: config.gateways[Provider.Razorpay],
     cashfree: config.gateways[Provider.Cashfree],
     payu: config.gateways[Provider.PayU],
+    phonepe: config.gateways[Provider.PhonePe],
+    paytm: config.gateways[Provider.Paytm],
   };
   if (razorpayConfig) providers.push(razorpay(razorpayConfig, providerOptions));
   if (cashfreeConfig) providers.push(cashfree(cashfreeConfig, providerOptions));
   if (payuConfig) providers.push(payu(payuConfig, providerOptions));
+  if (phonepeConfig) providers.push(phonepe(phonepeConfig, providerOptions));
+  if (paytmConfig) providers.push(paytm(paytmConfig, providerOptions));
 
   const eventsWebhook = config.eventsWebhook;
   const schedulerEvents = eventsWebhook && config.schedulerStoreFile
@@ -167,6 +179,35 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
   };
 }
 
+/**
+ * What a missing scheduler means, per gateway, from what its adapter declares (the same rule the client applies):
+ * - only merchant scheduling (PayU, PhonePe): every subscription is refused;
+ * - both, merchant first (Paytm): a plan that does not ask for `gateway` scheduling is refused;
+ * - both, gateway first (Cashfree): only a plan that asks for `merchant` scheduling is refused.
+ * Gateways that raise every debit themselves (Razorpay) are not mentioned.
+ */
+function schedulerConsequence(enabled: readonly Provider[], client: Subscriptions): string {
+  const always: Provider[] = [];
+  const clauses: string[] = [];
+  for (const provider of enabled) {
+    const { merchantCharges, scheduling } = client.capabilities(provider);
+    const merchant = scheduling.includes(SchedulingMode.Merchant);
+    if (!merchantCharges && !merchant) continue;
+    if (scheduling.every((mode) => mode === SchedulingMode.Merchant)) always.push(provider);
+    else if (scheduling[0] === SchedulingMode.Merchant) {
+      clauses.push(`${provider} bills through the scheduler unless a plan asks for scheduling "${SchedulingMode.Gateway}": those subscriptions will be refused`);
+    } else {
+      clauses.push(`${provider} subscriptions on plans with scheduling "${SchedulingMode.Merchant}" will be refused`);
+    }
+  }
+  if (always.length > 0) {
+    clauses.unshift(
+      `${always.join(', ')} bill${always.length === 1 ? 's' : ''} through the scheduler, so creating a subscription there will be refused`,
+    );
+  }
+  return clauses.length > 0 ? clauses.join('; ') : 'none of the enabled gateways needs it';
+}
+
 function describeService(config: ServiceConfig, client: Subscriptions, listenUrl: string): string[] {
   const enabled = GATEWAY_ORDER.filter((provider) => config.gateways[provider]);
   const lines = [
@@ -177,12 +218,7 @@ function describeService(config: ServiceConfig, client: Subscriptions, listenUrl
   if (config.schedulerStoreFile) {
     lines.push(`billing scheduler: on (store ${config.schedulerStoreFile}, tick every ${config.tickSeconds}s)`);
   } else {
-    const merchantScheduled = enabled.filter((provider) => client.capabilities(provider).merchantCharges);
-    const consequence =
-      merchantScheduled.length > 0
-        ? `${merchantScheduled.join(', ')} bill${merchantScheduled.length === 1 ? 's' : ''} through the scheduler, ` +
-          'so creating a subscription there will be refused'
-        : 'none of the enabled gateways needs it';
+    const consequence = schedulerConsequence(enabled, client);
     lines.push(`billing scheduler: OFF (${EnvVar.SchedulerStoreFile} is not set; ${consequence})`);
   }
   lines.push(

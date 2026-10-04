@@ -2,7 +2,7 @@
 
 After this page you will be able to run the customer's authorisation step for any gateway with one call, handle every outcome, and know how the result gets back to your server on each gateway.
 
-Creating a subscription returns `subscription.checkout`, an **instruction** describing what the customer's browser must do. `openCheckout` from `india-subscriptions/checkout` carries it out. It imports no Node module, depends only on `zod`, and never sees a secret: it only knows what your server chose to return. PayU's salt, for example, signs the form on your server and is never in it.
+Creating a subscription returns `subscription.checkout`, an **instruction** describing what the customer's browser must do. `openCheckout` from `india-subscriptions/checkout` carries it out. It imports no Node module, depends only on `zod`, and never sees a secret: it only knows what your server chose to return. PayU's salt and Paytm's merchant key, for example, sign on your server and are never in the form.
 
 ## The four kinds of instruction
 
@@ -12,8 +12,8 @@ Branch on `checkout.kind` (a `CheckoutKind` constant) if you build your own UI; 
 |---|---|---|---|
 | `razorpay_checkout` | Loads Razorpay Standard Checkout, opens it for the subscription id | Razorpay | `completed` with the gateway's handler response, or `dismissed`, or `failed` |
 | `cashfree_checkout` | Loads Cashfree.js, calls `subscriptionsCheckout` with the session id | Cashfree | `redirecting` (the customer returns to your `returnUrl`), or `failed` |
-| `form_post` | Builds a hidden form with the given fields and submits it to the gateway | PayU | `redirecting` |
-| `redirect` | Navigates to a URL | No current adapter returns it; it exists for gateways with a hosted page. Razorpay's `hostedUrl` can be used with `redirectTo`. | `redirecting` |
+| `form_post` | Builds a hidden form with the given fields and submits it to the gateway | PayU, Paytm | `redirecting` |
+| `redirect` | Navigates to a URL | PhonePe (its hosted checkout page). Razorpay's `hostedUrl` can also be used with `redirectTo`. | `redirecting` |
 
 `openCheckout` returns an outcome you switch on with the `CheckoutStatus` constants:
 
@@ -64,6 +64,8 @@ All optional. `name`, `description`, `image`, `theme.color` and `notes` are for 
 | Razorpay | The handler response, in the browser (`completed`). With a `callbackUrl` on the instruction, Razorpay redirects the page instead and no handler is registered. | `subs.verifyCheckout(Provider.Razorpay, result, { expectedSubscriptionId })` |
 | Cashfree | The customer returns to your `returnUrl` with `cf_subscriptionId` in the query. The library trusts nothing else in the query and fetches the subscription. | `verifyCheckout(Provider.Cashfree, queryAsObject, { expectedSubscriptionId })` |
 | PayU | PayU **posts a form** to your `surl` (success) or `furl` (failure). Verify the response hash with `verifyCheckout`. | `verifyCheckout(Provider.PayU, formFields, { expectedSubscriptionId })` |
+| PhonePe | The customer returns to your return URL; the adapter added `merchantSubscriptionId` to it. Nothing in the return is signed, so the mandate is read from PhonePe. | `verifyCheckout(Provider.PhonePe, queryAsObject, { expectedSubscriptionId })` |
+| Paytm | Paytm **posts a form** to your `callbackUrl`, with a `CHECKSUMHASH`. | `verifyCheckout(Provider.Paytm, formFields, { expectedSubscriptionId })` |
 
 Always pass `expectedSubscriptionId`: the id (or your `reference`) your server stored when it created the subscription. A genuine, correctly signed result for a **different** subscription then fails with `SIGNATURE_INVALID`, so a customer cannot replay one authorisation to unlock another.
 
@@ -94,4 +96,4 @@ An eNACH mandate that the bank has not yet confirmed comes back as `authorized: 
 
 ## Content-Security-Policy
 
-Allow the gateway scripts and endpoints you use: `https://checkout.razorpay.com` for Razorpay, `https://sdk.cashfree.com` for Cashfree.js, and the PayU host in `form-action` (`https://test.payu.in` or `https://secure.payu.in`).
+Allow the gateway scripts and endpoints you use: `https://checkout.razorpay.com` for Razorpay, `https://sdk.cashfree.com` for Cashfree.js, and the PayU or Paytm host in `form-action` (`https://test.payu.in` or `https://secure.payu.in`; `securestage.paytmpayments.com` or `secure.paytmpayments.com`). PhonePe is a plain navigation to its hosted page.

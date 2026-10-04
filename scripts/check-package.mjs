@@ -145,6 +145,11 @@ assert.deepEqual(client.providers, ['razorpay']);
 assert.equal(client.capabilities('razorpay').provider, 'razorpay');
 assert.equal(typeof main.cashfree, 'function');
 assert.equal(typeof main.payu, 'function');
+assert.equal(typeof main.phonepe, 'function');
+assert.equal(typeof main.paytm, 'function');
+assert.equal(typeof main.PhonePeApi, 'object');
+assert.equal(typeof main.PaytmApi, 'object');
+assert.deepEqual(main.createSubscriptions({ providers: [main.phonepe({ clientId: 'c', clientSecret: 's', clientVersion: 1, environment: 'test' }), main.paytm({ mid: 'm', merchantKey: '0123456789abcdef', website: 'WEBSTAGING', environment: 'test' })] }).providers, ['phonepe', 'paytm']);
 assert.equal(typeof main.BillingScheduler, 'function');
 assert.equal(typeof main.MemorySchedulerStore, 'function');
 assert.equal(typeof main.RazorpayApi, 'object');
@@ -206,7 +211,7 @@ console.log('cjs identity ok');
   mkdirSync(join(consumer, 'node_modules', '@types'), { recursive: true });
   symlinkSync(join(ROOT, 'node_modules', '@types', 'node'), join(consumer, 'node_modules', '@types', 'node'), 'dir');
   const typesSource = `
-import { createSubscriptions, razorpay, RazorpayApi, CashfreeApi, PayUApi, SubscriptionError, ErrorCode, BaseProvider, type SubscriptionProvider, type Subscription, type SchedulerStore } from '${PACKAGE_NAME}';
+import { createSubscriptions, razorpay, phonepe, paytm, RazorpayApi, CashfreeApi, PayUApi, PhonePeApi, PaytmApi, SubscriptionError, ErrorCode, BaseProvider, type SubscriptionProvider, type Subscription, type SchedulerStore } from '${PACKAGE_NAME}';
 import { FileSchedulerStore, createHandler, runServe } from '${PACKAGE_NAME}/server';
 import { openCheckout, type CheckoutInstruction } from '${PACKAGE_NAME}/checkout';
 
@@ -217,7 +222,7 @@ const store: Promise<SchedulerStore> = FileSchedulerStore.open('/tmp/x.json');
 const handler = createHandler({ client, apiKey: 'k' });
 const checkout: (i: CheckoutInstruction) => Promise<unknown> = (i) => openCheckout(i);
 const custom: typeof BaseProvider | SubscriptionProvider | undefined = undefined;
-void [status, code, store, handler, checkout, custom, runServe, RazorpayApi, CashfreeApi, PayUApi];
+void [status, code, store, handler, checkout, custom, runServe, RazorpayApi, CashfreeApi, PayUApi, PhonePeApi, PaytmApi, phonepe, paytm];
 `;
   const tsc = join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
   const typecheck = (label, file, flags) => {
@@ -262,7 +267,7 @@ void [status, code, store, handler, checkout, custom, runServe, RazorpayApi, Cas
   const noConfig = spawnSync(bin, ['serve'], { cwd: consumer, encoding: 'utf8', env: { PATH: process.env.PATH } });
   check('refuses to start without configuration (exit 2, message, no stack)', noConfig.status === 2 && /Invalid configuration/.test(noConfig.stderr) && !/\n\s+at /.test(noConfig.stderr));
 
-  const secrets = { apiKey: 'check-package-api-key-0123456789', razorpay: 'check-package-razorpay-secret' };
+  const secrets = { apiKey: 'check-package-api-key-0123456789', razorpay: 'check-package-razorpay-secret', phonepe: 'check-package-phonepe-secret', paytm: 'CHECKPKGKEY01234' };
   const storeFile = join(work, 'state', 'scheduler.json');
   const child = spawn(bin, ['serve'], {
     cwd: consumer,
@@ -273,6 +278,14 @@ void [status, code, store, handler, checkout, custom, runServe, RazorpayApi, Cas
       RAZORPAY_KEY_ID: 'rzp_test_fake',
       RAZORPAY_KEY_SECRET: secrets.razorpay,
       RAZORPAY_WEBHOOK_SECRET: 'fake-webhook-secret',
+      PHONEPE_CLIENT_ID: 'pp_fake',
+      PHONEPE_CLIENT_SECRET: secrets.phonepe,
+      PHONEPE_CLIENT_VERSION: '1',
+      PHONEPE_ENVIRONMENT: 'test',
+      PAYTM_MID: 'MIDFAKE',
+      PAYTM_MERCHANT_KEY: secrets.paytm,
+      PAYTM_WEBSITE: 'WEBSTAGING',
+      PAYTM_ENVIRONMENT: 'test',
       SCHEDULER_STORE_FILE: storeFile,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -290,11 +303,11 @@ void [status, code, store, handler, checkout, custom, runServe, RazorpayApi, Cas
   }
   const url = /listening on (http:\/\/\S+)/.exec(out)[1];
   check('prints the listen URL', true, url);
-  check('prints which gateways are enabled and the scheduler state', /gateways enabled: razorpay/.test(out) && /billing scheduler: on/.test(out));
+  check('prints which gateways are enabled and the scheduler state', /gateways enabled: razorpay, phonepe, paytm/.test(out) && /billing scheduler: on/.test(out));
 
   const health = await fetch(`${url}/v1/health`);
   check('GET /v1/health answers 200', health.status === 200);
-  check('health lists the configured gateway', JSON.stringify(await health.json()) === JSON.stringify({ status: 'ok', providers: ['razorpay'] }));
+  check('health lists the configured gateways', JSON.stringify(await health.json()) === JSON.stringify({ status: 'ok', providers: ['razorpay', 'phonepe', 'paytm'] }));
   const unauthenticated = await fetch(`${url}/v1/providers`);
   check('an unauthenticated request is rejected (401)', unauthenticated.status === 401);
   const wrongKey = await fetch(`${url}/v1/providers`, { headers: { authorization: 'Bearer wrong' } });
@@ -307,7 +320,7 @@ void [status, code, store, handler, checkout, custom, runServe, RazorpayApi, Cas
   child.kill('SIGTERM');
   const code = await exited;
   check('SIGTERM stops it cleanly (exit 0)', code === 0, String(code));
-  check('startup output never contains a secret', ![secrets.apiKey, secrets.razorpay, 'fake-webhook-secret'].some((secret) => out.includes(secret) || err.includes(secret)));
+  check('startup output never contains a secret', ![secrets.apiKey, secrets.razorpay, secrets.phonepe, secrets.paytm, 'fake-webhook-secret'].some((secret) => out.includes(secret) || err.includes(secret)));
 
   console.log('\ncheck-package: OK');
 } catch (error) {

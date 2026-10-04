@@ -8,8 +8,8 @@ Carries out a [`CheckoutInstruction`](./generated/models.md#checkoutinstruction)
 
 | Instruction `kind` | Behaviour | Outcome |
 |---|---|---|
-| `redirect` | Navigates to `url` (http or https only) | `redirecting` |
-| `form_post` | Builds a hidden POST form from `fields` through the DOM and submits it. Fields are posted exactly as given. | `redirecting` |
+| `redirect` | Navigates to `url` (http or https only). Used by PhonePe. | `redirecting` |
+| `form_post` | Builds a hidden POST form from `fields` through the DOM and submits it. Fields are posted exactly as given. Used by PayU and Paytm. | `redirecting` |
 | `razorpay_checkout` | Loads `https://checkout.razorpay.com/v1/checkout.js` once, opens it with `keyId` and `subscriptionId`. With `callbackUrl` it registers no handler and the page navigates. | `completed` (with `result`), `dismissed`, or `failed` (with `error`) |
 | `cashfree_checkout` | Loads `https://sdk.cashfree.com/js/v3/cashfree.js` once, initialises it with the mode for `environment` (`sandbox` or `production`), calls `subscriptionsCheckout({ subsSessionId, redirectTarget })` | `failed` on an immediate error, otherwise `redirecting` |
 

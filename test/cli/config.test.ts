@@ -5,6 +5,7 @@ import {
   DEFAULT_HOST,
   DEFAULT_PORT,
   DEFAULT_TICK_SECONDS,
+  GATEWAY_ORDER,
   EnvVar,
   parseServiceEnv,
   type EnvironmentVariables,
@@ -277,5 +278,176 @@ describe('parseServiceEnv', () => {
     const ok = parseServiceEnv({ ...razorpayEnv, [EnvVar.ApiKey]: API_KEY });
     messages.push(...ok.warnings);
     for (const message of messages) for (const secret of secrets) expect(message).not.toContain(secret);
+  });
+});
+
+const phonepeEnv: EnvironmentVariables = {
+  [EnvVar.PhonepeClientId]: 'pp_client',
+  [EnvVar.PhonepeClientSecret]: SECRET,
+  [EnvVar.PhonepeClientVersion]: '1',
+  [EnvVar.PhonepeEnvironment]: Environment.Test,
+};
+const MERCHANT_KEY = 'ABCDEFGHIJKLMNOP'; // exactly 16 bytes
+const paytmEnv: EnvironmentVariables = {
+  [EnvVar.PaytmMid]: 'MID_TEST_123',
+  [EnvVar.PaytmMerchantKey]: MERCHANT_KEY,
+  [EnvVar.PaytmWebsite]: 'WEBSTAGING',
+  [EnvVar.PaytmEnvironment]: Environment.Test,
+};
+
+describe('PhonePe and Paytm', () => {
+  const base = { [EnvVar.ApiKey]: API_KEY };
+
+  it('enables them, in the documented order', () => {
+    const config = parseServiceEnv({ ...base, ...paytmEnv, ...phonepeEnv, ...razorpayEnv });
+    expect(Object.keys(config.gateways).sort()).toEqual([Provider.Paytm, Provider.PhonePe, Provider.Razorpay]);
+    expect(GATEWAY_ORDER).toEqual([Provider.Razorpay, Provider.Cashfree, Provider.PayU, Provider.PhonePe, Provider.Paytm]);
+  });
+
+  it('maps every PhonePe variable to its adapter config', () => {
+    const config = parseServiceEnv({
+      ...base,
+      ...phonepeEnv,
+      [EnvVar.PhonepeClientVersion]: '2',
+      [EnvVar.PhonepeWebhookUsername]: 'hook-user',
+      [EnvVar.PhonepeWebhookPassword]: 'hook-pass',
+      [EnvVar.PhonepeRedirectUrl]: 'https://shop.example.com/done',
+      [EnvVar.PhonepeApiUrl]: 'http://localhost:4001',
+      [EnvVar.PhonepeTokenUrl]: 'http://localhost:4001/token',
+    });
+    expect(config.gateways.phonepe).toEqual({
+      clientId: 'pp_client',
+      clientSecret: SECRET,
+      clientVersion: '2',
+      environment: Environment.Test,
+      webhookUsername: 'hook-user',
+      webhookPassword: 'hook-pass',
+      redirectUrl: 'https://shop.example.com/done',
+      apiUrl: 'http://localhost:4001',
+      tokenUrl: 'http://localhost:4001/token',
+    });
+    expect(config.warnings.join('\n')).not.toContain('phonepe will be rejected');
+  });
+
+  it('warns when PhonePe has no webhook credentials', () => {
+    const config = parseServiceEnv({ ...base, ...phonepeEnv });
+    expect(config.warnings.join('\n')).toContain('webhooks from phonepe will be rejected');
+  });
+
+  it('maps every Paytm variable to its adapter config', () => {
+    const config = parseServiceEnv({
+      ...base,
+      ...paytmEnv,
+      [EnvVar.PaytmCallbackUrl]: 'https://shop.example.com/back',
+      [EnvVar.PaytmChannelId]: 'WAP',
+      [EnvVar.PaytmClientId]: 'C11',
+      [EnvVar.PaytmGraceDays]: '7',
+      [EnvVar.PaytmRetryCount]: '4',
+      [EnvVar.PaytmMandateYears]: '10',
+      [EnvVar.PaytmDebitReason]: 'Monthly plan',
+      [EnvVar.PaytmSubscriptionBaseUrl]: 'http://localhost:4002',
+      [EnvVar.PaytmTransactionStatusBaseUrl]: 'http://localhost:4003',
+      [EnvVar.PaytmRefundBaseUrl]: 'http://localhost:4004',
+      [EnvVar.PaytmCheckoutBaseUrl]: 'http://localhost:4005',
+    });
+    expect(config.gateways.paytm).toEqual({
+      mid: 'MID_TEST_123',
+      merchantKey: MERCHANT_KEY,
+      website: 'WEBSTAGING',
+      environment: Environment.Test,
+      callbackUrl: 'https://shop.example.com/back',
+      channelId: 'WAP',
+      clientId: 'C11',
+      graceDays: 7,
+      retryCount: 4,
+      mandateYears: 10,
+      debitReason: 'Monthly plan',
+      subscriptionBaseUrl: 'http://localhost:4002',
+      transactionStatusBaseUrl: 'http://localhost:4003',
+      refundBaseUrl: 'http://localhost:4004',
+      checkoutBaseUrl: 'http://localhost:4005',
+    });
+  });
+
+  it('leaves the optional Paytm fields to the adapter defaults', () => {
+    const paytm = parseServiceEnv({ ...base, ...paytmEnv }).gateways.paytm;
+    expect(paytm).toMatchObject({ mid: 'MID_TEST_123', website: 'WEBSTAGING' });
+    expect(paytm?.graceDays).toBeUndefined();
+    expect(paytm?.mandateYears).toBeUndefined();
+    expect(paytm?.debitReason).toBeUndefined();
+  });
+
+  it.each([
+    ['phonepe (only the id)', { [EnvVar.PhonepeClientId]: 'x' }, [EnvVar.PhonepeClientSecret, EnvVar.PhonepeClientVersion, EnvVar.PhonepeEnvironment]],
+    ['phonepe (only a URL override)', { [EnvVar.PhonepeApiUrl]: 'http://localhost:1' }, [EnvVar.PhonepeClientId, EnvVar.PhonepeClientSecret]],
+    ['phonepe (no environment)', { ...phonepeEnv, [EnvVar.PhonepeEnvironment]: undefined }, [EnvVar.PhonepeEnvironment]],
+    ['paytm (only the mid)', { [EnvVar.PaytmMid]: 'm' }, [EnvVar.PaytmMerchantKey, EnvVar.PaytmWebsite, EnvVar.PaytmEnvironment]],
+    ['paytm (only an optional)', { [EnvVar.PaytmGraceDays]: '3' }, [EnvVar.PaytmMid, EnvVar.PaytmMerchantKey]],
+    ['paytm (no website)', { ...paytmEnv, [EnvVar.PaytmWebsite]: undefined }, [EnvVar.PaytmWebsite]],
+  ])('refuses a half-configured gateway: %s', (_name, partial, missing) => {
+    const error = failure({ ...base, ...partial });
+    for (const name of missing) expect(error.message).toContain(`${name}: is required`);
+    expect(error.message).not.toContain('No payment gateway is configured');
+  });
+
+  it('needs the PhonePe webhook username and password together', () => {
+    expect(failure({ ...base, ...phonepeEnv, [EnvVar.PhonepeWebhookUsername]: 'u' }).message).toContain(
+      `${EnvVar.PhonepeWebhookPassword}: is required when ${EnvVar.PhonepeWebhookUsername} is set`,
+    );
+    expect(failure({ ...base, ...phonepeEnv, [EnvVar.PhonepeWebhookPassword]: 'p' }).message).toContain(
+      `${EnvVar.PhonepeWebhookUsername}: is required when ${EnvVar.PhonepeWebhookPassword} is set`,
+    );
+  });
+
+  it.each([
+    [EnvVar.PhonepeEnvironment, 'sandbox', phonepeEnv],
+    [EnvVar.PhonepeRedirectUrl, 'not a url', phonepeEnv],
+    [EnvVar.PhonepeApiUrl, 'nope', phonepeEnv],
+    [EnvVar.PhonepeTokenUrl, 'nope', phonepeEnv],
+    [EnvVar.PaytmEnvironment, 'production', paytmEnv],
+    [EnvVar.PaytmChannelId, 'APP', paytmEnv],
+    [EnvVar.PaytmGraceDays, '366', paytmEnv],
+    [EnvVar.PaytmGraceDays, 'x', paytmEnv],
+    [EnvVar.PaytmRetryCount, '0', paytmEnv],
+    [EnvVar.PaytmRetryCount, '11', paytmEnv],
+    [EnvVar.PaytmMandateYears, '0', paytmEnv],
+    [EnvVar.PaytmMandateYears, '31', paytmEnv],
+    [EnvVar.PaytmDebitReason, 'x'.repeat(51), paytmEnv],
+    [EnvVar.PaytmCallbackUrl, 'nope', paytmEnv],
+    [EnvVar.PaytmSubscriptionBaseUrl, 'nope', paytmEnv],
+    [EnvVar.PaytmTransactionStatusBaseUrl, 'nope', paytmEnv],
+    [EnvVar.PaytmRefundBaseUrl, 'nope', paytmEnv],
+    [EnvVar.PaytmCheckoutBaseUrl, 'nope', paytmEnv],
+  ])('rejects %s=%s', (name, value, gateway) => {
+    const error = failure({ ...base, ...gateway, [name]: value });
+    expect(error.code).toBe(ErrorCode.Config);
+    expect(error.message).toContain(`${name}:`);
+  });
+
+  it('lets the Paytm adapter schema have the last word, naming the variable', () => {
+    const error = failure({ ...base, ...paytmEnv, [EnvVar.PaytmMerchantKey]: 'too-short' });
+    expect(error.message).toContain(`${EnvVar.PaytmMerchantKey}:`);
+    expect(error.message).toContain('16 bytes');
+    expect(error.message).not.toContain('too-short');
+  });
+
+  it('never puts a PhonePe or Paytm secret in an error or a warning', () => {
+    const secrets = [SECRET, 'phonepe-hook-password', 'too-short-secret-key', MERCHANT_KEY];
+    const messages = [
+      failure({ ...base, [EnvVar.PhonepeClientSecret]: SECRET, [EnvVar.PhonepeWebhookPassword]: secrets[1] }).message,
+      failure({ ...base, ...phonepeEnv, [EnvVar.PhonepeEnvironment]: SECRET }).message,
+      failure({ ...base, ...paytmEnv, [EnvVar.PaytmMerchantKey]: secrets[2] }).message,
+      failure({ ...base, ...paytmEnv, [EnvVar.PaytmEnvironment]: MERCHANT_KEY }).message,
+      failure({ ...base, [EnvVar.PaytmMerchantKey]: MERCHANT_KEY }).message,
+      ...parseServiceEnv({ ...base, ...phonepeEnv, ...paytmEnv }).warnings,
+    ];
+    for (const message of messages) for (const secret of secrets) expect(message).not.toContain(secret);
+  });
+
+  it('names every new gateway in the "no gateway configured" message', () => {
+    const error = failure(base);
+    for (const name of [EnvVar.PhonepeClientId, EnvVar.PhonepeClientVersion, EnvVar.PaytmMid, EnvVar.PaytmMerchantKey]) {
+      expect(error.message).toContain(name);
+    }
   });
 });

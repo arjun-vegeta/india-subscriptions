@@ -6,6 +6,8 @@ import * as main from '../../src/index.js';
 import * as server from '../../src/server-entry.js';
 import * as cashfreeConstants from '../../src/providers/cashfree/constants.js';
 import * as payuConstants from '../../src/providers/payu/constants.js';
+import * as paytmConstants from '../../src/providers/paytm/constants.js';
+import * as phonepeConstants from '../../src/providers/phonepe/constants.js';
 import * as razorpayConstants from '../../src/providers/razorpay/constants.js';
 import { ProviderSchema } from '../../src/schemas.js';
 
@@ -47,7 +49,8 @@ describe('the main entry', () => {
       'razorpay', 'RazorpayProvider', 'RazorpayConfigSchema',
       'cashfree', 'CashfreeProvider', 'CashfreeConfigSchema',
       'payu', 'PayUProvider', 'PayUConfigSchema', 'encodePayUSubscriptionId', 'decodePayUSubscriptionId',
-      'RazorpayApi', 'CashfreeApi', 'PayUApi',
+      'phonepe', 'PhonePeProvider', 'PhonePeConfigSchema', 'paytm', 'PaytmProvider', 'PaytmConfigSchema',
+      'RazorpayApi', 'CashfreeApi', 'PayUApi', 'PhonePeApi', 'PaytmApi',
       // scheduler
       'BillingScheduler', 'MemorySchedulerStore', 'ScheduleStatus', 'CycleStatus', 'SchedulerEventType',
       'ScheduleRecordSchema', 'CycleRecordSchema', 'TickResultSchema', 'scheduleIdFor', 'awaitsActivation',
@@ -70,16 +73,20 @@ describe('the main entry', () => {
       [main.RazorpayApi, razorpayConstants],
       [main.CashfreeApi, cashfreeConstants],
       [main.PayUApi, payuConstants],
+      [main.PhonePeApi, phonepeConstants],
+      [main.PaytmApi, paytmConstants],
     ] as const) {
       expect(Object.keys(namespace).sort()).toEqual(Object.keys(module).sort());
       const leaked = Object.keys(module).filter((name) => name in main);
       expect(leaked).toEqual([]);
     }
     // Should the gateways ever reuse a constant name (they did, e.g. SUBSCRIPTION_STATUS_MAP), each stays its own object.
-    const shared = Object.keys(razorpayConstants).filter((name) => name in cashfreeConstants && name in payuConstants);
+    const shared = Object.keys(razorpayConstants).filter(
+      (name) => name in cashfreeConstants && name in payuConstants && name in phonepeConstants && name in paytmConstants,
+    );
     for (const name of shared) {
-      const values = [main.RazorpayApi, main.CashfreeApi, main.PayUApi].map((ns) => (ns as Record<string, unknown>)[name]);
-      expect(new Set(values).size).toBe(3);
+      const values = [main.RazorpayApi, main.CashfreeApi, main.PayUApi, main.PhonePeApi, main.PaytmApi].map((ns) => (ns as Record<string, unknown>)[name]);
+      expect(new Set(values).size).toBe(5);
     }
   });
 
@@ -89,6 +96,8 @@ describe('the main entry', () => {
     expect(rzp).toBeInstanceOf(main.BaseProvider);
     expect(main.cashfree({ clientId: 'c', clientSecret: 's', environment: 'test' })).toBeInstanceOf(main.CashfreeProvider);
     expect(main.payu({ key: 'k', salt: 's', environment: 'test' })).toBeInstanceOf(main.PayUProvider);
+    expect(main.phonepe({ clientId: 'c', clientSecret: 's', clientVersion: 1, environment: 'test' })).toBeInstanceOf(main.PhonePeProvider);
+    expect(main.paytm({ mid: 'm', merchantKey: '0123456789abcdef', website: 'WEBSTAGING', environment: 'test' })).toBeInstanceOf(main.PaytmProvider);
     expect(main.createSubscriptions({ providers: [rzp] }).providers).toEqual(['razorpay']);
   });
 

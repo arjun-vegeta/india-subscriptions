@@ -65,10 +65,25 @@ export {
   type PayUProviderOptions,
 } from './providers/payu/index.js';
 
+export { phonepe, PhonePeProvider, type PhonePeProviderOptions } from './providers/phonepe/index.js';
+export {
+  PhonePeConfigSchema,
+  type ParsedPhonePeConfig,
+  type PhonePeConfig,
+} from './providers/phonepe/schemas.js';
+export { paytm, PaytmProvider, type PaytmProviderOptions } from './providers/paytm/index.js';
+export {
+  PaytmConfigSchema,
+  type ParsedPaytmConfig,
+  type PaytmConfig,
+} from './providers/paytm/schemas.js';
+
 // Each gateway's own constants (endpoints, statuses, event names), namespaced because the names collide.
 export * as RazorpayApi from './providers/razorpay/constants.js';
 export * as CashfreeApi from './providers/cashfree/constants.js';
 export * as PayUApi from './providers/payu/constants.js';
+export * as PhonePeApi from './providers/phonepe/constants.js';
+export * as PaytmApi from './providers/paytm/constants.js';
 
 // Billing scheduler for merchant-scheduled mandates (the in-memory store; the file store is in `/server`).
 export * from './scheduler/constants.js';

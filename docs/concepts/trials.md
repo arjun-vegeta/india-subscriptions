@@ -54,7 +54,7 @@ Two rules follow:
 
 - **Razorpay:** there is no separate trial field. Pausing a subscription that is still in its trial would cancel it irreversibly, so the library refuses with `CONFLICT`. Cancel it instead if that is what you mean.
 - **Cashfree:** the first charge cannot happen before the earliest legal date for the method (T+1 or T+2 for UPI and cards, T+4 for eNACH). One FAQ line says the first charge date must be within 14 days of the request; whether that caps trial length is unclear, so check it in the sandbox before selling longer trials. eNACH never collects an upfront amount.
-- **PayU:** UPI mandates start on the current date according to PayU's documentation; whether a future start date is honoured for UPI is one of the things to check. The mandate's end date is derived from `totalCycles`, else five years after the first debit.
+- **PayU:** for UPI, PayU's documentation says it uses the current date as the mandate start and ignores any other value, so a trial on UPI is not at risk from the start date the adapter sends: the scheduler decides when the first debit happens. The mandate's end date is derived from `totalCycles`, else five years after the first debit.
 
 ## After the trial
 

@@ -55,7 +55,7 @@ Enums are generated: `Provider.RAZORPAY`, `SubscriptionStatus.TRIALING`, `Interv
 
 ## Webhooks in a Python web framework
 
-`parse_webhook(client, provider, raw_body, headers)` and `parse_webhook_async(...)` forward the exact raw bytes and the headers to the service, which verifies the gateway's signature and returns normalised events. Read the raw bytes (`request.get_data()` in Flask, `await request.body()` in FastAPI) before anything parses the JSON.
+`parse_webhook(client, provider, raw_body, headers)` and `parse_webhook_async(...)` forward the exact raw bytes and the headers to the service, which verifies the gateway's signature, applies the events to its billing scheduler and returns them normalised. Read the raw bytes (`request.get_data()` in Flask, `await request.body()` in FastAPI) before anything parses the JSON.
 
 The client has no helper for the **events webhook** the service sends to you. Verify its signature with the standard library: see [Using it from any language](../getting-started/any-language.md#verifying-the-signature).
 
