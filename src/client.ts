@@ -194,7 +194,7 @@ export class Subscriptions {
     // A gateway that is only ever billed through the scheduler may not know the id the caller holds (PayU: the reference,
     // until the mandate exists): resolve the schedule first and ask the gateway by the id the schedule holds.
     const early =
-      scheduler && merchantSchedulingOf(adapter.capabilities) === MerchantScheduling.Always
+      scheduler
         ? await this.findSchedule(scheduler, provider, subscriptionId)
         : undefined;
     let subscription: Subscription;

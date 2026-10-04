@@ -7,13 +7,14 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createSubscriptions } from '../../src/client.js';
-import { CancelMode, ChangeTiming, ErrorCode, IntervalUnit, PaymentMethod, Provider, RefundStatus, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
+import type { SubscriptionProvider } from '../../src/provider.js';
+import { CancelMode, ChangeTiming, ChargeStatus, ErrorCode, EventType, IntervalUnit, PaymentMethod, Provider, RefundStatus, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
 import { CashfreeHeader, CashfreePath } from '../../src/providers/cashfree/constants.js';
 import { PAYU_FREE_TRIAL_CONSENT_PAISE, PayUCommand, PayUConsentField } from '../../src/providers/payu/constants.js';
 import { RazorpayEndpoint, RazorpayNoteKey } from '../../src/providers/razorpay/constants.js';
 import { ScheduleStatus } from '../../src/scheduler/index.js';
 import { CapabilitiesSchema, type Capabilities } from '../../src/schemas.js';
-import { CF_FIRST_DUE, PAYU_COMPOSITE, PAYU_DUE, PAYU_MANDATE, setupCashfree, setupPayu } from './fakes.js';
+import { CF_FIRST_DUE, PAYU_COMPOSITE, PAYU_DUE, PAYU_MANDATE, PP_DUE, PP_REFERENCE, PT_DUE, PT_REFERENCE, paytmProvider, phonepeProvider, setupCashfree, setupPayu, setupPaytm, setupPhonePe } from './fakes.js';
 import {
   CASHFREE_ADAPTER_TEST,
   CUSTOMER,
@@ -34,7 +35,7 @@ import {
 const NOW = '2026-11-17T05:00:00.000Z';
 const PLAN = { name: 'Pro monthly', amount: 49900, interval: { unit: IntervalUnit.Month, count: 1 } } as const;
 
-type BuiltAdapter = typeof Provider.Razorpay | typeof Provider.Cashfree | typeof Provider.PayU;
+type BuiltAdapter = typeof Provider.Razorpay | typeof Provider.Cashfree | typeof Provider.PayU | typeof Provider.PhonePe | typeof Provider.Paytm;
 
 /** The capabilities each adapter reports itself (`provider(name).capabilities`). */
 const adapters = (): Record<BuiltAdapter, Capabilities> => {
@@ -44,6 +45,8 @@ const adapters = (): Record<BuiltAdapter, Capabilities> => {
     [Provider.Razorpay]: razorpayProvider(fetch, clock).capabilities,
     [Provider.Cashfree]: cashfreeProvider(fetch, clock).capabilities,
     [Provider.PayU]: payuProvider(fetch, clock).capabilities,
+    [Provider.PhonePe]: phonepeProvider(fetch, clock).capabilities,
+    [Provider.Paytm]: paytmProvider(fetch, clock).capabilities,
   };
 };
 
@@ -51,12 +54,13 @@ const adapters = (): Record<BuiltAdapter, Capabilities> => {
 function effective(): Record<BuiltAdapter, Capabilities> {
   const clock = new Clock(NOW);
   const fetch = scriptedFetch(() => ({ status: 500 })).fetch;
-  const of = (provider: ReturnType<typeof razorpayProvider> | ReturnType<typeof cashfreeProvider> | ReturnType<typeof payuProvider>) =>
-    wire(provider, clock, []).subs.capabilities(provider.name);
+  const of = (provider: SubscriptionProvider) => wire(provider, clock, []).subs.capabilities(provider.name);
   return {
     [Provider.Razorpay]: of(razorpayProvider(fetch, clock)),
     [Provider.Cashfree]: of(cashfreeProvider(fetch, clock)),
     [Provider.PayU]: of(payuProvider(fetch, clock)),
+    [Provider.PhonePe]: of(phonepeProvider(fetch, clock)),
+    [Provider.Paytm]: of(paytmProvider(fetch, clock)),
   };
 }
 
@@ -64,7 +68,7 @@ describe('the capability objects', () => {
   it('are valid and say which gateway they describe; the adapter\'s own view stays raw, the facade\'s view adds pause and resume where the scheduler provides them', () => {
     const clock = new Clock(NOW);
     const fetch = scriptedFetch(() => ({ status: 500 })).fetch;
-    for (const provider of [razorpayProvider(fetch, clock), cashfreeProvider(fetch, clock), payuProvider(fetch, clock)]) {
+    for (const provider of [razorpayProvider(fetch, clock), cashfreeProvider(fetch, clock), payuProvider(fetch, clock), phonepeProvider(fetch, clock), paytmProvider(fetch, clock)]) {
       const { subs } = wire(provider, clock, []);
       expect(CapabilitiesSchema.safeParse(subs.capabilities(provider.name)).success).toBe(true);
       expect(provider.capabilities.provider).toBe(provider.name);
@@ -92,6 +96,21 @@ describe('the capability objects', () => {
     expect(caps.cashfree.merchantChargeLeadHours).toBeGreaterThan(0);
     expect(caps.payu).toMatchObject({ merchantCharges: true, merchantPreDebitNotification: true, scheduling: [SchedulingMode.Merchant] });
     expect(caps.payu.merchantChargeLeadHours).toBeUndefined();
+    expect(caps.phonepe).toMatchObject({ merchantCharges: true, merchantPreDebitNotification: true, scheduling: [SchedulingMode.Merchant] });
+    expect(caps.paytm).toMatchObject({ merchantCharges: true, merchantPreDebitNotification: true, scheduling: [SchedulingMode.Merchant, SchedulingMode.Gateway] });
+    expect([caps.phonepe.merchantChargeLeadHours, caps.paytm.merchantChargeLeadHours]).toEqual([undefined, undefined]);
+  });
+
+  it('the facade adds pause and resume exactly where the adapter cannot do them itself: PhonePe (false -> true through the scheduler); Paytm and the rest are unchanged', () => {
+    const raw = adapters();
+    const facade = effective();
+    expect([raw.phonepe.pause, raw.phonepe.resume, facade.phonepe.pause, facade.phonepe.resume]).toEqual([false, false, true, true]);
+    expect([raw.paytm.pause, raw.paytm.resume, facade.paytm.pause, facade.paytm.resume]).toEqual([true, true, true, true]);
+    for (const name of [Provider.PhonePe, Provider.Paytm]) {
+      const { pause: _pause, resume: _resume, ...rest } = facade[name];
+      const { pause: _rawPause, resume: _rawResume, ...rawRest } = raw[name];
+      expect(rest).toEqual(rawRest);
+    }
   });
 });
 
@@ -122,7 +141,7 @@ describe('the README capability table against the capabilities objects', () => {
 
   it('"Who raises each recurring debit" matches `scheduling`', () => {
     expect(row('Who raises each recurring debit').map((cell) => cell.toLowerCase().includes('this library'))).toEqual(
-      Object.values(adapters()).map((caps) => caps.scheduling.includes(SchedulingMode.Merchant)),
+      [adapters().razorpay, adapters().cashfree, adapters().payu].map((caps) => caps.scheduling.includes(SchedulingMode.Merchant)),
     );
   });
 
@@ -316,5 +335,159 @@ describe('PayU: every flag', () => {
     const notice = await t.subs.charges.notify(Provider.PayU, { subscriptionId: `enach:${PAYU_MANDATE}`, notificationId: 'n_enach', amount: 49900, debitAt: PAYU_DUE });
     expect(notice.accepted).toBe(true);
     expect(t.fake.commands).toEqual([]);
+  });
+});
+
+describe('PhonePe: every flag', () => {
+  it('gatewayPlans=false: plans are UNSUPPORTED and a plan id string is refused; quantity=false is UNSUPPORTED; paymentMethods must include UPI; idempotency is accepted and not sent', async () => {
+    const t = setupPhonePe();
+    const common = { reference: PP_REFERENCE, customer: CUSTOMER, startAt: PP_DUE };
+    expect((await rejection(() => t.subs.plans.create(Provider.PhonePe, { name: 'Pro', amount: 49900, interval: { unit: IntervalUnit.Month, count: 1 } }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.plans.get(Provider.PhonePe, 'p'))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.create(Provider.PhonePe, { ...common, plan: 'plan_1' }))).code).toBe(ErrorCode.Validation);
+    expect((await rejection(() => t.subs.create(Provider.PhonePe, { ...common, plan: { ...PLAN }, quantity: 2 }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.create(Provider.PhonePe, { ...common, plan: { ...PLAN }, paymentMethods: [PaymentMethod.Card] }))).code).toBe(ErrorCode.Validation);
+    expect(t.fake.requests).toHaveLength(0);
+    await t.subs.create(Provider.PhonePe, { ...common, plan: { ...PLAN }, quantity: 1, paymentMethods: [PaymentMethod.Upi], idempotencyKey: 'order-1-create' });
+    expect(JSON.stringify(t.fake.requests)).not.toContain('order-1-create');
+    expect(adapters().phonepe).toMatchObject({ gatewayPlans: false, quantity: false, idempotencyKeys: false, paymentMethods: [PaymentMethod.Upi] });
+  });
+
+  it('trial=true and upfrontAmount=true: a trial delays the first debit; the upfront amount is the setup order\'s amount', async () => {
+    const t = setupPhonePe({ upfrontAmount: 9900 });
+    await t.create();
+    expect(t.fake.requests.find((request) => request.body?.merchantOrderId !== undefined)?.body).toMatchObject({ amount: 9900 });
+    const trial = await t.subs.create(Provider.PhonePe, { reference: 'pp_trial', plan: { ...PLAN }, customer: CUSTOMER, trial: { days: 7 } });
+    expect(trial.trialEndsAt).toBeDefined();
+  });
+
+  it('pause / resume / update (false) are UNSUPPORTED on the adapter; through the facade pause and resume work (the scheduler); cancelAtPeriodEnd and changePlan (false) are refused with no side effect; listCharges (false) is UNSUPPORTED', async () => {
+    const t = setupPhonePe();
+    await t.create();
+    await t.authoriseAndVerify();
+    expect((await rejection(() => t.provider.pauseSubscription(PP_REFERENCE))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.provider.resumeSubscription(PP_REFERENCE))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.provider.updateSubscription(PP_REFERENCE, { amount: 100 }))).code).toBe(ErrorCode.Unsupported);
+    expect((await t.subs.pause(Provider.PhonePe, PP_REFERENCE)).status).toBe(SubscriptionStatus.Paused);
+    expect((await t.subs.resume(Provider.PhonePe, PP_REFERENCE)).status).not.toBe(SubscriptionStatus.Paused);
+
+    const before = t.fake.requests.length;
+    expect((await rejection(() => t.subs.cancel(Provider.PhonePe, PP_REFERENCE, { mode: CancelMode.AtPeriodEnd }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.update(Provider.PhonePe, PP_REFERENCE, { planId: 'x', timing: ChangeTiming.Immediately }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.update(Provider.PhonePe, PP_REFERENCE, { quantity: 2 }))).code).toBe(ErrorCode.Unsupported);
+    expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
+    expect(t.fake.requests).toHaveLength(before);
+    expect((await rejection(() => t.subs.charges.list(Provider.PhonePe, PP_REFERENCE))).code).toBe(ErrorCode.Unsupported);
+  });
+
+  it('merchantCharges and merchantPreDebitNotification (true): notify returns the order id the debit must use, and createCharge with it debits once the window opens', async () => {
+    const t = setupPhonePe();
+    await t.create();
+    await t.authoriseAndVerify();
+    const notice = await t.subs.charges.notify(Provider.PhonePe, { subscriptionId: PP_REFERENCE, notificationId: 'manual_n_1', amount: 49900, debitAt: PP_DUE });
+    expect(notice).toMatchObject({ accepted: true, chargeId: 'manual_n_1' });
+    t.clock.advanceHours(24);
+    const charge = await t.subs.charges.create(Provider.PhonePe, { subscriptionId: PP_REFERENCE, chargeId: notice.chargeId as string, amount: 49900 });
+    expect(charge).toMatchObject({ status: ChargeStatus.Pending, amount: 49900 });
+    expect(t.fake.debits.has('manual_n_1')).toBe(true);
+  });
+
+  it('signedWebhooks=true: a webhook without the right Authorization header is SIGNATURE_INVALID', async () => {
+    const t = setupPhonePe();
+    await t.create();
+    await t.authoriseAndVerify();
+    const good = t.fake.mandateWebhook(PP_REFERENCE, 'paused');
+    expect(t.subs.webhooks.parse(Provider.PhonePe, good)).toHaveLength(1);
+    expect((await rejection(async () => t.subs.webhooks.parse(Provider.PhonePe, { ...good, headers: {} }))).code).toBe(ErrorCode.SignatureInvalid);
+    expect((await rejection(async () => t.subs.webhooks.parse(Provider.PhonePe, { ...good, headers: { authorization: 'nope' } }))).code).toBe(ErrorCode.SignatureInvalid);
+  });
+});
+
+describe('Paytm: every flag', () => {
+  it('gatewayPlans=false: plans are UNSUPPORTED and a plan id string is refused; quantity=false is UNSUPPORTED; physical NACH is refused; idempotency is accepted and not sent', async () => {
+    const t = setupPaytm();
+    const common = { reference: PT_REFERENCE, customer: CUSTOMER, startAt: PT_DUE };
+    expect((await rejection(() => t.subs.plans.create(Provider.Paytm, { name: 'Pro', amount: 49900, interval: { unit: IntervalUnit.Month, count: 1 } }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.plans.get(Provider.Paytm, 'p'))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.create(Provider.Paytm, { ...common, plan: 'plan_1' }))).code).toBe(ErrorCode.Validation);
+    expect((await rejection(() => t.subs.create(Provider.Paytm, { ...common, plan: { ...PLAN }, quantity: 2 }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.create(Provider.Paytm, { ...common, plan: { ...PLAN }, paymentMethods: [PaymentMethod.PhysicalNach] }))).code).toBe(ErrorCode.Validation);
+    expect(t.fake.requests).toHaveLength(0);
+    await t.subs.create(Provider.Paytm, { ...common, plan: { ...PLAN }, idempotencyKey: 'order-1-create' });
+    expect(JSON.stringify(t.fake.requests)).not.toContain('order-1-create');
+    expect(adapters().paytm).toMatchObject({ gatewayPlans: false, quantity: false, idempotencyKeys: false });
+  });
+
+  it('trial=true and upfrontAmount=true: the upfront amount is the first payment of the initiate request', async () => {
+    const t = setupPaytm();
+    await t.subs.create(Provider.Paytm, { reference: 'pt_up', plan: { ...PLAN }, customer: CUSTOMER, startAt: PT_DUE, upfrontAmount: 9900 });
+    expect(t.fake.requests[0]?.body).toMatchObject({ txnAmount: { value: '99.00' } });
+    const trial = await t.subs.create(Provider.Paytm, { reference: 'pt_trial', plan: { ...PLAN }, customer: CUSTOMER, trial: { days: 7 } });
+    expect(trial.trialEndsAt).toBeDefined();
+  });
+
+  it('pause and resume (true): Paytm\'s own API in gateway mode; cancelAtPeriodEnd, changePlan and update (false) are refused with no side effect; listCharges (false) is UNSUPPORTED', async () => {
+    const t = setupPaytm({ scheduling: SchedulingMode.Gateway, startAt: '2026-02-01T05:00:00.000Z' });
+    const subscription = await t.create();
+    await t.authoriseAndVerify(subscription);
+    expect((await t.subs.pause(Provider.Paytm, subscription.id)).status).toBe(SubscriptionStatus.Paused);
+    expect((await t.subs.resume(Provider.Paytm, subscription.id)).status).toBe(SubscriptionStatus.Active);
+    const before = t.fake.requests.length;
+    expect((await rejection(() => t.subs.cancel(Provider.Paytm, subscription.id, { mode: CancelMode.AtPeriodEnd }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { planId: 'x', timing: ChangeTiming.Immediately }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { amount: 100 }))).code).toBe(ErrorCode.Unsupported);
+    expect(t.fake.requests).toHaveLength(before);
+    expect((await rejection(() => t.subs.charges.list(Provider.Paytm, subscription.id))).code).toBe(ErrorCode.Unsupported);
+  });
+
+  it('merchant mode: cancelAtPeriodEnd is refused BEFORE billing stops, and update with a planId or quantity is UNSUPPORTED with the schedule untouched', async () => {
+    const t = setupPaytm();
+    const subscription = await t.create();
+    await t.authoriseAndVerify(subscription);
+    expect((await rejection(() => t.subs.cancel(Provider.Paytm, subscription.id, { mode: CancelMode.AtPeriodEnd }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { planId: 'x' }))).code).toBe(ErrorCode.Unsupported);
+    expect((await rejection(() => t.subs.update(Provider.Paytm, subscription.id, { quantity: 2 }))).code).toBe(ErrorCode.Unsupported);
+    expect((await t.scheduler.get(t.scheduleId))?.status).toBe(ScheduleStatus.Active);
+  });
+
+  it('merchantCharges and merchantPreDebitNotification (true): a manual pre-notify, then a renew naming it, 24 hours later', async () => {
+    const t = setupPaytm();
+    const subscription = await t.create();
+    await t.authoriseAndVerify(subscription);
+    const notice = await t.subs.charges.notify(Provider.Paytm, { subscriptionId: subscription.id, notificationId: 'manual_n_1', amount: 49900, debitAt: PT_DUE });
+    expect(notice).toMatchObject({ accepted: true, invoiceNumber: 'manual_n_1' });
+    t.clock.advanceHours(24);
+    const charge = await t.subs.charges.create(Provider.Paytm, { subscriptionId: subscription.id, chargeId: 'manual_c_1', amount: 49900, invoiceNumber: notice.invoiceNumber });
+    expect(charge).toMatchObject({ status: ChargeStatus.Pending, amount: 49900 });
+    expect(t.fake.debits.get('manual_c_1')?.status).toBe('PENDING');
+  });
+
+  it('refunds=true: only a successful debit is refunded, through Paytm\'s refund API', async () => {
+    const t = setupPaytm();
+    const subscription = await t.create();
+    await t.authoriseAndVerify(subscription);
+    await t.subs.charges.notify(Provider.Paytm, { subscriptionId: subscription.id, notificationId: 'manual_n_2', amount: 49900, debitAt: PT_DUE });
+    t.clock.advanceHours(24);
+    await t.subs.charges.create(Provider.Paytm, { subscriptionId: subscription.id, chargeId: 'manual_c_2', amount: 49900, invoiceNumber: 'manual_n_2' });
+    expect((await rejection(() => t.subs.charges.refund(Provider.Paytm, { chargeId: 'manual_c_2', refundId: 'rf_a' }))).code).toBe(ErrorCode.Validation);
+    t.fake.settle('manual_c_2', ChargeStatus.Succeeded);
+    expect(await t.subs.charges.refund(Provider.Paytm, { chargeId: 'manual_c_2', refundId: 'rf_a' })).toMatchObject({ status: RefundStatus.Pending, amount: 49900 });
+  });
+
+  it('signedWebhooks=true: a form whose CHECKSUMHASH is missing or wrong is SIGNATURE_INVALID', async () => {
+    const t = setupPaytm();
+    const subscription = await t.create();
+    await t.authoriseAndVerify(subscription);
+    const good = t.fake.mandateWebhook(EventType.SubscriptionPaused);
+    expect(t.subs.webhooks.parse(Provider.Paytm, good)).toHaveLength(1);
+    const wrong = new URLSearchParams(good.rawBody);
+    wrong.set('STATUS', 'ACTIVE');
+    expect((await rejection(async () => t.subs.webhooks.parse(Provider.Paytm, { rawBody: wrong.toString(), headers: {} }))).code).toBe(ErrorCode.SignatureInvalid);
+    wrong.delete('CHECKSUMHASH');
+    expect((await rejection(async () => t.subs.webhooks.parse(Provider.Paytm, { rawBody: wrong.toString(), headers: {} }))).code).toBe(ErrorCode.SignatureInvalid);
+  });
+
+  it('paymentMethods: UPI, cards and eNACH are accepted; the capability lists them', () => {
+    expect([...adapters().paytm.paymentMethods].sort()).toEqual([PaymentMethod.Card, PaymentMethod.ENach, PaymentMethod.Upi].sort());
   });
 });

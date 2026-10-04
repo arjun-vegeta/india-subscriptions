@@ -4,7 +4,7 @@ import { paytm } from '../../src/providers/paytm/index.js';
 import { FakePhonePe } from '../phonepe/fake-gateway.js';
 import { CLIENT_ID, CLIENT_SECRET, CLIENT_VERSION, RETURN_URL as PHONEPE_RETURN_URL, WEBHOOK_PASSWORD, WEBHOOK_USERNAME } from '../phonepe/helpers.js';
 import { FakePaytm } from '../paytm/fake-gateway.js';
-import { KEY as PAYTM_KEY, MID as PAYTM_MID, SALT as PAYTM_SALT } from '../paytm/helpers.js';
+import { KEY as PAYTM_KEY, MID as PAYTM_MID, SALT as PAYTM_SALT, independentVerify } from '../paytm/helpers.js';
 import type { WebhookRequest } from '../../src/schemas.js';
 import { ChargeStatus, Environment, ErrorCode, IntervalUnit, PaymentMethod, Provider, SchedulingMode } from '../../src/constants.js';
 import {
@@ -466,11 +466,11 @@ export function phonepeProvider(fetch: FetchLike, clock: Pick<Clock, 'now'>) {
   return phonepe(PHONEPE_CONFIG, { fetch, now: clock.now, maxRetries: 0 });
 }
 
-export function setupPhonePe(options: { totalCycles?: number; onEvent?: (event: SchedulerEvent) => void; upfrontAmount?: number; startAt?: string } = {}) {
+export function setupPhonePe(options: { wrap?: (inner: FetchLike) => FetchLike; totalCycles?: number; onEvent?: (event: SchedulerEvent) => void; upfrontAmount?: number; startAt?: string | null } = {}) {
   const clock = new Clock(PP_T0);
   const fake = new FakePhonePe(clock.nowMs);
   const calls: RecordedCall[] = [];
-  const wired = wire(phonepeProvider(fake.fetch, clock), clock, calls, options.onEvent);
+  const wired = wire(phonepeProvider(options.wrap ? options.wrap(fake.fetch) : fake.fetch, clock), clock, calls, options.onEvent);
   const scheduleId = scheduleIdFor(Provider.PhonePe, PP_REFERENCE);
   const scheduler = wired.subs.scheduler!;
   const create = () =>
@@ -478,7 +478,7 @@ export function setupPhonePe(options: { totalCycles?: number; onEvent?: (event: 
       reference: PP_REFERENCE,
       plan: { name: 'Pro monthly', amount: PP_AMOUNT, interval: { unit: IntervalUnit.Month, count: 1 } },
       customer: CUSTOMER,
-      startAt: options.startAt ?? PP_DUE,
+      ...(options.startAt === null ? {} : { startAt: options.startAt ?? PP_DUE }),
       ...(options.totalCycles !== undefined ? { totalCycles: options.totalCycles } : {}),
       ...(options.upfrontAmount !== undefined ? { upfrontAmount: options.upfrontAmount } : {}),
     });
@@ -507,11 +507,35 @@ export function paytmProvider(fetch: FetchLike, clock: Pick<Clock, 'now'>) {
   return paytm(PAYTM_CONFIG, { fetch, now: clock.now, maxRetries: 0, generateSalt: () => PAYTM_SALT });
 }
 
-export function setupPaytm(options: { totalCycles?: number; onEvent?: (event: SchedulerEvent) => void; scheduling?: SchedulingMode; startAt?: string } = {}) {
+export function setupPaytm(options: { wrap?: (inner: FetchLike) => FetchLike; totalCycles?: number; onEvent?: (event: SchedulerEvent) => void; scheduling?: SchedulingMode; startAt?: string | null } = {}) {
   const clock = new Clock(PT_T0);
   const fake = new FakePaytm(clock.nowMs);
   const calls: RecordedCall[] = [];
-  const wired = wire(paytmProvider(fake.fetch, clock), clock, calls, options.onEvent);
+  /** The refund API is not part of the adapter's own fake: it is answered here, after proving the request is signed. */
+  const refunds: Record<string, unknown>[] = [];
+  const fetch: FetchLike = async (url, init) => {
+    if (new URL(url).pathname !== '/refund/apply') return fake.fetch(url, init);
+    const envelope = JSON.parse(String(init?.body)) as { head: { signature?: string }; body: Record<string, unknown> };
+    expect(independentVerify(JSON.stringify(envelope.body), PAYTM_KEY, String(envelope.head.signature)), 'the refund request is signed').toBe(true);
+    refunds.push(envelope.body);
+    return new Response(
+      JSON.stringify({
+        head: { version: 'v1' },
+        body: {
+          txnTimestamp: '2026-01-21 12:31:49.0',
+          orderId: envelope.body.orderId,
+          mid: PAYTM_MID,
+          refId: envelope.body.refId,
+          resultInfo: { resultStatus: 'PENDING', resultCode: '601', resultMsg: 'Refund request was raised for this transaction. But it is pending state' },
+          refundId: 'PAYTM_REFUND_1',
+          txnId: envelope.body.txnId,
+          refundAmount: envelope.body.refundAmount,
+        },
+      }),
+      { status: 200 },
+    );
+  };
+  const wired = wire(paytmProvider(options.wrap ? options.wrap(fetch) : fetch, clock), clock, calls, options.onEvent);
   const scheduleId = scheduleIdFor(Provider.Paytm, PT_REFERENCE);
   const scheduler = wired.subs.scheduler!;
   const create = () =>
@@ -524,7 +548,7 @@ export function setupPaytm(options: { totalCycles?: number; onEvent?: (event: Sc
         ...(options.scheduling !== undefined ? { scheduling: options.scheduling } : {}),
       },
       customer: CUSTOMER,
-      startAt: options.startAt ?? PT_DUE,
+      ...(options.startAt === null ? {} : { startAt: options.startAt ?? PT_DUE }),
       ...(options.totalCycles !== undefined ? { totalCycles: options.totalCycles } : {}),
     });
   /** The customer authorises at Paytm; the signed callback is verified through the facade. */
@@ -535,5 +559,5 @@ export function setupPaytm(options: { totalCycles?: number; onEvent?: (event: Sc
     return wired.subs.tick();
   };
   const cycle = async (index: number) => (await scheduler.listCycles(scheduleId))[index];
-  return { fake, ...wired, scheduler, scheduleId, create, authoriseAndVerify, tickAt, cycle };
+  return { fake, refunds, ...wired, scheduler, scheduleId, create, authoriseAndVerify, tickAt, cycle };
 }
