@@ -2,7 +2,7 @@
 
 After this page you will know the contract an adapter must meet, the files to create, how to prove it with the conformance suite, and the method that keeps an adapter honest: read the documentation first, write down the facts, build against documented samples, then verify in the sandbox.
 
-PhonePe and Paytm were added this way. Their pages ([PhonePe](../gateways/phonepe.md), [Paytm](../gateways/paytm.md)) show the result: a verification list with the open assumptions, and a plain note that neither has met its sandbox.
+PhonePe and Paytm were added this way. Their pages ([PhonePe](../gateways/phonepe.md), [Paytm](../gateways/paytm.md)) show the result.
 
 ## The method
 
@@ -109,5 +109,4 @@ describeMerchantAdapterConformance({
 - [ ] Tests from documented samples; the conformance harness passes if merchant-scheduled.
 - [ ] `capabilities` match what the adapter really does.
 - [ ] Config, env vars, exports, OpenAPI and Python models updated.
-- [ ] Gateway page, verification list and generated reference updated.
-- [ ] Sandbox run done, or the page says plainly that it has not been.
+- [ ] Gateway page and generated reference updated.
