@@ -126,9 +126,11 @@ describe('CheckoutInstruction', () => {
     SchemaName.FormPostCheckout,
     SchemaName.RazorpayCheckout,
     SchemaName.CashfreeCheckout,
+    SchemaName.AppleStoreKitCheckout,
+    SchemaName.GooglePlayBillingCheckout,
   ];
 
-  it('is a oneOf of the four named variants', () => {
+  it('is a oneOf of the six named variants', () => {
     expect(union.oneOf).toEqual(variants.map((name) => ({ $ref: `${PREFIX}${name}` })));
   });
 

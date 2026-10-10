@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Annotated, Any, Dict, Literal, Optional, Union
+from uuid import UUID
 
 from pydantic import (
     AnyUrl,
@@ -23,7 +24,7 @@ from pydantic import (
 
 class Provider(str, Enum):
     """
-    A supported payment gateway.
+    A supported provider: a payment gateway or an app store.
     """
 
     RAZORPAY = 'razorpay'
@@ -31,6 +32,8 @@ class Provider(str, Enum):
     PAYU = 'payu'
     PHONEPE = 'phonepe'
     PAYTM = 'paytm'
+    APP_STORE = 'app_store'
+    GOOGLE_PLAY = 'google_play'
 
 
 class Currency(str, Enum):
@@ -95,13 +98,15 @@ class RefundStatus(str, Enum):
 
 class PaymentMethod(str, Enum):
     """
-    `upi` is a UPI Autopay mandate, `card` a card standing instruction, `enach` an eNACH e-mandate on a bank account, `physical_nach` a paper NACH mandate.
+    `upi` is a UPI Autopay mandate, `card` a card standing instruction, `enach` an eNACH e-mandate on a bank account, `physical_nach` a paper NACH mandate. `netbanking` and `wallet` apply to one-time payments only.
     """
 
     UPI = 'upi'
     CARD = 'card'
     ENACH = 'enach'
     PHYSICAL_NACH = 'physical_nach'
+    NETBANKING = 'netbanking'
+    WALLET = 'wallet'
 
 
 class SchedulingMode(str, Enum):
@@ -132,6 +137,8 @@ class EventType(str, Enum):
     SUBSCRIPTION_CANCELLED = 'subscription.cancelled'
     SUBSCRIPTION_COMPLETED = 'subscription.completed'
     SUBSCRIPTION_EXPIRED = 'subscription.expired'
+    PAYMENT_SUCCEEDED = 'payment.succeeded'
+    PAYMENT_FAILED = 'payment.failed'
     REFUND_SUCCEEDED = 'refund.succeeded'
     REFUND_FAILED = 'refund.failed'
     UNKNOWN = 'unknown'
@@ -184,6 +191,8 @@ class CheckoutKind(str, Enum):
     FORM_POST = 'form_post'
     RAZORPAY_CHECKOUT = 'razorpay_checkout'
     CASHFREE_CHECKOUT = 'cashfree_checkout'
+    APPLE_STOREKIT = 'apple_storekit'
+    GOOGLE_PLAY_BILLING = 'google_play_billing'
 
 
 class BillingInterval(BaseModel):
@@ -234,6 +243,10 @@ class Customer(BaseModel):
     phone: Annotated[Optional[str], Field(pattern='^\\+?[0-9]{10,15}$')] = None
     """
     Mobile number; 10 digits or E.164. Adapters format it for their gateway.
+    """
+    state: Annotated[Optional[str], Field(max_length=60, min_length=2)] = None
+    """
+    The customer's state or union territory in India (for example "Karnataka"). Needed when a purchase made through Google Play user choice billing is reported to Google.
     """
 
 
@@ -399,7 +412,7 @@ class FormPostCheckout(BaseModel):
 
 class RazorpayCheckout(BaseModel):
     """
-    Authorise with Razorpay Standard Checkout.
+    Authorise or pay with Razorpay Standard Checkout. Carries exactly one of `subscriptionId` and `orderId`.
     """
 
     model_config = ConfigDict(
@@ -414,9 +427,17 @@ class RazorpayCheckout(BaseModel):
     """
     The Razorpay key id to open Checkout with.
     """
-    subscription_id: Annotated[str, Field(alias='subscriptionId')]
+    subscription_id: Annotated[Optional[str], Field(alias='subscriptionId')] = None
     """
-    The Razorpay subscription id to authorise.
+    The Razorpay subscription id to authorise (subscriptions).
+    """
+    order_id: Annotated[Optional[str], Field(alias='orderId')] = None
+    """
+    The Razorpay order id to pay (one-time payments).
+    """
+    amount: Annotated[Optional[int], Field(ge=0)] = None
+    """
+    The order amount in paise (one-time payments).
     """
     hosted_url: Annotated[Optional[AnyUrl], Field(alias='hostedUrl')] = None
     """
@@ -429,29 +450,6 @@ class RazorpayCheckout(BaseModel):
     prefill: Optional[Customer] = None
     """
     Customer details to prefill in the checkout form.
-    """
-
-
-class CashfreeCheckout(BaseModel):
-    """
-    Authorise with Cashfree.js `subscriptionsCheckout`.
-    """
-
-    model_config = ConfigDict(
-        extra='ignore',
-        populate_by_name=True,
-    )
-    kind: Literal['cashfree_checkout']
-    """
-    Discriminator: call Cashfree.js `subscriptionsCheckout`.
-    """
-    session_id: Annotated[str, Field(alias='sessionId')]
-    """
-    The subscription session id to pass to Cashfree.js.
-    """
-    environment: Environment
-    """
-    Which Cashfree environment to initialise Cashfree.js with.
     """
 
 
@@ -471,235 +469,6 @@ class Trial(BaseModel):
     ends_at: Annotated[Optional[AwareDatetime], Field(alias='endsAt')] = None
     """
     Or an exact instant at which the trial ends.
-    """
-
-
-class CreateSubscriptionInput(BaseModel):
-    """
-    Everything needed to create a subscription.
-    """
-
-    model_config = ConfigDict(
-        extra='forbid',
-        populate_by_name=True,
-    )
-    reference: Annotated[Optional[str], Field(max_length=60, min_length=1)] = None
-    """
-    Your own id for this subscription. Sent to the gateway where it accepts a merchant reference, and echoed back on `Subscription.reference`.
-    """
-    plan: Union[CreatePlanInput, Annotated[str, StringConstraints(min_length=1)]]
-    """
-    An existing plan id, or plan details to create inline.
-    """
-    customer: Customer
-    """
-    The paying customer.
-    """
-    quantity: Annotated[Optional[int], Field(gt=0)] = None
-    """
-    Units of the plan billed each cycle. Defaults to 1.
-    """
-    total_cycles: Annotated[Optional[int], Field(alias='totalCycles', gt=0)] = None
-    """
-    Total number of recurring charges. Omit to bill until cancelled, where the gateway allows.
-    """
-    trial: Optional[Trial] = None
-    """
-    Free trial. Mutually exclusive with `startAt`.
-    """
-    start_at: Annotated[Optional[AwareDatetime], Field(alias='startAt')] = None
-    """
-    Delay the first recurring charge to this instant without calling it a trial.
-    """
-    upfront_amount: Annotated[Optional[int], Field(alias='upfrontAmount', gt=0)] = None
-    """
-    One-off amount collected together with the authorisation (setup fee or first payment), in paise.
-    """
-    upfront_label: Annotated[
-        Optional[str], Field(alias='upfrontLabel', max_length=100, min_length=1)
-    ] = None
-    """
-    Label shown to the customer for the upfront amount.
-    """
-    payment_methods: Annotated[
-        Optional[list[PaymentMethod]], Field(alias='paymentMethods', min_length=1)
-    ] = None
-    """
-    Restrict the mandate to these payment methods. Omit to allow all the gateway supports.
-    """
-    authorize_by: Annotated[Optional[AwareDatetime], Field(alias='authorizeBy')] = None
-    """
-    Deadline for the customer to authorise the mandate.
-    """
-    mandate_ends_at: Annotated[
-        Optional[AwareDatetime], Field(alias='mandateEndsAt')
-    ] = None
-    """
-    When the mandate itself should lapse.
-    """
-    return_url: Annotated[Optional[AnyUrl], Field(alias='returnUrl')] = None
-    """
-    Where the gateway sends the customer after authorisation.
-    """
-    notify_customer: Annotated[Optional[bool], Field(alias='notifyCustomer')] = None
-    """
-    Let the gateway send its own SMS/email to the customer.
-    """
-    metadata: Optional[dict[str, str]] = None
-    """
-    Free-form key/value pairs stored with the subscription.
-    """
-    idempotency_key: Annotated[
-        Optional[str], Field(alias='idempotencyKey', max_length=255, min_length=1)
-    ] = None
-    """
-    Makes the create call safe to retry, where the gateway supports idempotency keys.
-    """
-
-
-class Subscription(BaseModel):
-    """
-    A subscription (a recurring-payment mandate) at a gateway.
-    """
-
-    model_config = ConfigDict(
-        extra='ignore',
-        populate_by_name=True,
-    )
-    provider: Provider
-    """
-    The gateway that holds the subscription.
-    """
-    id: str
-    """
-    The identifier to pass back to this library for every later call.
-    """
-    reference: Optional[str] = None
-    """
-    Your own reference, where one was supplied.
-    """
-    plan_id: Annotated[Optional[str], Field(alias='planId')] = None
-    """
-    The plan the subscription bills.
-    """
-    status: SubscriptionStatus
-    """
-    Normalised lifecycle status.
-    """
-    provider_status: Annotated[str, Field(alias='providerStatus')]
-    """
-    The gateway's own status, verbatim.
-    """
-    scheduling: SchedulingMode
-    """
-    Who raises each charge.
-    """
-    customer: Optional[Customer] = None
-    """
-    The paying customer, where known.
-    """
-    quantity: Optional[int] = None
-    """
-    Units of the plan billed each cycle.
-    """
-    amount: Annotated[Optional[int], Field(ge=0)] = None
-    """
-    Recurring amount per cycle in paise, where known.
-    """
-    max_amount: Annotated[Optional[int], Field(alias='maxAmount', ge=0)] = None
-    """
-    Mandate ceiling per debit in paise, where known.
-    """
-    currency: Optional[Currency] = None
-    """
-    Currency of the subscription.
-    """
-    interval: Optional[BillingInterval] = None
-    """
-    How often the subscription bills, where known.
-    """
-    total_cycles: Annotated[Optional[int], Field(alias='totalCycles')] = None
-    """
-    Total number of recurring charges, where limited.
-    """
-    paid_cycles: Annotated[Optional[int], Field(alias='paidCycles')] = None
-    """
-    Number of cycles collected so far.
-    """
-    remaining_cycles: Annotated[Optional[int], Field(alias='remainingCycles')] = None
-    """
-    Number of cycles still to collect, where limited.
-    """
-    created_at: Annotated[Optional[AwareDatetime], Field(alias='createdAt')] = None
-    """
-    When the subscription was created.
-    """
-    start_at: Annotated[Optional[AwareDatetime], Field(alias='startAt')] = None
-    """
-    When the first recurring charge is or was due.
-    """
-    trial_ends_at: Annotated[Optional[AwareDatetime], Field(alias='trialEndsAt')] = None
-    """
-    Set while `status` is `trialing`: when the trial ends and the first charge is due.
-    """
-    current_period_start: Annotated[
-        Optional[AwareDatetime], Field(alias='currentPeriodStart')
-    ] = None
-    """
-    Start of the current billing period.
-    """
-    current_period_end: Annotated[
-        Optional[AwareDatetime], Field(alias='currentPeriodEnd')
-    ] = None
-    """
-    End of the current billing period.
-    """
-    next_charge_at: Annotated[Optional[AwareDatetime], Field(alias='nextChargeAt')] = (
-        None
-    )
-    """
-    When the next charge is due.
-    """
-    ended_at: Annotated[Optional[AwareDatetime], Field(alias='endedAt')] = None
-    """
-    When the subscription ended, if it did.
-    """
-    mandate_ends_at: Annotated[
-        Optional[AwareDatetime], Field(alias='mandateEndsAt')
-    ] = None
-    """
-    When the mandate lapses.
-    """
-    cancel_at_period_end: Annotated[
-        Optional[bool], Field(alias='cancelAtPeriodEnd')
-    ] = None
-    """
-    True when a cancellation is scheduled for the end of the current period.
-    """
-    payment_method: Annotated[Optional[PaymentMethod], Field(alias='paymentMethod')] = (
-        None
-    )
-    """
-    The payment method the mandate was authorised with.
-    """
-    checkout: Annotated[
-        Optional[
-            Union[
-                RedirectCheckout, FormPostCheckout, RazorpayCheckout, CashfreeCheckout
-            ]
-        ],
-        Field(discriminator='kind'),
-    ] = None
-    """
-    Present on freshly created subscriptions: what the customer must do to authorise.
-    """
-    metadata: Optional[dict[str, str]] = None
-    """
-    Key/value pairs stored with the subscription.
-    """
-    raw: Optional[Any] = None
-    """
-    The gateway's response, untouched. Absent when the gateway returned no body.
     """
 
 
@@ -1084,7 +853,11 @@ class Refund(BaseModel):
     """
     charge_id: Annotated[str, Field(alias='chargeId')]
     """
-    The charge that was refunded.
+    The charge that was refunded. For a refund of a one-time payment, the payment's id.
+    """
+    payment_id: Annotated[Optional[str], Field(alias='paymentId')] = None
+    """
+    The one-time payment that was refunded. A refund of a one-time payment sets both `chargeId` and `paymentId` to the payment's id.
     """
     subscription_id: Annotated[Optional[str], Field(alias='subscriptionId')] = None
     """
@@ -1195,147 +968,398 @@ class WebhookRequest(BaseModel):
     """
 
 
-class SubscriptionEvent(BaseModel):
+class ProviderKind(str, Enum):
     """
-    A verified, normalised webhook event.
+    `gateway` is a payment gateway, `store` is an app store (Apple App Store, Google Play).
+    """
+
+    GATEWAY = 'gateway'
+    STORE = 'store'
+
+
+class Platform(str, Enum):
+    """
+    The platform a customer buys on: `ios`, `android` or `web`.
+    """
+
+    IOS = 'ios'
+    ANDROID = 'android'
+    WEB = 'web'
+
+
+class ChannelPolicy(str, Enum):
+    """
+    Where purchases on a platform may be taken: `store` is the platform's app store only, `user_choice` is the app store with its own choice screen offering a payment gateway, `gateways` is payment gateways only.
+    """
+
+    STORE = 'store'
+    USER_CHOICE = 'user_choice'
+    GATEWAYS = 'gateways'
+
+
+class SalesChannel(str, Enum):
+    """
+    The channel a purchase went through: `store` (an app store) or `gateway` (a payment gateway).
+    """
+
+    STORE = 'store'
+    GATEWAY = 'gateway'
+
+
+class ProductKind(str, Enum):
+    """
+    `subscription` is billed again every interval, `one_time` is paid once.
+    """
+
+    SUBSCRIPTION = 'subscription'
+    ONE_TIME = 'one_time'
+
+
+class PaymentStatus(str, Enum):
+    """
+    Normalised status of a one-time payment. The gateway's own status is preserved verbatim in `providerStatus`. `succeeded`, `failed`, `cancelled`, `refunded` and `partially_refunded` follow a payment that was created.
+    """
+
+    CREATED = 'created'
+    PENDING = 'pending'
+    SUCCEEDED = 'succeeded'
+    FAILED = 'failed'
+    CANCELLED = 'cancelled'
+    REFUNDED = 'refunded'
+    PARTIALLY_REFUNDED = 'partially_refunded'
+
+
+class StoreProduct(BaseModel):
+    """
+    A product as the app store knows it. Only app stores read it; gateways ignore it.
     """
 
     model_config = ConfigDict(
         extra='ignore',
         populate_by_name=True,
     )
-    id: str
+    product_id: Annotated[str, Field(alias='productId', min_length=1)]
     """
-    Stable id for de-duplication: gateways deliver the same event more than once.
+    The product id in App Store Connect or Play Console.
     """
-    provider: Provider
+    base_plan_id: Annotated[Optional[str], Field(alias='basePlanId', min_length=1)] = (
+        None
+    )
     """
-    The gateway that sent the event.
+    Google Play subscriptions: the base plan id.
     """
-    type: EventType
+    offer_id: Annotated[Optional[str], Field(alias='offerId', min_length=1)] = None
     """
-    Normalised event type.
+    Google Play offer id, or the App Store promotional offer id.
     """
-    provider_event_type: Annotated[str, Field(alias='providerEventType')]
+    consumable: Optional[bool] = None
     """
-    The gateway's own event name, verbatim.
+    One-time products: true when the product can be bought again.
     """
-    occurred_at: Annotated[Optional[AwareDatetime], Field(alias='occurredAt')] = None
+
+
+class PromotionalOffer(BaseModel):
     """
-    When the event happened, where the gateway says.
+    A signed promotional offer to apply to the purchase.
     """
-    subscription_id: Annotated[Optional[str], Field(alias='subscriptionId')] = None
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    offer_id: Annotated[str, Field(alias='offerId')]
     """
-    The subscription the event is about.
+    The promotional offer id.
     """
-    subscription: Optional[Subscription] = None
+    key_id: Annotated[str, Field(alias='keyId')]
     """
-    The subscription, where the event carries it.
+    The id of the key that signed the offer.
     """
-    charge: Optional[Charge] = None
+    nonce: UUID
     """
-    The charge, where the event carries it.
+    A one-time UUID for this signature.
     """
-    refund: Optional[Refund] = None
+    timestamp: int
     """
-    The refund, where the event carries it.
+    When the signature was made, in milliseconds since the Unix epoch.
+    """
+    signature: str
+    """
+    The signature, as StoreKit's promotional offer purchase option expects it.
+    """
+
+
+class AppleStoreKitCheckout(BaseModel):
+    """
+    Purchase through StoreKit on an Apple device.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    kind: Literal['apple_storekit']
+    """
+    Discriminator: start a StoreKit purchase on the device.
+    """
+    product_id: Annotated[str, Field(alias='productId')]
+    """
+    The App Store Connect product id to purchase.
+    """
+    app_account_token: Annotated[UUID, Field(alias='appAccountToken')]
+    """
+    Pass to StoreKit's purchase option `appAccountToken`; it ties the purchase to this order.
+    """
+    promotional_offer: Annotated[
+        Optional[PromotionalOffer], Field(alias='promotionalOffer')
+    ] = None
+    """
+    A signed promotional offer to apply to the purchase.
+    """
+
+
+class GooglePlayBillingCheckout(BaseModel):
+    """
+    Purchase through Google Play Billing on an Android device.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    kind: Literal['google_play_billing']
+    """
+    Discriminator: start a Google Play Billing flow on the device.
+    """
+    product_kind: Annotated[ProductKind, Field(alias='productKind')]
+    """
+    Whether the product is a subscription or a one-time product.
+    """
+    product_id: Annotated[str, Field(alias='productId')]
+    """
+    The Play Console product id.
+    """
+    base_plan_id: Annotated[Optional[str], Field(alias='basePlanId')] = None
+    """
+    Subscriptions: the base plan id.
+    """
+    offer_id: Annotated[Optional[str], Field(alias='offerId')] = None
+    """
+    The offer id, where an offer applies.
+    """
+    obfuscated_account_id: Annotated[
+        str, Field(alias='obfuscatedAccountId', max_length=64, min_length=1)
+    ]
+    """
+    Pass to `BillingFlowParams.setObfuscatedAccountId`; it ties the purchase to this order.
+    """
+    user_choice_billing: Annotated[bool, Field(alias='userChoiceBilling')]
+    """
+    True: build the `BillingClient` with `enableUserChoiceBilling`, so Google shows its choice screen.
+    """
+
+
+class CreatePaymentInput(BaseModel):
+    """
+    Everything needed to create a one-time payment.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    reference: Annotated[Optional[str], Field(max_length=60, min_length=1)] = None
+    """
+    Your own id for this payment. Sent to the gateway where it accepts one, and echoed back on `Payment.reference`.
+    """
+    amount: Annotated[int, Field(gt=0)]
+    """
+    Amount to collect, in paise.
+    """
+    description: Annotated[Optional[str], Field(max_length=250, min_length=1)] = None
+    """
+    What the payment is for.
+    """
+    customer: Customer
+    """
+    The paying customer.
+    """
+    payment_methods: Annotated[
+        Optional[list[PaymentMethod]], Field(alias='paymentMethods', min_length=1)
+    ] = None
+    """
+    Restrict the payment to these payment methods. Omit to allow all the gateway supports.
+    """
+    return_url: Annotated[Optional[AnyUrl], Field(alias='returnUrl')] = None
+    """
+    Where the gateway sends the customer after paying.
+    """
+    expires_at: Annotated[Optional[AwareDatetime], Field(alias='expiresAt')] = None
+    """
+    Deadline for the customer to pay.
+    """
+    metadata: Optional[dict[str, str]] = None
+    """
+    Free-form key/value pairs stored with the payment.
+    """
+    idempotency_key: Annotated[
+        Optional[str], Field(alias='idempotencyKey', max_length=255, min_length=1)
+    ] = None
+    """
+    Makes the create call safe to retry, where the gateway supports idempotency keys.
+    """
+    store_product: Annotated[Optional[StoreProduct], Field(alias='storeProduct')] = None
+    """
+    The product in the app store. App stores require it; gateways ignore it.
+    """
+
+
+class VerifyPaymentInput(BaseModel):
+    """
+    What the HTTP service and the facade accept when verifying the result of a one-time payment.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    result: dict[str, Any]
+    """
+    The data the provider handed back to the browser or device, untouched.
+    """
+    expected_payment_id: Annotated[
+        Optional[str], Field(alias='expectedPaymentId', min_length=1)
+    ] = None
+    """
+    The payment id (or your reference) that your server stored when it created the payment. When given, a result that verifies but belongs to a different payment is rejected, so a customer cannot replay one payment to unlock another.
+    """
+
+
+class RefundPaymentInput(BaseModel):
+    """
+    A refund of a one-time payment.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    payment_id: Annotated[str, Field(alias='paymentId', min_length=1)]
+    """
+    The payment to refund.
+    """
+    refund_id: Annotated[str, Field(alias='refundId', max_length=40, min_length=1)]
+    """
+    Your unique id for this refund.
+    """
+    amount: Annotated[Optional[int], Field(gt=0)] = None
+    """
+    Amount to refund in paise. Omit to refund the full payment.
+    """
+    reason: Annotated[Optional[str], Field(max_length=250)] = None
+    """
+    Why the payment is refunded.
+    """
+
+
+class ExternalTransactionReport(BaseModel):
+    """
+    A transaction made outside Google Play billing (user choice billing), reported to Google.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    external_transaction_id: Annotated[
+        str, Field(alias='externalTransactionId', max_length=128, min_length=1)
+    ]
+    """
+    Your unique id for this transaction.
+    """
+    external_transaction_token: Annotated[
+        Optional[str], Field(alias='externalTransactionToken')
+    ] = None
+    """
+    The token from the device. Needed on the first transaction only.
+    """
+    initial_external_transaction_id: Annotated[
+        Optional[str], Field(alias='initialExternalTransactionId')
+    ] = None
+    """
+    Renewals: the `externalTransactionId` of the first transaction of the subscription.
+    """
+    product_kind: Annotated[ProductKind, Field(alias='productKind')]
+    """
+    Whether the transaction is a subscription charge or a one-time purchase.
+    """
+    amount: Annotated[int, Field(ge=0)]
+    """
+    Pre-tax amount in paise (0 for a free trial).
+    """
+    tax_amount: Annotated[int, Field(alias='taxAmount', ge=0)]
+    """
+    Tax in paise.
+    """
+    transaction_time: Annotated[AwareDatetime, Field(alias='transactionTime')]
+    """
+    When the payment was authorised.
+    """
+    state: Annotated[str, Field(min_length=2)]
+    """
+    The customer's state, sent as `userTaxAddress.administrativeArea` with region code `IN`.
+    """
+
+
+class ExternalTransactionRefund(BaseModel):
+    """
+    A refund of an external transaction, reported to Google.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    external_transaction_id: Annotated[
+        str, Field(alias='externalTransactionId', min_length=1)
+    ]
+    """
+    The `externalTransactionId` of the transaction that was refunded.
+    """
+    refund_time: Annotated[AwareDatetime, Field(alias='refundTime')]
+    """
+    When the refund was made.
+    """
+    amount: Annotated[Optional[int], Field(ge=0)] = None
+    """
+    Pre-tax amount refunded, in paise. Omit for a full refund.
+    """
+    tax_amount: Annotated[Optional[int], Field(alias='taxAmount', ge=0)] = None
+    """
+    Tax refunded, in paise. Omit for a full refund.
+    """
+
+
+class ExternalTransactionRecord(BaseModel):
+    """
+    An external transaction as Google holds it.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    external_transaction_id: Annotated[str, Field(alias='externalTransactionId')]
+    """
+    Your id for the transaction.
+    """
+    state: str
+    """
+    The state Google holds the transaction in, verbatim.
     """
     raw: Optional[Any] = None
     """
-    The gateway's webhook payload, untouched. Absent when there is none.
-    """
-
-
-class Capabilities(BaseModel):
-    """
-    What a gateway adapter can do, so callers never have to guess.
-    """
-
-    model_config = ConfigDict(
-        extra='ignore',
-        populate_by_name=True,
-    )
-    provider: Provider
-    """
-    The gateway these capabilities describe.
-    """
-    scheduling: Annotated[list[SchedulingMode], Field(min_length=1)]
-    """
-    Scheduling modes available; the first is the default.
-    """
-    gateway_plans: Annotated[bool, Field(alias='gatewayPlans')]
-    """
-    The gateway stores plan objects (otherwise plans exist only in your code).
-    """
-    trial: bool
-    """
-    Free trials are supported.
-    """
-    upfront_amount: Annotated[bool, Field(alias='upfrontAmount')]
-    """
-    An upfront amount can be collected with the authorisation.
-    """
-    quantity: bool
-    """
-    A subscription can bill several units of a plan.
-    """
-    pause: bool
-    """
-    A subscription can be paused.
-    """
-    resume: bool
-    """
-    A paused subscription can be resumed.
-    """
-    cancel_at_period_end: Annotated[bool, Field(alias='cancelAtPeriodEnd')]
-    """
-    A subscription can be cancelled at the end of the paid period.
-    """
-    change_plan: Annotated[bool, Field(alias='changePlan')]
-    """
-    A subscription can move to another plan.
-    """
-    merchant_charges: Annotated[bool, Field(alias='merchantCharges')]
-    """
-    The merchant can raise debits itself (`createCharge`).
-    """
-    merchant_pre_debit_notification: Annotated[
-        bool, Field(alias='merchantPreDebitNotification')
-    ]
-    """
-    The merchant must send the pre-debit notification itself (`notifyCharge`).
-    """
-    merchant_charge_lead_hours: Annotated[
-        Optional[int], Field(alias='merchantChargeLeadHours', ge=0)
-    ] = None
-    """
-    Hours before the debit date by which a merchant-raised charge must be created (with `scheduledAt` set), for gateways that send the pre-debit notification themselves once the charge exists. Absent or 0 means a charge can be raised on the due date itself.
-    """
-    merchant_charge_max_ahead_hours: Annotated[
-        Optional[int], Field(alias='merchantChargeMaxAheadHours', gt=0)
-    ] = None
-    """
-    Furthest ahead, in hours, that a merchant-raised charge may be scheduled.
-    """
-    list_charges: Annotated[bool, Field(alias='listCharges')]
-    """
-    The charges of a subscription can be listed.
-    """
-    refunds: bool
-    """
-    Charges can be refunded.
-    """
-    signed_webhooks: Annotated[bool, Field(alias='signedWebhooks')]
-    """
-    Webhooks carry a signature this library verifies.
-    """
-    idempotency_keys: Annotated[bool, Field(alias='idempotencyKeys')]
-    """
-    Create calls accept an idempotency key.
-    """
-    payment_methods: Annotated[list[PaymentMethod], Field(alias='paymentMethods')]
-    """
-    The payment methods mandates can be authorised with.
+    The gateway's response, untouched. Absent when the gateway returned no body.
     """
 
 
@@ -1358,6 +1382,7 @@ class ErrorCode(str, Enum):
     TIMEOUT = 'TIMEOUT'
     OUTCOME_UNKNOWN = 'OUTCOME_UNKNOWN'
     SIGNATURE_INVALID = 'SIGNATURE_INVALID'
+    NO_ROUTE = 'NO_ROUTE'
     INTERNAL_ERROR = 'INTERNAL_ERROR'
     UNAUTHORIZED = 'UNAUTHORIZED'
     METHOD_NOT_ALLOWED = 'METHOD_NOT_ALLOWED'
@@ -1446,30 +1471,8 @@ class LibraryErrorCode(str, Enum):
     TIMEOUT = 'TIMEOUT'
     OUTCOME_UNKNOWN = 'OUTCOME_UNKNOWN'
     SIGNATURE_INVALID = 'SIGNATURE_INVALID'
+    NO_ROUTE = 'NO_ROUTE'
     INTERNAL_ERROR = 'INTERNAL_ERROR'
-
-
-class GatewayEventsDelivery(BaseModel):
-    """
-    A delivery of gateway webhook events to the events webhook.
-    """
-
-    model_config = ConfigDict(
-        extra='ignore',
-        populate_by_name=True,
-    )
-    kind: Literal['gateway']
-    """
-    Always `gateway`: tells this delivery from a scheduler one.
-    """
-    provider: Provider
-    """
-    The gateway whose webhook carried the events.
-    """
-    events: Annotated[list[SubscriptionEvent], Field(min_length=1)]
-    """
-    The verified, normalised events of one gateway webhook, in the order the gateway sent them. Each has an `id` to de-duplicate on.
-    """
 
 
 class Error(BaseModel):
@@ -1545,6 +1548,516 @@ class ScheduleStatusReason(str, Enum):
     ALL_CYCLES_COLLECTED = 'all_cycles_collected'
     FINAL_CYCLE_SKIPPED = 'final_cycle_skipped'
     MANDATE_ENDED = 'mandate_ended'
+
+
+class CashfreeCheckout(BaseModel):
+    """
+    Authorise or pay with Cashfree.js: `subscriptionsCheckout` for a subscription, `checkout` for a one-time payment.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    kind: Literal['cashfree_checkout']
+    """
+    Discriminator: call Cashfree.js `subscriptionsCheckout`.
+    """
+    session_id: Annotated[str, Field(alias='sessionId')]
+    """
+    The session id to pass to Cashfree.js: the subscription session id or the payment session id.
+    """
+    environment: Environment
+    """
+    Which Cashfree environment to initialise Cashfree.js with.
+    """
+    product_kind: Annotated[Optional[ProductKind], Field(alias='productKind')] = None
+    """
+    Absent or `subscription`: call Cashfree.js `subscriptionsCheckout`. `one_time`: call Cashfree.js `checkout` with the same `sessionId` as the payment session id.
+    """
+
+
+class CreateSubscriptionInput(BaseModel):
+    """
+    Everything needed to create a subscription.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+        populate_by_name=True,
+    )
+    reference: Annotated[Optional[str], Field(max_length=60, min_length=1)] = None
+    """
+    Your own id for this subscription. Sent to the gateway where it accepts a merchant reference, and echoed back on `Subscription.reference`.
+    """
+    plan: Union[CreatePlanInput, Annotated[str, StringConstraints(min_length=1)]]
+    """
+    An existing plan id, or plan details to create inline.
+    """
+    customer: Customer
+    """
+    The paying customer.
+    """
+    quantity: Annotated[Optional[int], Field(gt=0)] = None
+    """
+    Units of the plan billed each cycle. Defaults to 1.
+    """
+    total_cycles: Annotated[Optional[int], Field(alias='totalCycles', gt=0)] = None
+    """
+    Total number of recurring charges. Omit to bill until cancelled, where the gateway allows.
+    """
+    trial: Optional[Trial] = None
+    """
+    Free trial. Mutually exclusive with `startAt`.
+    """
+    start_at: Annotated[Optional[AwareDatetime], Field(alias='startAt')] = None
+    """
+    Delay the first recurring charge to this instant without calling it a trial.
+    """
+    upfront_amount: Annotated[Optional[int], Field(alias='upfrontAmount', gt=0)] = None
+    """
+    One-off amount collected together with the authorisation (setup fee or first payment), in paise.
+    """
+    upfront_label: Annotated[
+        Optional[str], Field(alias='upfrontLabel', max_length=100, min_length=1)
+    ] = None
+    """
+    Label shown to the customer for the upfront amount.
+    """
+    store_product: Annotated[Optional[StoreProduct], Field(alias='storeProduct')] = None
+    """
+    The product in the app store. App stores require it; gateways ignore it.
+    """
+    payment_methods: Annotated[
+        Optional[list[PaymentMethod]], Field(alias='paymentMethods', min_length=1)
+    ] = None
+    """
+    Restrict the mandate to these payment methods. Omit to allow all the gateway supports.
+    """
+    authorize_by: Annotated[Optional[AwareDatetime], Field(alias='authorizeBy')] = None
+    """
+    Deadline for the customer to authorise the mandate.
+    """
+    mandate_ends_at: Annotated[
+        Optional[AwareDatetime], Field(alias='mandateEndsAt')
+    ] = None
+    """
+    When the mandate itself should lapse.
+    """
+    return_url: Annotated[Optional[AnyUrl], Field(alias='returnUrl')] = None
+    """
+    Where the gateway sends the customer after authorisation.
+    """
+    notify_customer: Annotated[Optional[bool], Field(alias='notifyCustomer')] = None
+    """
+    Let the gateway send its own SMS/email to the customer.
+    """
+    metadata: Optional[dict[str, str]] = None
+    """
+    Free-form key/value pairs stored with the subscription.
+    """
+    idempotency_key: Annotated[
+        Optional[str], Field(alias='idempotencyKey', max_length=255, min_length=1)
+    ] = None
+    """
+    Makes the create call safe to retry, where the gateway supports idempotency keys.
+    """
+
+
+class Subscription(BaseModel):
+    """
+    A subscription (a recurring-payment mandate) at a gateway.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The gateway that holds the subscription.
+    """
+    id: str
+    """
+    The identifier to pass back to this library for every later call.
+    """
+    reference: Optional[str] = None
+    """
+    Your own reference, where one was supplied.
+    """
+    plan_id: Annotated[Optional[str], Field(alias='planId')] = None
+    """
+    The plan the subscription bills.
+    """
+    status: SubscriptionStatus
+    """
+    Normalised lifecycle status.
+    """
+    provider_status: Annotated[str, Field(alias='providerStatus')]
+    """
+    The gateway's own status, verbatim.
+    """
+    scheduling: SchedulingMode
+    """
+    Who raises each charge.
+    """
+    customer: Optional[Customer] = None
+    """
+    The paying customer, where known.
+    """
+    quantity: Optional[int] = None
+    """
+    Units of the plan billed each cycle.
+    """
+    amount: Annotated[Optional[int], Field(ge=0)] = None
+    """
+    Recurring amount per cycle in paise, where known.
+    """
+    max_amount: Annotated[Optional[int], Field(alias='maxAmount', ge=0)] = None
+    """
+    Mandate ceiling per debit in paise, where known.
+    """
+    currency: Optional[Currency] = None
+    """
+    Currency of the subscription.
+    """
+    interval: Optional[BillingInterval] = None
+    """
+    How often the subscription bills, where known.
+    """
+    total_cycles: Annotated[Optional[int], Field(alias='totalCycles')] = None
+    """
+    Total number of recurring charges, where limited.
+    """
+    paid_cycles: Annotated[Optional[int], Field(alias='paidCycles')] = None
+    """
+    Number of cycles collected so far.
+    """
+    remaining_cycles: Annotated[Optional[int], Field(alias='remainingCycles')] = None
+    """
+    Number of cycles still to collect, where limited.
+    """
+    created_at: Annotated[Optional[AwareDatetime], Field(alias='createdAt')] = None
+    """
+    When the subscription was created.
+    """
+    start_at: Annotated[Optional[AwareDatetime], Field(alias='startAt')] = None
+    """
+    When the first recurring charge is or was due.
+    """
+    trial_ends_at: Annotated[Optional[AwareDatetime], Field(alias='trialEndsAt')] = None
+    """
+    Set while `status` is `trialing`: when the trial ends and the first charge is due.
+    """
+    current_period_start: Annotated[
+        Optional[AwareDatetime], Field(alias='currentPeriodStart')
+    ] = None
+    """
+    Start of the current billing period.
+    """
+    current_period_end: Annotated[
+        Optional[AwareDatetime], Field(alias='currentPeriodEnd')
+    ] = None
+    """
+    End of the current billing period.
+    """
+    next_charge_at: Annotated[Optional[AwareDatetime], Field(alias='nextChargeAt')] = (
+        None
+    )
+    """
+    When the next charge is due.
+    """
+    ended_at: Annotated[Optional[AwareDatetime], Field(alias='endedAt')] = None
+    """
+    When the subscription ended, if it did.
+    """
+    mandate_ends_at: Annotated[
+        Optional[AwareDatetime], Field(alias='mandateEndsAt')
+    ] = None
+    """
+    When the mandate lapses.
+    """
+    cancel_at_period_end: Annotated[
+        Optional[bool], Field(alias='cancelAtPeriodEnd')
+    ] = None
+    """
+    True when a cancellation is scheduled for the end of the current period.
+    """
+    payment_method: Annotated[Optional[PaymentMethod], Field(alias='paymentMethod')] = (
+        None
+    )
+    """
+    The payment method the mandate was authorised with.
+    """
+    checkout: Annotated[
+        Optional[
+            Union[
+                RedirectCheckout,
+                FormPostCheckout,
+                RazorpayCheckout,
+                CashfreeCheckout,
+                AppleStoreKitCheckout,
+                GooglePlayBillingCheckout,
+            ]
+        ],
+        Field(discriminator='kind'),
+    ] = None
+    """
+    Present on freshly created subscriptions: what the customer must do to authorise.
+    """
+    metadata: Optional[dict[str, str]] = None
+    """
+    Key/value pairs stored with the subscription.
+    """
+    raw: Optional[Any] = None
+    """
+    The gateway's response, untouched. Absent when the gateway returned no body.
+    """
+
+
+class Capabilities(BaseModel):
+    """
+    What a gateway adapter can do, so callers never have to guess.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The provider these capabilities describe.
+    """
+    kind: ProviderKind
+    """
+    `gateway` or `store`.
+    """
+    scheduling: Annotated[list[SchedulingMode], Field(min_length=1)]
+    """
+    Scheduling modes available; the first is the default.
+    """
+    gateway_plans: Annotated[bool, Field(alias='gatewayPlans')]
+    """
+    The gateway stores plan objects (otherwise plans exist only in your code).
+    """
+    trial: bool
+    """
+    Free trials are supported.
+    """
+    upfront_amount: Annotated[bool, Field(alias='upfrontAmount')]
+    """
+    An upfront amount can be collected with the authorisation.
+    """
+    quantity: bool
+    """
+    A subscription can bill several units of a plan.
+    """
+    pause: bool
+    """
+    A subscription can be paused.
+    """
+    resume: bool
+    """
+    A paused subscription can be resumed.
+    """
+    cancel: bool
+    """
+    A subscription can be cancelled from the server.
+    """
+    cancel_at_period_end: Annotated[bool, Field(alias='cancelAtPeriodEnd')]
+    """
+    A subscription can be cancelled at the end of the paid period.
+    """
+    change_plan: Annotated[bool, Field(alias='changePlan')]
+    """
+    A subscription can move to another plan.
+    """
+    merchant_charges: Annotated[bool, Field(alias='merchantCharges')]
+    """
+    The merchant can raise debits itself (`createCharge`).
+    """
+    merchant_pre_debit_notification: Annotated[
+        bool, Field(alias='merchantPreDebitNotification')
+    ]
+    """
+    The merchant must send the pre-debit notification itself (`notifyCharge`).
+    """
+    merchant_charge_lead_hours: Annotated[
+        Optional[int], Field(alias='merchantChargeLeadHours', ge=0)
+    ] = None
+    """
+    Hours before the debit date by which a merchant-raised charge must be created (with `scheduledAt` set), for gateways that send the pre-debit notification themselves once the charge exists. Absent or 0 means a charge can be raised on the due date itself.
+    """
+    merchant_charge_max_ahead_hours: Annotated[
+        Optional[int], Field(alias='merchantChargeMaxAheadHours', gt=0)
+    ] = None
+    """
+    Furthest ahead, in hours, that a merchant-raised charge may be scheduled.
+    """
+    list_charges: Annotated[bool, Field(alias='listCharges')]
+    """
+    The charges of a subscription can be listed.
+    """
+    refunds: bool
+    """
+    Charges can be refunded.
+    """
+    signed_webhooks: Annotated[bool, Field(alias='signedWebhooks')]
+    """
+    Webhooks carry a signature this library verifies.
+    """
+    idempotency_keys: Annotated[bool, Field(alias='idempotencyKeys')]
+    """
+    Create calls accept an idempotency key.
+    """
+    payment_methods: Annotated[list[PaymentMethod], Field(alias='paymentMethods')]
+    """
+    The payment methods mandates can be authorised with.
+    """
+    one_time_payments: Annotated[bool, Field(alias='oneTimePayments')]
+    """
+    One-time payments are supported (`createPayment`).
+    """
+    one_time_payment_methods: Annotated[
+        list[PaymentMethod], Field(alias='oneTimePaymentMethods')
+    ]
+    """
+    The payment methods one-time payments can be taken with.
+    """
+
+
+class Payment(BaseModel):
+    """
+    A one-time payment.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The provider that holds the payment.
+    """
+    id: str
+    """
+    The identifier to pass back to this library for every later call.
+    """
+    reference: Optional[str] = None
+    """
+    Your own reference, where one was supplied.
+    """
+    status: PaymentStatus
+    """
+    Normalised payment status.
+    """
+    provider_status: Annotated[str, Field(alias='providerStatus')]
+    """
+    The provider's own status, verbatim.
+    """
+    amount: Annotated[int, Field(ge=0)]
+    """
+    Amount of the payment in paise.
+    """
+    currency: Optional[Currency] = None
+    """
+    Currency of the payment.
+    """
+    refunded_amount: Annotated[Optional[int], Field(alias='refundedAmount', ge=0)] = (
+        None
+    )
+    """
+    Amount refunded so far, in paise.
+    """
+    payment_method: Annotated[Optional[PaymentMethod], Field(alias='paymentMethod')] = (
+        None
+    )
+    """
+    The payment method the customer paid with.
+    """
+    customer: Optional[Customer] = None
+    """
+    The paying customer, where known.
+    """
+    created_at: Annotated[Optional[AwareDatetime], Field(alias='createdAt')] = None
+    """
+    When the payment was created.
+    """
+    paid_at: Annotated[Optional[AwareDatetime], Field(alias='paidAt')] = None
+    """
+    When the payment succeeded.
+    """
+    failure_code: Annotated[Optional[str], Field(alias='failureCode')] = None
+    """
+    The provider's failure code, where the payment failed.
+    """
+    failure_reason: Annotated[Optional[str], Field(alias='failureReason')] = None
+    """
+    Human-readable reason the payment failed.
+    """
+    checkout: Annotated[
+        Optional[
+            Union[
+                RedirectCheckout,
+                FormPostCheckout,
+                RazorpayCheckout,
+                CashfreeCheckout,
+                AppleStoreKitCheckout,
+                GooglePlayBillingCheckout,
+            ]
+        ],
+        Field(discriminator='kind'),
+    ] = None
+    """
+    Present on freshly created payments: what the customer must do to pay.
+    """
+    metadata: Optional[dict[str, str]] = None
+    """
+    Key/value pairs stored with the payment.
+    """
+    raw: Optional[Any] = None
+    """
+    The gateway's response, untouched. Absent when the gateway returned no body.
+    """
+
+
+class PaymentVerification(BaseModel):
+    """
+    The outcome of verifying the result of a one-time payment.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The provider that issued the result.
+    """
+    payment_id: Annotated[str, Field(alias='paymentId')]
+    """
+    The payment id to store and use for later calls.
+    """
+    reference: Optional[str] = None
+    """
+    Your own reference for the payment, where known.
+    """
+    paid: bool
+    """
+    True when the payment succeeded.
+    """
+    status: Optional[PaymentStatus] = None
+    """
+    The payment status the result implies, where known.
+    """
+    payment: Optional[Payment] = None
+    """
+    The payment, where the verification fetched or carries it.
+    """
+    raw: Optional[Any] = None
+    """
+    The verified provider data, untouched. Absent when there is none.
+    """
 
 
 class ErrorDetail(BaseModel):
@@ -1750,6 +2263,65 @@ class SchedulerWebhookEvent(BaseModel):
     """
 
 
+class SubscriptionEvent(BaseModel):
+    """
+    A verified, normalised webhook event.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    id: str
+    """
+    Stable id for de-duplication: gateways deliver the same event more than once.
+    """
+    provider: Provider
+    """
+    The gateway that sent the event.
+    """
+    type: EventType
+    """
+    Normalised event type.
+    """
+    provider_event_type: Annotated[str, Field(alias='providerEventType')]
+    """
+    The gateway's own event name, verbatim.
+    """
+    occurred_at: Annotated[Optional[AwareDatetime], Field(alias='occurredAt')] = None
+    """
+    When the event happened, where the gateway says.
+    """
+    subscription_id: Annotated[Optional[str], Field(alias='subscriptionId')] = None
+    """
+    The subscription the event is about.
+    """
+    subscription: Optional[Subscription] = None
+    """
+    The subscription, where the event carries it.
+    """
+    charge: Optional[Charge] = None
+    """
+    The charge, where the event carries it.
+    """
+    refund: Optional[Refund] = None
+    """
+    The refund, where the event carries it.
+    """
+    payment_id: Annotated[Optional[str], Field(alias='paymentId')] = None
+    """
+    The one-time payment the event is about.
+    """
+    payment: Optional[Payment] = None
+    """
+    The one-time payment, where the event carries it.
+    """
+    raw: Optional[Any] = None
+    """
+    The gateway's webhook payload, untouched. Absent when there is none.
+    """
+
+
 class ErrorResponse(BaseModel):
     """
     The body of every error response.
@@ -1762,6 +2334,29 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
     """
     The error.
+    """
+
+
+class GatewayEventsDelivery(BaseModel):
+    """
+    A delivery of gateway webhook events to the events webhook.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    kind: Literal['gateway']
+    """
+    Always `gateway`: tells this delivery from a scheduler one.
+    """
+    provider: Provider
+    """
+    The gateway whose webhook carried the events.
+    """
+    events: Annotated[list[SubscriptionEvent], Field(min_length=1)]
+    """
+    The verified, normalised events of one gateway webhook, in the order the gateway sent them. Each has an `id` to de-duplicate on.
     """
 
 

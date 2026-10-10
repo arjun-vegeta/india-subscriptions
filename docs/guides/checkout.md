@@ -4,16 +4,25 @@ After this page you will be able to run the customer's authorisation step for an
 
 Creating a subscription returns `subscription.checkout`, an **instruction** describing what the customer's browser must do. `openCheckout` from `india-subscriptions/checkout` carries it out. It imports no Node module, depends only on `zod`, and never sees a secret: it only knows what your server chose to return. PayU's salt and Paytm's merchant key, for example, sign on your server and are never in the form.
 
-## The four kinds of instruction
+## The four kinds of instruction for the browser
 
 Branch on `checkout.kind` (a `CheckoutKind` constant) if you build your own UI; `openCheckout` does it for you.
 
 | Kind | What the browser does | Used by | Outcome |
 |---|---|---|---|
-| `razorpay_checkout` | Loads Razorpay Standard Checkout, opens it for the subscription id | Razorpay | `completed` with the gateway's handler response, or `dismissed`, or `failed` |
-| `cashfree_checkout` | Loads Cashfree.js, calls `subscriptionsCheckout` with the session id | Cashfree | `redirecting` (the customer returns to your `returnUrl`), or `failed` |
+| `razorpay_checkout` | Loads Razorpay Standard Checkout, opens it for the subscription id, or for the order id of a one-time payment | Razorpay | `completed` with the gateway's handler response, or `dismissed`, or `failed` |
+| `cashfree_checkout` | Loads Cashfree.js, calls `subscriptionsCheckout` with the session id (`productKind` `one_time`: calls `checkout` with the payment session id) | Cashfree | `redirecting` (the customer returns to your `returnUrl`), or `failed` |
 | `form_post` | Builds a hidden form with the given fields and submits it to the gateway | PayU, Paytm | `redirecting` |
 | `redirect` | Navigates to a URL | PhonePe (its hosted checkout page). Razorpay's `hostedUrl` can also be used with `redirectTo`. | `redirecting` |
+
+Two more kinds start on the device and never reach the browser helper:
+
+| Kind | What the device does | Used by |
+|---|---|---|
+| `apple_storekit` | Starts a StoreKit purchase of `productId`, passing `appAccountToken` as the purchase option | Apple App Store |
+| `google_play_billing` | Starts a Play Billing flow for `productId` (and `basePlanId`, `offerId`), passing `obfuscatedAccountId`; with `userChoiceBilling` set, the billing client is built with user choice billing enabled | Google Play |
+
+`openCheckout` throws `UNSUPPORTED` for these two kinds. The device result goes to your server and is verified there.
 
 `openCheckout` returns an outcome you switch on with the `CheckoutStatus` constants:
 

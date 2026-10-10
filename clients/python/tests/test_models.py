@@ -11,7 +11,9 @@ from pydantic import BaseModel, ValidationError
 from india_subscriptions import models
 from india_subscriptions.models import (
     CancelMode,
+    AppleStoreKitCheckout,
     CashfreeCheckout,
+    GooglePlayBillingCheckout,
     CheckoutKind,
     FormPostCheckout,
     RazorpayCheckout,
@@ -111,6 +113,8 @@ CHECKOUTS: Dict[str, Any] = {
     CheckoutKind.FORM_POST.value: ({"kind": CheckoutKind.FORM_POST.value, "url": "https://pay.example.test/x", "fields": {"a": "b"}}, FormPostCheckout),
     CheckoutKind.RAZORPAY_CHECKOUT.value: ({"kind": CheckoutKind.RAZORPAY_CHECKOUT.value, "keyId": "k", "subscriptionId": "s"}, RazorpayCheckout),
     CheckoutKind.CASHFREE_CHECKOUT.value: ({"kind": CheckoutKind.CASHFREE_CHECKOUT.value, "sessionId": "s", "environment": Environment.TEST.value}, CashfreeCheckout),
+    CheckoutKind.APPLE_STOREKIT.value: ({"kind": CheckoutKind.APPLE_STOREKIT.value, "productId": "p", "appAccountToken": "7e3f4a1c-9d2b-4c6e-8f10-3a5b7c9d1e2f"}, AppleStoreKitCheckout),
+    CheckoutKind.GOOGLE_PLAY_BILLING.value: ({"kind": CheckoutKind.GOOGLE_PLAY_BILLING.value, "productKind": "subscription", "productId": "p", "obfuscatedAccountId": "a", "userChoiceBilling": False}, GooglePlayBillingCheckout),
 }
 
 
@@ -126,7 +130,7 @@ def test_an_unknown_checkout_kind_is_rejected_with_a_pointed_error() -> None:
         Subscription.model_validate({**SUBSCRIPTION_JSON, "checkout": {"kind": "carrier_pigeon"}})
 
 
-def test_the_discriminated_union_has_the_four_documented_variants() -> None:
+def test_the_discriminated_union_has_the_six_documented_variants() -> None:
     annotation = Subscription.model_fields["checkout"].annotation
     variants = [arg for union in get_args(annotation) for arg in (get_args(union) or (union,)) if isinstance(arg, type) and issubclass(arg, BaseModel)]
     assert {variant for variant in variants} == {expected for _, expected in CHECKOUTS.values()}

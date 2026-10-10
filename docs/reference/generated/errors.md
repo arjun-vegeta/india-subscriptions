@@ -21,7 +21,8 @@ Everything the library throws is a `SubscriptionError` with a stable `code`. Bra
 | `NETWORK` | The request could not be sent or the connection broke. | Retry a read. For a write that may have reached the gateway the code is `OUTCOME_UNKNOWN` instead. | yes | 502 |
 | `TIMEOUT` | The gateway did not answer in time. | Retry a read. For a write, see `OUTCOME_UNKNOWN`. | yes | 504 |
 | `OUTCOME_UNKNOWN` | A request that moves money was sent and no answer came back. It may or may not have happened. | Do not repeat it. Fetch the current state, then act on what you find. | no | 504 |
-| `SIGNATURE_INVALID` | A webhook or checkout result did not verify, or it belongs to another subscription than the one you expected. Nothing from it is trusted. | Answer 401 to a webhook. Check the secret and that you pass the raw body. | no | 401 |
+| `SIGNATURE_INVALID` | A webhook or checkout result did not verify, or it belongs to another subscription or payment than the one you expected. Nothing from it is trusted. | Answer 401 to a webhook. Check the secret and that you pass the raw body. | no | 401 |
+| `NO_ROUTE` | No configured gateway can take this purchase: every gateway was excluded (for example by payment method, amount or a needed capability). | Configure another gateway, or relax the request. The error lists why each gateway was excluded. | no | 422 |
 | `INTERNAL_ERROR` | A failure inside this library or its storage, not at a gateway. | Look at the message and `cause`. If a checkout verification fails with this, its `raw` carries the verification so the subscription id is not lost. | no | 500 |
 
 `retryable` is true when repeating the same call later is safe and may succeed. It says nothing about money: for a write that may have reached the gateway the code is `OUTCOME_UNKNOWN`, which is not retryable.

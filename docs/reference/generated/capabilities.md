@@ -10,6 +10,7 @@ What each gateway adapter can do, read from the adapters themselves with dummy c
 
 | Capability | Razorpay | Cashfree | PayU | PhonePe | Paytm | Meaning |
 |---|---|---|---|---|---|---|
+| `kind` | `gateway` | `gateway` | `gateway` | `gateway` | `gateway` | `gateway` or `store`. |
 | `scheduling` | `gateway` | `gateway`, `merchant` | `merchant` | `merchant` | `merchant`, `gateway` | Scheduling modes available; the first is the default. |
 | `gatewayPlans` | yes | yes | no | no | no | The gateway stores plan objects (otherwise plans exist only in your code). |
 | `trial` | yes | yes | yes | yes | yes | Free trials are supported. |
@@ -17,6 +18,7 @@ What each gateway adapter can do, read from the adapters themselves with dummy c
 | `quantity` | yes | no | no | no | no | A subscription can bill several units of a plan. |
 | `pause` | yes | yes | no | no | yes | A subscription can be paused. |
 | `resume` | yes | yes | no | no | yes | A paused subscription can be resumed. |
+| `cancel` | yes | yes | yes | yes | yes | A subscription can be cancelled from the server. |
 | `cancelAtPeriodEnd` | yes | no | no | no | no | A subscription can be cancelled at the end of the paid period. |
 | `changePlan` | yes | yes | no | no | no | A subscription can move to another plan. |
 | `merchantCharges` | no | yes | yes | yes | yes | The merchant can raise debits itself (`createCharge`). |
@@ -28,6 +30,8 @@ What each gateway adapter can do, read from the adapters themselves with dummy c
 | `signedWebhooks` | yes | yes | no | yes | yes | Webhooks carry a signature this library verifies. |
 | `idempotencyKeys` | no | yes | no | no | no | Create calls accept an idempotency key. |
 | `paymentMethods` | `card`, `upi`, `enach` | `upi`, `card`, `enach` | `card`, `upi`, `enach` | `upi` | `upi`, `card`, `enach` | The payment methods mandates can be authorised with. |
+| `oneTimePayments` | no | no | no | no | no | One-time payments are supported (`createPayment`). |
+| `oneTimePaymentMethods` |  |  |  |  |  | The payment methods one-time payments can be taken with. |
 
 ## What the facade reports
 

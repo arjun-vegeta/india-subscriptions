@@ -105,7 +105,7 @@ The last error a gateway call produced for a cycle.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `code` | one of `CONFIG`, `VALIDATION`, `UNSUPPORTED`, `NOT_FOUND`, `AUTH`, `CONFLICT`, `RATE_LIMITED`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `UNEXPECTED_RESPONSE`, `NETWORK`, `TIMEOUT`, `OUTCOME_UNKNOWN`, `SIGNATURE_INVALID`, `INTERNAL_ERROR` | yes | Error code of the failed gateway call. |
+| `code` | one of `CONFIG`, `VALIDATION`, `UNSUPPORTED`, `NOT_FOUND`, `AUTH`, `CONFLICT`, `RATE_LIMITED`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `UNEXPECTED_RESPONSE`, `NETWORK`, `TIMEOUT`, `OUTCOME_UNKNOWN`, `SIGNATURE_INVALID`, `NO_ROUTE`, `INTERNAL_ERROR` | yes | Error code of the failed gateway call. |
 | `message` | string | yes | Human-readable explanation of the failure. |
 | `at` | string (date-time) | yes | When the call failed. |
 

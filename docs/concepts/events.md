@@ -7,7 +7,7 @@ After this page you will know the two kinds of event the library produces, what 
 A **gateway event** is a gateway webhook that was verified and normalised. Every gateway sends its own names and shapes; you get one:
 
 ```text
-{ id, provider, type, providerEventType, occurredAt?, subscriptionId?, subscription?, charge?, refund?, raw }
+{ id, provider, type, providerEventType, occurredAt?, subscriptionId?, subscription?, charge?, refund?, paymentId?, payment?, raw }
 ```
 
 `type` is one of the `EventType` constants. `providerEventType` is the gateway's own event name, and `raw` is the gateway's payload, untouched.
@@ -27,6 +27,7 @@ A **gateway event** is a gateway webhook that was verified and normalised. Every
 | `subscription.cancelled` | Ended (by you, the customer or the bank). | End access. |
 | `subscription.completed` | All cycles were collected. | End access or offer a renewal. |
 | `subscription.expired` | The authorisation or the mandate lapsed. | Offer a new subscription. |
+| `payment.succeeded`, `payment.failed` | A one-time payment succeeded or failed. `paymentId` and `payment` carry it. | Fulfil the order, or tell the customer. |
 | `refund.succeeded`, `refund.failed` | A refund finished or failed. | Update your records. |
 | `unknown` | A verified event this library does not normalise. | Inspect `raw`, or ignore it. |
 

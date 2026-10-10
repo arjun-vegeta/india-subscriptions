@@ -25,6 +25,7 @@ A customer: identity and contact details.
 | `name` | string; not empty | no | The customer's name. |
 | `email` | string (email); pattern `^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` | no | The customer's e-mail address. |
 | `phone` | string; pattern `^\+?[0-9]{10,15}$` | no | Mobile number; 10 digits or E.164. Adapters format it for their gateway. |
+| `state` | string; 2 to 60 characters | no | The customer's state or union territory in India (for example "Karnataka"). Needed when a purchase made through Google Play user choice billing is reported to Google. |
 
 ### CreatePlanInput
 
@@ -85,32 +86,35 @@ Authorise by auto-submitting an HTML form to the gateway.
 
 ### RazorpayCheckout
 
-Authorise with Razorpay Standard Checkout.
+Authorise or pay with Razorpay Standard Checkout. Carries exactly one of `subscriptionId` and `orderId`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `kind` | `"razorpay_checkout"` | yes | Discriminator: open Razorpay Standard Checkout. |
 | `keyId` | string | yes | The Razorpay key id to open Checkout with. |
-| `subscriptionId` | string | yes | The Razorpay subscription id to authorise. |
+| `subscriptionId` | string | no | The Razorpay subscription id to authorise (subscriptions). |
+| `orderId` | string | no | The Razorpay order id to pay (one-time payments). |
+| `amount` | integer; at least 0 | no | The order amount in paise (one-time payments). |
 | `hostedUrl` | string (uri) | no | Razorpay-hosted authorisation page, usable instead of the JS checkout. |
 | `callbackUrl` | string (uri) | no | Where Razorpay Checkout redirects after authorisation (its `callback_url` option). |
 | `prefill` | [Customer](#customer) | no | Customer details to prefill in the checkout form. |
 
 ### CashfreeCheckout
 
-Authorise with Cashfree.js `subscriptionsCheckout`.
+Authorise or pay with Cashfree.js: `subscriptionsCheckout` for a subscription, `checkout` for a one-time payment.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `kind` | `"cashfree_checkout"` | yes | Discriminator: call Cashfree.js `subscriptionsCheckout`. |
-| `sessionId` | string | yes | The subscription session id to pass to Cashfree.js. |
+| `sessionId` | string | yes | The session id to pass to Cashfree.js: the subscription session id or the payment session id. |
 | `environment` | [Environment](enums.md#environment) | yes | Which Cashfree environment to initialise Cashfree.js with. |
+| `productKind` | [ProductKind](enums.md#productkind) | no | Absent or `subscription`: call Cashfree.js `subscriptionsCheckout`. `one_time`: call Cashfree.js `checkout` with the same `sessionId` as the payment session id. |
 
 ### CheckoutInstruction
 
-What the customer's browser or app must do to authorise the mandate; branch on `kind`.
+What the customer's browser or app must do to authorise the mandate or pay; branch on `kind`.
 
-Either [RedirectCheckout](#redirectcheckout) or [FormPostCheckout](#formpostcheckout) or [RazorpayCheckout](#razorpaycheckout) or [CashfreeCheckout](#cashfreecheckout).
+Either [RedirectCheckout](#redirectcheckout) or [FormPostCheckout](#formpostcheckout) or [RazorpayCheckout](#razorpaycheckout) or [CashfreeCheckout](#cashfreecheckout) or [AppleStoreKitCheckout](#applestorekitcheckout) or [GooglePlayBillingCheckout](#googleplaybillingcheckout).
 
 Switch on `kind`:
 
@@ -120,6 +124,8 @@ Switch on `kind`:
 | `form_post` | [FormPostCheckout](#formpostcheckout) |
 | `razorpay_checkout` | [RazorpayCheckout](#razorpaycheckout) |
 | `cashfree_checkout` | [CashfreeCheckout](#cashfreecheckout) |
+| `apple_storekit` | [AppleStoreKitCheckout](#applestorekitcheckout) |
+| `google_play_billing` | [GooglePlayBillingCheckout](#googleplaybillingcheckout) |
 
 ### Trial
 
@@ -145,6 +151,7 @@ Everything needed to create a subscription.
 | `startAt` | string (date-time) | no | Delay the first recurring charge to this instant without calling it a trial. |
 | `upfrontAmount` | integer; greater than 0 | no | One-off amount collected together with the authorisation (setup fee or first payment), in paise. |
 | `upfrontLabel` | string; 1 to 100 characters | no | Label shown to the customer for the upfront amount. |
+| `storeProduct` | [StoreProduct](#storeproduct) | no | The product in the app store. App stores require it; gateways ignore it. |
 | `paymentMethods` | array of [PaymentMethod](enums.md#paymentmethod) | no | Restrict the mandate to these payment methods. Omit to allow all the gateway supports. |
 | `authorizeBy` | string (date-time) | no | Deadline for the customer to authorise the mandate. |
 | `mandateEndsAt` | string (date-time) | no | When the mandate itself should lapse. |
@@ -325,7 +332,8 @@ A refund of a charge.
 | `provider` | [Provider](enums.md#provider) | yes | The gateway that holds the refund. |
 | `id` | string | yes | The gateway's refund id. |
 | `reference` | string | no | Your own refund id, where one was supplied. |
-| `chargeId` | string | yes | The charge that was refunded. |
+| `chargeId` | string | yes | The charge that was refunded. For a refund of a one-time payment, the payment's id. |
+| `paymentId` | string | no | The one-time payment that was refunded. A refund of a one-time payment sets both `chargeId` and `paymentId` to the payment's id. |
 | `subscriptionId` | string | no | The subscription the charge belongs to. |
 | `status` | [RefundStatus](enums.md#refundstatus) | yes | Normalised refund status. |
 | `providerStatus` | string | no | The gateway's own status, verbatim. |
@@ -387,6 +395,8 @@ A verified, normalised webhook event.
 | `subscription` | [Subscription](#subscription) | no | The subscription, where the event carries it. |
 | `charge` | [Charge](#charge) | no | The charge, where the event carries it. |
 | `refund` | [Refund](#refund) | no | The refund, where the event carries it. |
+| `paymentId` | string | no | The one-time payment the event is about. |
+| `payment` | [Payment](#payment) | no | The one-time payment, where the event carries it. |
 | `raw` | any JSON value | no | The gateway's webhook payload, untouched. Absent when there is none. |
 
 ### Capabilities
@@ -395,7 +405,8 @@ What a gateway adapter can do, so callers never have to guess.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `provider` | [Provider](enums.md#provider) | yes | The gateway these capabilities describe. |
+| `provider` | [Provider](enums.md#provider) | yes | The provider these capabilities describe. |
+| `kind` | [ProviderKind](enums.md#providerkind) | yes | `gateway` or `store`. |
 | `scheduling` | array of [SchedulingMode](enums.md#schedulingmode) | yes | Scheduling modes available; the first is the default. |
 | `gatewayPlans` | boolean | yes | The gateway stores plan objects (otherwise plans exist only in your code). |
 | `trial` | boolean | yes | Free trials are supported. |
@@ -403,6 +414,7 @@ What a gateway adapter can do, so callers never have to guess.
 | `quantity` | boolean | yes | A subscription can bill several units of a plan. |
 | `pause` | boolean | yes | A subscription can be paused. |
 | `resume` | boolean | yes | A paused subscription can be resumed. |
+| `cancel` | boolean | yes | A subscription can be cancelled from the server. |
 | `cancelAtPeriodEnd` | boolean | yes | A subscription can be cancelled at the end of the paid period. |
 | `changePlan` | boolean | yes | A subscription can move to another plan. |
 | `merchantCharges` | boolean | yes | The merchant can raise debits itself (`createCharge`). |
@@ -414,6 +426,155 @@ What a gateway adapter can do, so callers never have to guess.
 | `signedWebhooks` | boolean | yes | Webhooks carry a signature this library verifies. |
 | `idempotencyKeys` | boolean | yes | Create calls accept an idempotency key. |
 | `paymentMethods` | array of [PaymentMethod](enums.md#paymentmethod) | yes | The payment methods mandates can be authorised with. |
+| `oneTimePayments` | boolean | yes | One-time payments are supported (`createPayment`). |
+| `oneTimePaymentMethods` | array of [PaymentMethod](enums.md#paymentmethod) | yes | The payment methods one-time payments can be taken with. |
+
+### StoreProduct
+
+A product as the app store knows it. Only app stores read it; gateways ignore it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `productId` | string; not empty | yes | The product id in App Store Connect or Play Console. |
+| `basePlanId` | string; not empty | no | Google Play subscriptions: the base plan id. |
+| `offerId` | string; not empty | no | Google Play offer id, or the App Store promotional offer id. |
+| `consumable` | boolean | no | One-time products: true when the product can be bought again. |
+
+### AppleStoreKitCheckout
+
+Purchase through StoreKit on an Apple device.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"apple_storekit"` | yes | Discriminator: start a StoreKit purchase on the device. |
+| `productId` | string | yes | The App Store Connect product id to purchase. |
+| `appAccountToken` | string (uuid); pattern `^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\|00000000-0000-0000-0000-000000000000\|ffffffff-ffff-ffff-ffff-ffffffffffff)$` | yes | Pass to StoreKit's purchase option `appAccountToken`; it ties the purchase to this order. |
+| `promotionalOffer` | object | no | A signed promotional offer to apply to the purchase. |
+
+### GooglePlayBillingCheckout
+
+Purchase through Google Play Billing on an Android device.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"google_play_billing"` | yes | Discriminator: start a Google Play Billing flow on the device. |
+| `productKind` | [ProductKind](enums.md#productkind) | yes | Whether the product is a subscription or a one-time product. |
+| `productId` | string | yes | The Play Console product id. |
+| `basePlanId` | string | no | Subscriptions: the base plan id. |
+| `offerId` | string | no | The offer id, where an offer applies. |
+| `obfuscatedAccountId` | string; 1 to 64 characters | yes | Pass to `BillingFlowParams.setObfuscatedAccountId`; it ties the purchase to this order. |
+| `userChoiceBilling` | boolean | yes | True: build the `BillingClient` with `enableUserChoiceBilling`, so Google shows its choice screen. |
+
+### CreatePaymentInput
+
+Everything needed to create a one-time payment.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reference` | string; 1 to 60 characters | no | Your own id for this payment. Sent to the gateway where it accepts one, and echoed back on `Payment.reference`. |
+| `amount` | integer; greater than 0 | yes | Amount to collect, in paise. |
+| `description` | string; 1 to 250 characters | no | What the payment is for. |
+| `customer` | [Customer](#customer) | yes | The paying customer. |
+| `paymentMethods` | array of [PaymentMethod](enums.md#paymentmethod) | no | Restrict the payment to these payment methods. Omit to allow all the gateway supports. |
+| `returnUrl` | string (uri) | no | Where the gateway sends the customer after paying. |
+| `expiresAt` | string (date-time) | no | Deadline for the customer to pay. |
+| `metadata` | map of string to string | no | Free-form key/value pairs stored with the payment. |
+| `idempotencyKey` | string; 1 to 255 characters | no | Makes the create call safe to retry, where the gateway supports idempotency keys. |
+| `storeProduct` | [StoreProduct](#storeproduct) | no | The product in the app store. App stores require it; gateways ignore it. |
+
+### Payment
+
+A one-time payment.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | [Provider](enums.md#provider) | yes | The provider that holds the payment. |
+| `id` | string | yes | The identifier to pass back to this library for every later call. |
+| `reference` | string | no | Your own reference, where one was supplied. |
+| `status` | [PaymentStatus](enums.md#paymentstatus) | yes | Normalised payment status. |
+| `providerStatus` | string | yes | The provider's own status, verbatim. |
+| `amount` | integer; at least 0 | yes | Amount of the payment in paise. |
+| `currency` | [Currency](enums.md#currency) | no | Currency of the payment. |
+| `refundedAmount` | integer; at least 0 | no | Amount refunded so far, in paise. |
+| `paymentMethod` | [PaymentMethod](enums.md#paymentmethod) | no | The payment method the customer paid with. |
+| `customer` | [Customer](#customer) | no | The paying customer, where known. |
+| `createdAt` | string (date-time) | no | When the payment was created. |
+| `paidAt` | string (date-time) | no | When the payment succeeded. |
+| `failureCode` | string | no | The provider's failure code, where the payment failed. |
+| `failureReason` | string | no | Human-readable reason the payment failed. |
+| `checkout` | [CheckoutInstruction](#checkoutinstruction) | no | Present on freshly created payments: what the customer must do to pay. |
+| `metadata` | map of string to string | no | Key/value pairs stored with the payment. |
+| `raw` | any JSON value | no | The gateway's response, untouched. Absent when the gateway returned no body. |
+
+### VerifyPaymentInput
+
+What the HTTP service and the facade accept when verifying the result of a one-time payment.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `result` | [CheckoutResult](#checkoutresult) | yes | The data the provider handed back to the browser or device, untouched. |
+| `expectedPaymentId` | string; not empty | no | The payment id (or your reference) that your server stored when it created the payment. When given, a result that verifies but belongs to a different payment is rejected, so a customer cannot replay one payment to unlock another. |
+
+### PaymentVerification
+
+The outcome of verifying the result of a one-time payment.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | [Provider](enums.md#provider) | yes | The provider that issued the result. |
+| `paymentId` | string | yes | The payment id to store and use for later calls. |
+| `reference` | string | no | Your own reference for the payment, where known. |
+| `paid` | boolean | yes | True when the payment succeeded. |
+| `status` | [PaymentStatus](enums.md#paymentstatus) | no | The payment status the result implies, where known. |
+| `payment` | [Payment](#payment) | no | The payment, where the verification fetched or carries it. |
+| `raw` | any JSON value | no | The verified provider data, untouched. Absent when there is none. |
+
+### RefundPaymentInput
+
+A refund of a one-time payment.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `paymentId` | string; not empty | yes | The payment to refund. |
+| `refundId` | string; 1 to 40 characters | yes | Your unique id for this refund. |
+| `amount` | integer; greater than 0 | no | Amount to refund in paise. Omit to refund the full payment. |
+| `reason` | string; at most 250 characters | no | Why the payment is refunded. |
+
+### ExternalTransactionReport
+
+A transaction made outside Google Play billing (user choice billing), reported to Google.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `externalTransactionId` | string; 1 to 128 characters | yes | Your unique id for this transaction. |
+| `externalTransactionToken` | string | no | The token from the device. Needed on the first transaction only. |
+| `initialExternalTransactionId` | string | no | Renewals: the `externalTransactionId` of the first transaction of the subscription. |
+| `productKind` | [ProductKind](enums.md#productkind) | yes | Whether the transaction is a subscription charge or a one-time purchase. |
+| `amount` | integer; at least 0 | yes | Pre-tax amount in paise (0 for a free trial). |
+| `taxAmount` | integer; at least 0 | yes | Tax in paise. |
+| `transactionTime` | string (date-time) | yes | When the payment was authorised. |
+| `state` | string; at least 2 characters | yes | The customer's state, sent as `userTaxAddress.administrativeArea` with region code `IN`. |
+
+### ExternalTransactionRefund
+
+A refund of an external transaction, reported to Google.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `externalTransactionId` | string; not empty | yes | The `externalTransactionId` of the transaction that was refunded. |
+| `refundTime` | string (date-time) | yes | When the refund was made. |
+| `amount` | integer; at least 0 | no | Pre-tax amount refunded, in paise. Omit for a full refund. |
+| `taxAmount` | integer; at least 0 | no | Tax refunded, in paise. Omit for a full refund. |
+
+### ExternalTransactionRecord
+
+An external transaction as Google holds it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `externalTransactionId` | string | yes | Your id for the transaction. |
+| `state` | string | yes | The state Google holds the transaction in, verbatim. |
+| `raw` | any JSON value | no | The gateway's response, untouched. Absent when the gateway returned no body. |
 
 ### ErrorResponse
 

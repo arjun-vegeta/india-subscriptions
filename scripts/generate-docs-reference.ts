@@ -529,8 +529,12 @@ const ERROR_MEANINGS: Record<ErrorCode, { meaning: string; action: string }> = {
     action: 'Do not repeat it. Fetch the current state, then act on what you find.',
   },
   [ErrorCode.SignatureInvalid]: {
-    meaning: 'A webhook or checkout result did not verify, or it belongs to another subscription than the one you expected. Nothing from it is trusted.',
+    meaning: 'A webhook or checkout result did not verify, or it belongs to another subscription or payment than the one you expected. Nothing from it is trusted.',
     action: 'Answer 401 to a webhook. Check the secret and that you pass the raw body.',
+  },
+  [ErrorCode.NoRoute]: {
+    meaning: 'No configured gateway can take this purchase: every gateway was excluded (for example by payment method, amount or a needed capability).',
+    action: 'Configure another gateway, or relax the request. The error lists why each gateway was excluded.',
   },
   [ErrorCode.Internal]: {
     meaning: 'A failure inside this library or its storage, not at a gateway.',
@@ -610,6 +614,11 @@ export const PROVIDERS_WITHOUT_ADAPTER: Provider[] = (Object.values(Provider) as
   (provider) => ADAPTER_FACTORIES[provider] === undefined,
 );
 
+/** The file name of a provider's page under docs/gateways/: the provider name with hyphens (`app_store` is `app-store.md`). */
+export function gatewayPageFile(provider: Provider): string {
+  return `${provider.replaceAll('_', '-')}.md`;
+}
+
 function adapterFor(provider: Provider): SubscriptionProvider {
   const factory = ADAPTER_FACTORIES[provider];
   if (!factory) throw new Error(`No adapter factory for ${provider}`);
@@ -622,6 +631,8 @@ const PROVIDER_LABEL: Record<string, string> = {
   [Provider.PayU]: 'PayU',
   [Provider.PhonePe]: 'PhonePe',
   [Provider.Paytm]: 'Paytm',
+  [Provider.AppStore]: 'Apple App Store',
+  [Provider.GooglePlay]: 'Google Play',
 };
 
 type CapabilityKey = Exclude<keyof Capabilities, 'provider'>;
@@ -1021,7 +1032,7 @@ export function generateAll(): Map<string, string> {
   put('environment.md', environmentPage());
 
   for (const provider of PROVIDERS) {
-    const path = `gateways/${provider}.md`;
+    const path = `gateways/${gatewayPageFile(provider)}`;
     const current = readFileSync(join(DOCS, path), 'utf8');
     const filled = fillRegions(current);
     if (filled !== undefined) files.set(path, filled.endsWith('\n') ? filled : `${filled}\n`);

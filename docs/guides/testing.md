@@ -72,7 +72,7 @@ import { EventType, Provider, RazorpayApi, createSubscriptions, razorpay } from 
 
 const WEBHOOK_SECRET = 'test_webhook_secret';
 
-export function simulateCharged(subscriptionBody: object) {
+export async function simulateCharged(subscriptionBody: object) {
   const rawBody = JSON.stringify({
     entity: 'event',
     event: RazorpayApi.RazorpayWebhookEvent.Charged,
@@ -85,7 +85,7 @@ export function simulateCharged(subscriptionBody: object) {
   const subs = createSubscriptions({
     providers: [razorpay({ keyId: 'rzp_test_key', keySecret: 'secret', webhookSecret: WEBHOOK_SECRET })],
   });
-  const [event] = subs.webhooks.parse(Provider.Razorpay, {
+  const [event] = await subs.webhooks.parse(Provider.Razorpay, {
     rawBody,
     headers: { 'x-razorpay-signature': signature, 'x-razorpay-event-id': 'evt_1' },
   });

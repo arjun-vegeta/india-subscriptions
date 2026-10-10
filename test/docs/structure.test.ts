@@ -39,6 +39,8 @@ const REQUIRED_PAGES = [
   'gateways/payu.md',
   'gateways/phonepe.md',
   'gateways/paytm.md',
+  'gateways/app-store.md',
+  'gateways/google-play.md',
   'reference/index.md',
   'reference/client.md',
   'reference/scheduler.md',

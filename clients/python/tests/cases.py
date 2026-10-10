@@ -105,6 +105,10 @@ CAPABILITIES_JSON = {
     "signedWebhooks": True,
     "idempotencyKeys": False,
     "paymentMethods": [],
+    "kind": "gateway",
+    "cancel": True,
+    "oneTimePayments": False,
+    "oneTimePaymentMethods": [],
 }
 REFUND_JSON = {
     "provider": RAZORPAY,

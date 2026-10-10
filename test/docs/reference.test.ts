@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Provider } from '../../src/constants.js';
 import { EnvVar } from '../../src/service-config.js';
-import { GENERATED_PATHS, PROVIDERS, PROVIDERS_WITHOUT_ADAPTER, generateAll } from '../../scripts/generate-docs-reference.js';
+import { GENERATED_PATHS, PROVIDERS, PROVIDERS_WITHOUT_ADAPTER, gatewayPageFile, generateAll } from '../../scripts/generate-docs-reference.js';
 import { DOCS } from './lib.js';
 
 const generated = generateAll();
@@ -47,11 +47,11 @@ describe('generated reference', () => {
     const capabilities = generated.get('reference/generated/capabilities.md') ?? '';
     expect(PROVIDERS.length).toBeGreaterThan(0);
     for (const provider of PROVIDERS) {
-      const page = readFileSync(join(DOCS, 'gateways', `${provider}.md`), 'utf8');
+      const page = readFileSync(join(DOCS, 'gateways', gatewayPageFile(provider)), 'utf8');
       expect(page).toContain(`<!-- generated:begin capabilities ${provider} -->`);
     }
     for (const provider of PROVIDERS_WITHOUT_ADAPTER) {
-      const page = readFileSync(join(DOCS, 'gateways', `${provider}.md`), 'utf8');
+      const page = readFileSync(join(DOCS, 'gateways', gatewayPageFile(provider)), 'utf8');
       expect(page, `${provider} has no adapter, so its page is a stub`).toContain('In progress');
       expect(capabilities).not.toContain(`| ${provider}`);
     }

@@ -30,6 +30,7 @@ STATUS_OF_CODE: Dict[ErrorCode, HttpStatus] = {
     ErrorCode.CONFLICT: HttpStatus.CONFLICT,
     ErrorCode.PAYLOAD_TOO_LARGE: HttpStatus.PAYLOAD_TOO_LARGE,
     ErrorCode.UNSUPPORTED: HttpStatus.UNPROCESSABLE,
+    ErrorCode.NO_ROUTE: HttpStatus.UNPROCESSABLE,
     ErrorCode.RATE_LIMITED: HttpStatus.TOO_MANY_REQUESTS,
     ErrorCode.CONFIG: HttpStatus.INTERNAL_SERVER_ERROR,
     ErrorCode.INTERNAL_ERROR: HttpStatus.INTERNAL_SERVER_ERROR,

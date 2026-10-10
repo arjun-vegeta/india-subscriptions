@@ -64,6 +64,8 @@ export default withMermaid(
             { text: 'PayU', link: '/gateways/payu' },
             { text: 'PhonePe', link: '/gateways/phonepe' },
             { text: 'Paytm', link: '/gateways/paytm' },
+            { text: 'Apple App Store', link: '/gateways/app-store' },
+            { text: 'Google Play', link: '/gateways/google-play' },
           ],
         },
         {

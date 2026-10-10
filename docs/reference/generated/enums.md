@@ -8,7 +8,7 @@ Every string that carries meaning is an exported constant: use `SubscriptionStat
 
 ### Provider
 
-A supported payment gateway.
+A supported provider: a payment gateway or an app store.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -17,6 +17,8 @@ A supported payment gateway.
 | `Provider.PayU` | `payu` |  |
 | `Provider.PhonePe` | `phonepe` |  |
 | `Provider.Paytm` | `paytm` |  |
+| `Provider.AppStore` | `app_store` | Apple App Store: StoreKit 2 on the device, the App Store Server API on the server. |
+| `Provider.GooglePlay` | `google_play` | Google Play: Play Billing on the device, the Google Play Developer API on the server. |
 
 ### Currency
 
@@ -80,7 +82,7 @@ Status of a refund.
 
 ### PaymentMethod
 
-`upi` is a UPI Autopay mandate, `card` a card standing instruction, `enach` an eNACH e-mandate on a bank account, `physical_nach` a paper NACH mandate.
+`upi` is a UPI Autopay mandate, `card` a card standing instruction, `enach` an eNACH e-mandate on a bank account, `physical_nach` a paper NACH mandate. `netbanking` and `wallet` apply to one-time payments only.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -88,6 +90,8 @@ Status of a refund.
 | `PaymentMethod.Card` | `card` | Card standing instruction (e-mandate on card). |
 | `PaymentMethod.ENach` | `enach` | eNACH / e-mandate on a bank account (net banking, debit card or Aadhaar authenticated). |
 | `PaymentMethod.PhysicalNach` | `physical_nach` | Paper NACH mandate. |
+| `PaymentMethod.NetBanking` | `netbanking` | Net banking (one-time payments only). |
+| `PaymentMethod.Wallet` | `wallet` | A wallet (one-time payments only). |
 
 ### SchedulingMode
 
@@ -118,6 +122,8 @@ Normalised webhook / lifecycle event. `unknown` is a verified event this library
 | `EventType.SubscriptionCancelled` | `subscription.cancelled` |  |
 | `EventType.SubscriptionCompleted` | `subscription.completed` |  |
 | `EventType.SubscriptionExpired` | `subscription.expired` |  |
+| `EventType.PaymentSucceeded` | `payment.succeeded` |  |
+| `EventType.PaymentFailed` | `payment.failed` |  |
 | `EventType.RefundSucceeded` | `refund.succeeded` |  |
 | `EventType.RefundFailed` | `refund.failed` |  |
 | `EventType.Unknown` | `unknown` | A verified event this library does not normalise; inspect `raw`. |
@@ -170,6 +176,69 @@ How the customer's browser or app completes mandate authorisation; the `kind` of
 | `CheckoutKind.FormPost` | `form_post` | Auto-submit an HTML form with the given fields to the gateway. |
 | `CheckoutKind.RazorpayCheckout` | `razorpay_checkout` | Open Razorpay Standard Checkout with a subscription id. |
 | `CheckoutKind.CashfreeCheckout` | `cashfree_checkout` | Call Cashfree.js `subscriptionsCheckout` with a session id. |
+| `CheckoutKind.AppleStoreKit` | `apple_storekit` | Start a StoreKit purchase of a product on the device, with an app account token. |
+| `CheckoutKind.GooglePlayBilling` | `google_play_billing` | Start a Google Play Billing flow for a product on the device, with an obfuscated account id. |
+
+### ProviderKind
+
+`gateway` is a payment gateway, `store` is an app store (Apple App Store, Google Play).
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ProviderKind.Gateway` | `gateway` | A payment gateway: the merchant creates the payment or mandate on the server and the customer authorises it. |
+| `ProviderKind.Store` | `store` | An app store: the product lives in the store and the purchase starts on the device. |
+
+### Platform
+
+The platform a customer buys on: `ios`, `android` or `web`.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `Platform.Ios` | `ios` |  |
+| `Platform.Android` | `android` |  |
+| `Platform.Web` | `web` |  |
+
+### ChannelPolicy
+
+Where purchases on a platform may be taken: `store` is the platform's app store only, `user_choice` is the app store with its own choice screen offering a payment gateway, `gateways` is payment gateways only.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ChannelPolicy.Store` | `store` | The platform's app store only. |
+| `ChannelPolicy.UserChoice` | `user_choice` | The app store, with the store's own choice screen offering an alternative payment gateway (Google Play user choice billing). |
+| `ChannelPolicy.Gateways` | `gateways` | Payment gateways only. |
+
+### SalesChannel
+
+The channel a purchase went through: `store` (an app store) or `gateway` (a payment gateway).
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `SalesChannel.Store` | `store` |  |
+| `SalesChannel.Gateway` | `gateway` |  |
+
+### ProductKind
+
+`subscription` is billed again every interval, `one_time` is paid once.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ProductKind.Subscription` | `subscription` | Billed again every interval. |
+| `ProductKind.OneTime` | `one_time` | Paid once. |
+
+### PaymentStatus
+
+Normalised status of a one-time payment. The gateway's own status is preserved verbatim in `providerStatus`. `succeeded`, `failed`, `cancelled`, `refunded` and `partially_refunded` follow a payment that was created.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `PaymentStatus.Created` | `created` | Created, the customer has not paid yet. |
+| `PaymentStatus.Pending` | `pending` | The customer paid or approved; the final result is not known yet. |
+| `PaymentStatus.Succeeded` | `succeeded` |  |
+| `PaymentStatus.Failed` | `failed` |  |
+| `PaymentStatus.Cancelled` | `cancelled` |  |
+| `PaymentStatus.Refunded` | `refunded` |  |
+| `PaymentStatus.PartiallyRefunded` | `partially_refunded` |  |
 
 ### ErrorCode
 
@@ -191,6 +260,7 @@ A stable error code: one of the library's `ErrorCode`s or one of the service's o
 | `ErrorCode.Timeout` | `TIMEOUT` |  |
 | `ErrorCode.OutcomeUnknown` | `OUTCOME_UNKNOWN` |  |
 | `ErrorCode.SignatureInvalid` | `SIGNATURE_INVALID` |  |
+| `ErrorCode.NoRoute` | `NO_ROUTE` | No configured gateway can take this purchase. |
 | `ErrorCode.Internal` | `INTERNAL_ERROR` | A failure inside this library or its storage, not at a gateway. |
 |  | `UNAUTHORIZED` |  |
 |  | `METHOD_NOT_ALLOWED` |  |
@@ -224,6 +294,7 @@ Stable error code of this library. Branch on it, never on the message.
 |  | `TIMEOUT` |  |
 |  | `OUTCOME_UNKNOWN` |  |
 |  | `SIGNATURE_INVALID` |  |
+|  | `NO_ROUTE` |  |
 |  | `INTERNAL_ERROR` |  |
 
 ### SchedulerEventType

@@ -63,7 +63,8 @@ describe('TypeScript samples', () => {
 
 /** Values of every exported constant object a sample could have used instead of a literal. */
 function constantValues(): Set<string> {
-  const skip = new Set(['HttpMethod', 'HeaderName', 'ContentType', 'HashAlgorithm', 'DigestEncoding', 'RazorpayEvent']);
+  // `ProductKind.Subscription` is also the entity name inside a Razorpay payload (`entity: 'subscription'`), which a sample may spell out.
+  const skip = new Set(['HttpMethod', 'HeaderName', 'ContentType', 'HashAlgorithm', 'DigestEncoding', 'RazorpayEvent', 'ProductKind']);
   const values = new Set<string>();
   const checkout = { CheckoutStatus: CheckoutConstants.CheckoutStatus };
   for (const module of [Constants, SchedulerConstants, checkout] as Record<string, unknown>[]) {

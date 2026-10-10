@@ -9,9 +9,11 @@
         "cashfree",
         "payu",
         "phonepe",
-        "paytm"
+        "paytm",
+        "app_store",
+        "google_play"
       ],
-      "description": "A supported payment gateway."
+      "description": "A supported provider: a payment gateway or an app store."
     },
     "Currency": {
       "type": "string",
@@ -74,9 +76,11 @@
         "upi",
         "card",
         "enach",
-        "physical_nach"
+        "physical_nach",
+        "netbanking",
+        "wallet"
       ],
-      "description": "`upi` is a UPI Autopay mandate, `card` a card standing instruction, `enach` an eNACH e-mandate on a bank account, `physical_nach` a paper NACH mandate."
+      "description": "`upi` is a UPI Autopay mandate, `card` a card standing instruction, `enach` an eNACH e-mandate on a bank account, `physical_nach` a paper NACH mandate. `netbanking` and `wallet` apply to one-time payments only."
     },
     "SchedulingMode": {
       "type": "string",
@@ -103,6 +107,8 @@
         "subscription.cancelled",
         "subscription.completed",
         "subscription.expired",
+        "payment.succeeded",
+        "payment.failed",
         "refund.succeeded",
         "refund.failed",
         "unknown"
@@ -149,7 +155,9 @@
         "redirect",
         "form_post",
         "razorpay_checkout",
-        "cashfree_checkout"
+        "cashfree_checkout",
+        "apple_storekit",
+        "google_play_billing"
       ],
       "description": "How the customer's browser or app completes mandate authorisation; the `kind` of a `CheckoutInstruction`."
     },
@@ -196,6 +204,12 @@
           "description": "Mobile number; 10 digits or E.164. Adapters format it for their gateway.",
           "type": "string",
           "pattern": "^\\+?[0-9]{10,15}$"
+        },
+        "state": {
+          "description": "The customer's state or union territory in India (for example \"Karnataka\"). Needed when a purchase made through Google Play user choice billing is reported to Google.",
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
         }
       },
       "additionalProperties": false,
@@ -415,8 +429,17 @@
           "description": "The Razorpay key id to open Checkout with."
         },
         "subscriptionId": {
-          "type": "string",
-          "description": "The Razorpay subscription id to authorise."
+          "description": "The Razorpay subscription id to authorise (subscriptions).",
+          "type": "string"
+        },
+        "orderId": {
+          "description": "The Razorpay order id to pay (one-time payments).",
+          "type": "string"
+        },
+        "amount": {
+          "description": "The order amount in paise (one-time payments).",
+          "type": "integer",
+          "minimum": 0
         },
         "hostedUrl": {
           "description": "Razorpay-hosted authorisation page, usable instead of the JS checkout.",
@@ -435,11 +458,10 @@
       },
       "required": [
         "kind",
-        "keyId",
-        "subscriptionId"
+        "keyId"
       ],
       "additionalProperties": false,
-      "description": "Authorise with Razorpay Standard Checkout."
+      "description": "Authorise or pay with Razorpay Standard Checkout. Carries exactly one of `subscriptionId` and `orderId`."
     },
     "CashfreeCheckout": {
       "type": "object",
@@ -451,11 +473,15 @@
         },
         "sessionId": {
           "type": "string",
-          "description": "The subscription session id to pass to Cashfree.js."
+          "description": "The session id to pass to Cashfree.js: the subscription session id or the payment session id."
         },
         "environment": {
           "description": "Which Cashfree environment to initialise Cashfree.js with.",
           "$ref": "#/$defs/Environment"
+        },
+        "productKind": {
+          "description": "Absent or `subscription`: call Cashfree.js `subscriptionsCheckout`. `one_time`: call Cashfree.js `checkout` with the same `sessionId` as the payment session id.",
+          "$ref": "#/$defs/ProductKind"
         }
       },
       "required": [
@@ -464,7 +490,7 @@
         "environment"
       ],
       "additionalProperties": false,
-      "description": "Authorise with Cashfree.js `subscriptionsCheckout`."
+      "description": "Authorise or pay with Cashfree.js: `subscriptionsCheckout` for a subscription, `checkout` for a one-time payment."
     },
     "CheckoutInstruction": {
       "oneOf": [
@@ -479,9 +505,15 @@
         },
         {
           "$ref": "#/$defs/CashfreeCheckout"
+        },
+        {
+          "$ref": "#/$defs/AppleStoreKitCheckout"
+        },
+        {
+          "$ref": "#/$defs/GooglePlayBillingCheckout"
         }
       ],
-      "description": "What the customer's browser or app must do to authorise the mandate; branch on `kind`."
+      "description": "What the customer's browser or app must do to authorise the mandate or pay; branch on `kind`."
     },
     "Trial": {
       "type": "object",
@@ -556,6 +588,10 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 100
+        },
+        "storeProduct": {
+          "description": "The product in the app store. App stores require it; gateways ignore it.",
+          "$ref": "#/$defs/StoreProduct"
         },
         "paymentMethods": {
           "description": "Restrict the mandate to these payment methods. Omit to allow all the gateway supports.",
@@ -1167,7 +1203,11 @@
         },
         "chargeId": {
           "type": "string",
-          "description": "The charge that was refunded."
+          "description": "The charge that was refunded. For a refund of a one-time payment, the payment's id."
+        },
+        "paymentId": {
+          "description": "The one-time payment that was refunded. A refund of a one-time payment sets both `chargeId` and `paymentId` to the payment's id.",
+          "type": "string"
         },
         "subscriptionId": {
           "description": "The subscription the charge belongs to.",
@@ -1352,6 +1392,14 @@
           "description": "The refund, where the event carries it.",
           "$ref": "#/$defs/Refund"
         },
+        "paymentId": {
+          "description": "The one-time payment the event is about.",
+          "type": "string"
+        },
+        "payment": {
+          "description": "The one-time payment, where the event carries it.",
+          "$ref": "#/$defs/Payment"
+        },
         "raw": {
           "description": "The gateway's webhook payload, untouched. Absent when there is none."
         }
@@ -1369,8 +1417,12 @@
       "type": "object",
       "properties": {
         "provider": {
-          "description": "The gateway these capabilities describe.",
+          "description": "The provider these capabilities describe.",
           "$ref": "#/$defs/Provider"
+        },
+        "kind": {
+          "description": "`gateway` or `store`.",
+          "$ref": "#/$defs/ProviderKind"
         },
         "scheduling": {
           "minItems": 1,
@@ -1403,6 +1455,10 @@
         "resume": {
           "type": "boolean",
           "description": "A paused subscription can be resumed."
+        },
+        "cancel": {
+          "type": "boolean",
+          "description": "A subscription can be cancelled from the server."
         },
         "cancelAtPeriodEnd": {
           "type": "boolean",
@@ -1452,10 +1508,22 @@
             "$ref": "#/$defs/PaymentMethod"
           },
           "description": "The payment methods mandates can be authorised with."
+        },
+        "oneTimePayments": {
+          "type": "boolean",
+          "description": "One-time payments are supported (`createPayment`)."
+        },
+        "oneTimePaymentMethods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PaymentMethod"
+          },
+          "description": "The payment methods one-time payments can be taken with."
         }
       },
       "required": [
         "provider",
+        "kind",
         "scheduling",
         "gatewayPlans",
         "trial",
@@ -1463,6 +1531,7 @@
         "quantity",
         "pause",
         "resume",
+        "cancel",
         "cancelAtPeriodEnd",
         "changePlan",
         "merchantCharges",
@@ -1471,10 +1540,566 @@
         "refunds",
         "signedWebhooks",
         "idempotencyKeys",
-        "paymentMethods"
+        "paymentMethods",
+        "oneTimePayments",
+        "oneTimePaymentMethods"
       ],
       "additionalProperties": false,
       "description": "What a gateway adapter can do, so callers never have to guess."
+    },
+    "ProviderKind": {
+      "type": "string",
+      "enum": [
+        "gateway",
+        "store"
+      ],
+      "description": "`gateway` is a payment gateway, `store` is an app store (Apple App Store, Google Play)."
+    },
+    "Platform": {
+      "type": "string",
+      "enum": [
+        "ios",
+        "android",
+        "web"
+      ],
+      "description": "The platform a customer buys on: `ios`, `android` or `web`."
+    },
+    "ChannelPolicy": {
+      "type": "string",
+      "enum": [
+        "store",
+        "user_choice",
+        "gateways"
+      ],
+      "description": "Where purchases on a platform may be taken: `store` is the platform's app store only, `user_choice` is the app store with its own choice screen offering a payment gateway, `gateways` is payment gateways only."
+    },
+    "SalesChannel": {
+      "type": "string",
+      "enum": [
+        "store",
+        "gateway"
+      ],
+      "description": "The channel a purchase went through: `store` (an app store) or `gateway` (a payment gateway)."
+    },
+    "ProductKind": {
+      "type": "string",
+      "enum": [
+        "subscription",
+        "one_time"
+      ],
+      "description": "`subscription` is billed again every interval, `one_time` is paid once."
+    },
+    "PaymentStatus": {
+      "type": "string",
+      "enum": [
+        "created",
+        "pending",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "refunded",
+        "partially_refunded"
+      ],
+      "description": "Normalised status of a one-time payment. The gateway's own status is preserved verbatim in `providerStatus`. `succeeded`, `failed`, `cancelled`, `refunded` and `partially_refunded` follow a payment that was created."
+    },
+    "StoreProduct": {
+      "type": "object",
+      "properties": {
+        "productId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The product id in App Store Connect or Play Console."
+        },
+        "basePlanId": {
+          "description": "Google Play subscriptions: the base plan id.",
+          "type": "string",
+          "minLength": 1
+        },
+        "offerId": {
+          "description": "Google Play offer id, or the App Store promotional offer id.",
+          "type": "string",
+          "minLength": 1
+        },
+        "consumable": {
+          "description": "One-time products: true when the product can be bought again.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "productId"
+      ],
+      "additionalProperties": false,
+      "description": "A product as the app store knows it. Only app stores read it; gateways ignore it."
+    },
+    "AppleStoreKitCheckout": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "apple_storekit",
+          "description": "Discriminator: start a StoreKit purchase on the device."
+        },
+        "productId": {
+          "type": "string",
+          "description": "The App Store Connect product id to purchase."
+        },
+        "appAccountToken": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+          "description": "Pass to StoreKit's purchase option `appAccountToken`; it ties the purchase to this order."
+        },
+        "promotionalOffer": {
+          "description": "A signed promotional offer to apply to the purchase.",
+          "type": "object",
+          "properties": {
+            "offerId": {
+              "type": "string",
+              "description": "The promotional offer id."
+            },
+            "keyId": {
+              "type": "string",
+              "description": "The id of the key that signed the offer."
+            },
+            "nonce": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+              "description": "A one-time UUID for this signature."
+            },
+            "timestamp": {
+              "type": "integer",
+              "description": "When the signature was made, in milliseconds since the Unix epoch."
+            },
+            "signature": {
+              "type": "string",
+              "description": "The signature, as StoreKit's promotional offer purchase option expects it."
+            }
+          },
+          "required": [
+            "offerId",
+            "keyId",
+            "nonce",
+            "timestamp",
+            "signature"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "productId",
+        "appAccountToken"
+      ],
+      "additionalProperties": false,
+      "description": "Purchase through StoreKit on an Apple device."
+    },
+    "GooglePlayBillingCheckout": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "google_play_billing",
+          "description": "Discriminator: start a Google Play Billing flow on the device."
+        },
+        "productKind": {
+          "description": "Whether the product is a subscription or a one-time product.",
+          "$ref": "#/$defs/ProductKind"
+        },
+        "productId": {
+          "type": "string",
+          "description": "The Play Console product id."
+        },
+        "basePlanId": {
+          "description": "Subscriptions: the base plan id.",
+          "type": "string"
+        },
+        "offerId": {
+          "description": "The offer id, where an offer applies.",
+          "type": "string"
+        },
+        "obfuscatedAccountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Pass to `BillingFlowParams.setObfuscatedAccountId`; it ties the purchase to this order."
+        },
+        "userChoiceBilling": {
+          "type": "boolean",
+          "description": "True: build the `BillingClient` with `enableUserChoiceBilling`, so Google shows its choice screen."
+        }
+      },
+      "required": [
+        "kind",
+        "productKind",
+        "productId",
+        "obfuscatedAccountId",
+        "userChoiceBilling"
+      ],
+      "additionalProperties": false,
+      "description": "Purchase through Google Play Billing on an Android device."
+    },
+    "CreatePaymentInput": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "description": "Your own id for this payment. Sent to the gateway where it accepts one, and echoed back on `Payment.reference`.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "amount": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Amount to collect, in paise."
+        },
+        "description": {
+          "description": "What the payment is for.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 250
+        },
+        "customer": {
+          "description": "The paying customer.",
+          "$ref": "#/$defs/Customer"
+        },
+        "paymentMethods": {
+          "description": "Restrict the payment to these payment methods. Omit to allow all the gateway supports.",
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PaymentMethod"
+          }
+        },
+        "returnUrl": {
+          "description": "Where the gateway sends the customer after paying.",
+          "type": "string",
+          "format": "uri"
+        },
+        "expiresAt": {
+          "description": "Deadline for the customer to pay.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "metadata": {
+          "description": "Free-form key/value pairs stored with the payment.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "idempotencyKey": {
+          "description": "Makes the create call safe to retry, where the gateway supports idempotency keys.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "storeProduct": {
+          "description": "The product in the app store. App stores require it; gateways ignore it.",
+          "$ref": "#/$defs/StoreProduct"
+        }
+      },
+      "required": [
+        "amount",
+        "customer"
+      ],
+      "additionalProperties": false,
+      "description": "Everything needed to create a one-time payment."
+    },
+    "Payment": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The provider that holds the payment.",
+          "$ref": "#/$defs/Provider"
+        },
+        "id": {
+          "type": "string",
+          "description": "The identifier to pass back to this library for every later call."
+        },
+        "reference": {
+          "description": "Your own reference, where one was supplied.",
+          "type": "string"
+        },
+        "status": {
+          "description": "Normalised payment status.",
+          "$ref": "#/$defs/PaymentStatus"
+        },
+        "providerStatus": {
+          "type": "string",
+          "description": "The provider's own status, verbatim."
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Amount of the payment in paise."
+        },
+        "currency": {
+          "description": "Currency of the payment.",
+          "$ref": "#/$defs/Currency"
+        },
+        "refundedAmount": {
+          "description": "Amount refunded so far, in paise.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "paymentMethod": {
+          "description": "The payment method the customer paid with.",
+          "$ref": "#/$defs/PaymentMethod"
+        },
+        "customer": {
+          "description": "The paying customer, where known.",
+          "$ref": "#/$defs/Customer"
+        },
+        "createdAt": {
+          "description": "When the payment was created.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "paidAt": {
+          "description": "When the payment succeeded.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "failureCode": {
+          "description": "The provider's failure code, where the payment failed.",
+          "type": "string"
+        },
+        "failureReason": {
+          "description": "Human-readable reason the payment failed.",
+          "type": "string"
+        },
+        "checkout": {
+          "description": "Present on freshly created payments: what the customer must do to pay.",
+          "$ref": "#/$defs/CheckoutInstruction"
+        },
+        "metadata": {
+          "description": "Key/value pairs stored with the payment.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "raw": {
+          "description": "The gateway's response, untouched. Absent when the gateway returned no body."
+        }
+      },
+      "required": [
+        "provider",
+        "id",
+        "status",
+        "providerStatus",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "description": "A one-time payment."
+    },
+    "VerifyPaymentInput": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "description": "The data the provider handed back to the browser or device, untouched.",
+          "$ref": "#/$defs/CheckoutResult"
+        },
+        "expectedPaymentId": {
+          "description": "The payment id (or your reference) that your server stored when it created the payment. When given, a result that verifies but belongs to a different payment is rejected, so a customer cannot replay one payment to unlock another.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "additionalProperties": false,
+      "description": "What the HTTP service and the facade accept when verifying the result of a one-time payment."
+    },
+    "PaymentVerification": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The provider that issued the result.",
+          "$ref": "#/$defs/Provider"
+        },
+        "paymentId": {
+          "type": "string",
+          "description": "The payment id to store and use for later calls."
+        },
+        "reference": {
+          "description": "Your own reference for the payment, where known.",
+          "type": "string"
+        },
+        "paid": {
+          "type": "boolean",
+          "description": "True when the payment succeeded."
+        },
+        "status": {
+          "description": "The payment status the result implies, where known.",
+          "$ref": "#/$defs/PaymentStatus"
+        },
+        "payment": {
+          "description": "The payment, where the verification fetched or carries it.",
+          "$ref": "#/$defs/Payment"
+        },
+        "raw": {
+          "description": "The verified provider data, untouched. Absent when there is none."
+        }
+      },
+      "required": [
+        "provider",
+        "paymentId",
+        "paid"
+      ],
+      "additionalProperties": false,
+      "description": "The outcome of verifying the result of a one-time payment."
+    },
+    "RefundPaymentInput": {
+      "type": "object",
+      "properties": {
+        "paymentId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The payment to refund."
+        },
+        "refundId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Your unique id for this refund."
+        },
+        "amount": {
+          "description": "Amount to refund in paise. Omit to refund the full payment.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "reason": {
+          "description": "Why the payment is refunded.",
+          "type": "string",
+          "maxLength": 250
+        }
+      },
+      "required": [
+        "paymentId",
+        "refundId"
+      ],
+      "additionalProperties": false,
+      "description": "A refund of a one-time payment."
+    },
+    "ExternalTransactionReport": {
+      "type": "object",
+      "properties": {
+        "externalTransactionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Your unique id for this transaction."
+        },
+        "externalTransactionToken": {
+          "description": "The token from the device. Needed on the first transaction only.",
+          "type": "string"
+        },
+        "initialExternalTransactionId": {
+          "description": "Renewals: the `externalTransactionId` of the first transaction of the subscription.",
+          "type": "string"
+        },
+        "productKind": {
+          "description": "Whether the transaction is a subscription charge or a one-time purchase.",
+          "$ref": "#/$defs/ProductKind"
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Pre-tax amount in paise (0 for a free trial)."
+        },
+        "taxAmount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tax in paise."
+        },
+        "transactionTime": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "description": "When the payment was authorised."
+        },
+        "state": {
+          "type": "string",
+          "minLength": 2,
+          "description": "The customer's state, sent as `userTaxAddress.administrativeArea` with region code `IN`."
+        }
+      },
+      "required": [
+        "externalTransactionId",
+        "productKind",
+        "amount",
+        "taxAmount",
+        "transactionTime",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "A transaction made outside Google Play billing (user choice billing), reported to Google."
+    },
+    "ExternalTransactionRefund": {
+      "type": "object",
+      "properties": {
+        "externalTransactionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The `externalTransactionId` of the transaction that was refunded."
+        },
+        "refundTime": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "description": "When the refund was made."
+        },
+        "amount": {
+          "description": "Pre-tax amount refunded, in paise. Omit for a full refund.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "taxAmount": {
+          "description": "Tax refunded, in paise. Omit for a full refund.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "externalTransactionId",
+        "refundTime"
+      ],
+      "additionalProperties": false,
+      "description": "A refund of an external transaction, reported to Google."
+    },
+    "ExternalTransactionRecord": {
+      "type": "object",
+      "properties": {
+        "externalTransactionId": {
+          "type": "string",
+          "description": "Your id for the transaction."
+        },
+        "state": {
+          "type": "string",
+          "description": "The state Google holds the transaction in, verbatim."
+        },
+        "raw": {
+          "description": "The gateway's response, untouched. Absent when the gateway returned no body."
+        }
+      },
+      "required": [
+        "externalTransactionId",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "An external transaction as Google holds it."
     }
   }
 }

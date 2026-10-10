@@ -233,14 +233,14 @@ describe('Testing your integration (executed)', () => {
     const page = 'docs/guides/testing.md';
     const files = new Map<string, string>([
       ['fake.ts', block(page, 'export async function trialSubscription').code],
-      ['hook.ts', block(page, 'export function simulateCharged').code],
+      ['hook.ts', block(page, 'export async function simulateCharged').code],
     ]);
     const { loader: sampleLoader } = loader(files);
     const { trialSubscription } = sampleLoader.load('fake.ts') as { trialSubscription: () => Promise<{ id: string; status: string; checkout?: { kind: string } }> };
     const created = await trialSubscription();
     expect(created).toMatchObject({ id: 'sub_00000000000001', status: 'created', checkout: { kind: 'razorpay_checkout' } });
-    const { simulateCharged } = sampleLoader.load('hook.ts') as { simulateCharged: (body: object) => string | undefined };
-    expect(simulateCharged({ ...SUBSCRIPTION, status: 'active' })).toBe('evt_1');
+    const { simulateCharged } = sampleLoader.load('hook.ts') as { simulateCharged: (body: object) => Promise<string | undefined> };
+    expect(await simulateCharged({ ...SUBSCRIPTION, status: 'active' })).toBe('evt_1');
     executed.push('testing-guide');
   });
 });

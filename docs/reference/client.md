@@ -96,7 +96,7 @@ Runs the billing scheduler once. Rejects with `CONFIG` when no scheduler is conf
 
 | Method | Meaning |
 |---|---|
-| `subs.webhooks.parse(provider, { rawBody, headers })` | Verifies the signature and returns the normalised `SubscriptionEvent[]`. Pure: stores nothing and does not touch the scheduler. Throws `SIGNATURE_INVALID`, or `CONFIG` if the webhook secret is not configured. |
+| `subs.webhooks.parse(provider, { rawBody, headers })` | Verifies the signature and returns the normalised `SubscriptionEvent[]`. Pure: stores nothing and does not touch the scheduler. Returns a promise; rejects with `SIGNATURE_INVALID`, or `CONFIG` if the webhook secret is not configured. |
 | `subs.webhooks.handle(provider, { rawBody, headers })` | `parse`, then applies each event to the billing scheduler. Use this in your webhook route. The HTTP service's `POST /v1/{provider}/webhooks/parse` route does the same as `handle`: it verifies, applies to the scheduler and normalises. |
 
 ## Other exports

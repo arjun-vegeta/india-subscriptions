@@ -19,6 +19,7 @@ import {
   ErrorCode,
   EventType,
   Provider,
+  ProviderKind,
   RefundStatus,
   SchedulingMode,
   SubscriptionStatus,
@@ -75,6 +76,7 @@ function requiredEnv(name: string): string {
 }
 
 const CAPABILITIES: Omit<Capabilities, 'provider'> = {
+  kind: ProviderKind.Gateway,
   scheduling: [SchedulingMode.Gateway],
   gatewayPlans: true,
   trial: true,
@@ -82,6 +84,7 @@ const CAPABILITIES: Omit<Capabilities, 'provider'> = {
   quantity: true,
   pause: true,
   resume: true,
+  cancel: true,
   cancelAtPeriodEnd: true,
   changePlan: true,
   merchantCharges: true,
@@ -92,6 +95,8 @@ const CAPABILITIES: Omit<Capabilities, 'provider'> = {
   signedWebhooks: true,
   idempotencyKeys: true,
   paymentMethods: [],
+  oneTimePayments: false,
+  oneTimePaymentMethods: [],
 };
 
 function notFound(provider: Provider, what: string, id: string): SubscriptionError {
