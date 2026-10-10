@@ -298,7 +298,7 @@ describe('PhonePe adapter driven by the BillingScheduler', () => {
     const t = await world();
     await t.activate();
     const handle = async (request: ReturnType<FakePhonePe['mandateWebhook']>) => {
-      for (const event of t.provider.parseWebhook(request)) await t.scheduler.handleEvent(event);
+      for (const event of await t.provider.parseWebhook(request)) await t.scheduler.handleEvent(event);
     };
     await handle(t.fake.mandateWebhook('order_100', 'paused'));
     expect((await t.scheduler.get(t.schedule.id))?.status).toBe(ScheduleStatus.Paused);
@@ -310,7 +310,7 @@ describe('PhonePe adapter driven by the BillingScheduler', () => {
     const id = notificationIdFor(t.schedule.id, 0, 1, 1);
     await t.tickAt(DUE);
     t.fake.settle(id, 'succeeded');
-    for (const event of t.provider.parseWebhook(t.fake.debitWebhook(id, 'succeeded'))) {
+    for (const event of await t.provider.parseWebhook(t.fake.debitWebhook(id, 'succeeded'))) {
       expect(event.type).toBe(EventType.SubscriptionCharged);
       await t.scheduler.handleEvent(event);
     }

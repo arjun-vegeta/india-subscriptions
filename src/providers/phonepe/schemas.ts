@@ -7,16 +7,20 @@ import {
   MAX_MERCHANT_ID_LENGTH,
   MERCHANT_ID_PATTERN,
   MIN_NOTIFY_PAISE,
+  MIN_PAYMENT_PAISE,
   MIN_TRANSACTION_SETUP_PAISE,
   PENNY_DROP_AMOUNT_PAISE,
   PHONEPE_GRANT_TYPE,
   PhonePeAmountType,
   PhonePeAuthWorkflowType,
+  PhonePeCardType,
   PhonePeFrequency,
   PhonePePaymentFlowType,
+  PhonePePaymentMode,
   PhonePeProductType,
   PhonePeRetryStrategy,
   PhonePeSubscriptionType,
+  RETURN_PAYMENT_ID_PARAM,
   RETURN_SUBSCRIPTION_ID_PARAM,
   UDF_KEY_PATTERN,
   UDF_LONG_COUNT,
@@ -239,10 +243,54 @@ const orderShape = {
   detailedErrorCode: z.string().nullish(),
   paymentFlow: PhonePeFlowSchema.nullish(),
   paymentDetails: z.array(PhonePeAttemptSchema).nullish(),
+  /** The `udf1` to `udf15` the order was created with; the samples print unused ones as empty strings. */
+  metaInfo: z.record(z.string(), z.string().nullish()).nullish(),
+  /** Present on a failed order when the status call asked for it (`errorContext=true`). [SCP-STATUS] */
+  errorContext: z
+    .looseObject({
+      errorCode: z.string().nullish(),
+      detailedErrorCode: z.string().nullish(),
+      source: z.string().nullish(),
+      stage: z.string().nullish(),
+      description: z.string().nullish(),
+    })
+    .nullish(),
 };
 
 export const PhonePeOrderSchema = z.looseObject({ ...orderShape, state: z.string() });
 export type PhonePeOrder = z.output<typeof PhonePeOrderSchema>;
+
+// ---------------------------------------------------------------------------
+// One-time payments [SCP-CREATE]
+// ---------------------------------------------------------------------------
+
+const PaymentModeEntrySchema = z.object({
+  type: z.enum(PhonePePaymentMode),
+  cardTypes: z.array(z.enum(PhonePeCardType)).min(1).optional(),
+});
+
+/** The body of `POST /checkout/v2/pay` for a one-time payment. */
+export const PhonePePaymentRequestSchema = z.object({
+  merchantOrderId: MerchantIdSchema,
+  /** Paise, "Minimum value = 100". */
+  amount: z.number().int().min(MIN_PAYMENT_PAISE),
+  /** Order expiry in seconds. */
+  expireAfter: z.number().int().min(EXPIRE_AFTER_MIN_SECONDS).max(EXPIRE_AFTER_MAX_SECONDS).optional(),
+  metaInfo: PhonePeMetaInfoSchema.optional(),
+  paymentFlow: z.object({
+    type: z.literal(PhonePePaymentFlowType.PgCheckout),
+    /** "Payment message used for collect requests". */
+    message: z.string().min(1).optional(),
+    merchantUrls: z.object({ redirectUrl: z.url() }),
+    paymentModeConfig: z.object({ enabledPaymentModes: z.array(PaymentModeEntrySchema).min(1) }).optional(),
+  }),
+});
+export type PhonePePaymentRequest = z.output<typeof PhonePePaymentRequestSchema>;
+
+/** What the customer's browser brings back to the return URL: only the order id this adapter added is read. */
+export const PhonePePaymentReturnParamsSchema = z.looseObject({
+  [RETURN_PAYMENT_ID_PARAM]: z.string().min(1),
+});
 
 // ---------------------------------------------------------------------------
 // Subscription status [SC-SUBSTATUS]

@@ -47,7 +47,7 @@ describe('PhonePe config', () => {
     expect(configError(null).code).toBe(ErrorCode.Config);
   });
 
-  it('declares exactly the capabilities PhonePe Autopay has', () => {
+  it('declares exactly the capabilities PhonePe has (Autopay and one-time payments)', () => {
     expect(phonepe(VALID).capabilities).toEqual({
       provider: Provider.PhonePe,
       kind: ProviderKind.Gateway,
@@ -68,8 +68,8 @@ describe('PhonePe config', () => {
       signedWebhooks: true,
       idempotencyKeys: false,
       paymentMethods: [PaymentMethod.Upi],
-      oneTimePayments: false,
-      oneTimePaymentMethods: [],
+      oneTimePayments: true,
+      oneTimePaymentMethods: [PaymentMethod.Upi, PaymentMethod.Card, PaymentMethod.NetBanking],
     });
     expect(phonepe(VALID).name).toBe(Provider.PhonePe);
   });

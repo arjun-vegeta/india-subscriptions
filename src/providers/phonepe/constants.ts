@@ -3,13 +3,15 @@ import {
   Environment,
   ErrorCode,
   IntervalUnit,
+  PaymentMethod,
+  PaymentStatus,
   RefundStatus,
   SubscriptionStatus,
 } from '../../constants.js';
 
 /**
- * PhonePe Payment Gateway "Autopay" (UPI mandates) constants, for the Standard Checkout family of endpoints
- * (`/checkout/v2/...`). Every string sent to or received from PhonePe is named here; JSON field names live in
+ * PhonePe Payment Gateway constants for the Standard Checkout family of endpoints (`/checkout/v2/...`): "Autopay"
+ * (UPI mandates) and one-time payments. Every string sent to or received from PhonePe is named here; JSON field names live in
  * `schemas.ts`. Source tags are those of the fact sheet: [SC-SETUP] standard-checkout setup page, [SC-ORDER] order
  * status, [SC-SUBSTATUS] subscription status, [SC-NOTIFY] / [SC-EXEC] redemption notify / execute, [SC-CANCEL],
  * [SC-REFUND], [SC-WEBHOOK], [A-AUTH] token API, [A-ERR] Autopay error codes, [G-ERR] common errors, [G-ORDER] generic
@@ -57,6 +59,9 @@ export const PhonePePath = {
 /** `?details=true`: "return all attempt details under paymentDetails list". [SC-ORDER] */
 export const PHONEPE_DETAILS_QUERY = 'details';
 export const PHONEPE_DETAILS_ALL = 'true';
+/** `?errorContext=true`: "To receive the errorContext block with error details if the state is FAILED". [SCP-STATUS] */
+export const PHONEPE_ERROR_CONTEXT_QUERY = 'errorContext';
+export const PHONEPE_ERROR_CONTEXT_ALL = 'true';
 
 /** The token is sent as `Authorization: O-Bearer <access_token>`; plain `Bearer` is not the documented form. [A-AUTH, SDK TokenService] */
 export const PHONEPE_AUTH_SCHEME = 'O-Bearer';
@@ -89,6 +94,10 @@ export const PhonePePaymentFlowType = {
   /** The API-integration variant's names, which the status pages and webhooks also print. [A-ORDER, SC-WEBHOOK] */
   Setup: 'SUBSCRIPTION_SETUP',
   Redemption: 'SUBSCRIPTION_REDEMPTION',
+  /** `paymentFlow.type` of a one-time payment: "Valued allowed = [PG_CHECKOUT]". [SCP-CREATE] */
+  PgCheckout: 'PG_CHECKOUT',
+  /** What the order status page prints for a payment's flow (its CREDIT_LINE sample). [SCP-STATUS] */
+  Pg: 'PG',
 } as const;
 export type PhonePePaymentFlowType = (typeof PhonePePaymentFlowType)[keyof typeof PhonePePaymentFlowType];
 
@@ -99,6 +108,9 @@ export const REDEMPTION_FLOW_TYPES: readonly string[] = [
   PhonePePaymentFlowType.CheckoutRedemption,
   PhonePePaymentFlowType.Redemption,
 ];
+
+/** Payment-flow types that mean "this order is a one-time payment" (an order with no `paymentFlow` at all is one as well). */
+export const PAYMENT_FLOW_TYPES: readonly string[] = [PhonePePaymentFlowType.PgCheckout, PhonePePaymentFlowType.Pg];
 
 /** `subscriptionType`: the only value. [SC-SETUP] */
 export const PhonePeSubscriptionType = { Recurring: 'RECURRING' } as const;
@@ -273,6 +285,98 @@ export const REFUND_STATE_TO_STATUS: Record<PhonePeRefundState, RefundStatus> = 
   [PhonePeRefundState.Failed]: RefundStatus.Failed,
 };
 export const UNKNOWN_REFUND_STATUS: RefundStatus = RefundStatus.Pending;
+
+// ---------------------------------------------------------------------------
+// One-time payments (Standard Checkout) [SCP-*]
+//
+// Source tags: [SCP-CREATE] /payment-gateway/website-integration/standard-checkout/api-integration/api-reference/create-payment,
+// [SCP-STATUS] .../order-status, [SCP-REFUND] .../refund, [SCP-WEBHOOK] .../webhook, [SCP-CHECKLIST]
+// /payment-gateway/uat-testing-go-live/uat-checklist, [SCP-TROUBLE] .../troubleshooting.
+// ---------------------------------------------------------------------------
+
+/** The instrument types `paymentModeConfig` accepts. [SCP-CREATE] */
+export const PhonePePaymentMode = {
+  UpiIntent: 'UPI_INTENT',
+  UpiQr: 'UPI_QR',
+  NetBanking: 'NET_BANKING',
+  Card: 'CARD',
+} as const;
+export type PhonePePaymentMode = (typeof PhonePePaymentMode)[keyof typeof PhonePePaymentMode];
+
+/** `paymentMode` of an attempt: the four above plus the ones only the status page prints. [SCP-STATUS] */
+export const PhonePeAttemptMode = {
+  ...PhonePePaymentMode,
+  UpiCollect: 'UPI_COLLECT',
+} as const;
+
+/** `cardTypes` of a `CARD` entry. [SCP-CREATE] */
+export const PhonePeCardType = {
+  Debit: 'DEBIT_CARD',
+  Credit: 'CREDIT_CARD',
+} as const;
+export type PhonePeCardType = (typeof PhonePeCardType)[keyof typeof PhonePeCardType];
+
+/**
+ * The payment methods a one-time payment can be limited to, and what PhonePe is told to show for each. A card entry names
+ * both card types, so credit and debit cards are both offered. `wallet` has no instrument type in `paymentModeConfig`, so
+ * it is refused; the mandate methods (`enach`, `physical_nach`) are not payments.
+ */
+export const PAYMENT_MODES_BY_METHOD: Partial<Record<PaymentMethod, readonly { type: PhonePePaymentMode; cardTypes?: readonly PhonePeCardType[] }[]>> = {
+  [PaymentMethod.Upi]: [{ type: PhonePePaymentMode.UpiIntent }, { type: PhonePePaymentMode.UpiQr }],
+  [PaymentMethod.Card]: [{ type: PhonePePaymentMode.Card, cardTypes: [PhonePeCardType.Debit, PhonePeCardType.Credit] }],
+  [PaymentMethod.NetBanking]: [{ type: PhonePePaymentMode.NetBanking }],
+};
+
+/** What `capabilities.oneTimePaymentMethods` reports: the keys of the table above. */
+export const ONE_TIME_PAYMENT_METHODS: readonly PaymentMethod[] = [PaymentMethod.Upi, PaymentMethod.Card, PaymentMethod.NetBanking];
+
+/** The payment method an attempt's `paymentMode` stands for. A mode not in the table (`CREDIT_LINE`, a new one) leaves `paymentMethod` unset. */
+export const PAYMENT_METHOD_BY_MODE: Record<string, PaymentMethod> = {
+  [PhonePeAttemptMode.UpiIntent]: PaymentMethod.Upi,
+  [PhonePeAttemptMode.UpiQr]: PaymentMethod.Upi,
+  [PhonePeAttemptMode.UpiCollect]: PaymentMethod.Upi,
+  [PhonePeAttemptMode.Card]: PaymentMethod.Card,
+  [PhonePeAttemptMode.NetBanking]: PaymentMethod.NetBanking,
+};
+
+/**
+ * Order state to payment status: "COMPLETED -> Payment Successful, FAILED -> Payment failed, PENDING -> Payment in
+ * progress" [SCP-CHECKLIST]. A `PENDING` order with no attempt at all is `created` (see `mapPaymentOrder`). An unknown state is
+ * `pending`: never final, never a failure. PhonePe's order status carries no refund information, so `refunded` and
+ * `partially_refunded` are never produced, and the states have no cancelled or expired value.
+ */
+export const ORDER_STATE_TO_PAYMENT_STATUS: Record<PhonePeOrderState, PaymentStatus> = {
+  [PhonePeOrderState.Pending]: PaymentStatus.Pending,
+  [PhonePeOrderState.Completed]: PaymentStatus.Succeeded,
+  [PhonePeOrderState.Failed]: PaymentStatus.Failed,
+  [PhonePeOrderState.NotificationInProgress]: PaymentStatus.Pending,
+  [PhonePeOrderState.Notified]: PaymentStatus.Pending,
+};
+export const UNKNOWN_PAYMENT_STATUS: PaymentStatus = PaymentStatus.Pending;
+
+/** `providerStatus` of a payment whose order has just been created: the create call answers `PENDING`. */
+export const NEW_PAYMENT_PROVIDER_STATUS = PhonePeOrderState.Pending;
+
+/**
+ * What an order is, judged by its payload: a subscription's (setup, notification, redemption) or a one-time payment's.
+ * `other` is an order with a `paymentFlow` type this adapter does not know (a payment link, say): never normalised.
+ */
+export const PhonePeOrderKind = {
+  Subscription: 'subscription',
+  Payment: 'payment',
+  Other: 'other',
+} as const;
+export type PhonePeOrderKind = (typeof PhonePeOrderKind)[keyof typeof PhonePeOrderKind];
+
+/** `amount` of a payment: "Minimum value = 100" paise. [SCP-CREATE] */
+export const MIN_PAYMENT_PAISE = 100;
+
+/** Generated payment ids: `pay_<hex>`. */
+export const GENERATED_PAYMENT_ID_PREFIX = 'pay';
+export const GENERATED_PAYMENT_ID_RANDOM_BYTES = 12;
+
+/** The query parameter added to the return URL so that the browser's return identifies the payment. */
+export const RETURN_PAYMENT_ID_PARAM = 'merchantOrderId';
 
 // ---------------------------------------------------------------------------
 // Limits the docs state

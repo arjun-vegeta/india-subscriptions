@@ -10,6 +10,7 @@ import {
   HeaderName,
   HttpMethod,
   PaymentMethod,
+  PaymentStatus,
   Provider,
   ProviderKind,
   SchedulingMode,
@@ -24,9 +25,11 @@ import {
   CancelSubscriptionOptionsSchema,
   UpdateSubscriptionInputSchema,
   CreateChargeInputSchema,
+  CreatePaymentInputSchema,
   CreateSubscriptionInputSchema,
   NotifyChargeInputSchema,
   RefundInputSchema,
+  RefundPaymentInputSchema,
   WebhookRequestSchema,
   type CancelSubscriptionOptions,
   type Capabilities,
@@ -35,13 +38,17 @@ import {
   type CheckoutResult,
   type CheckoutVerification,
   type CreateChargeInput,
+  type CreatePaymentInput,
   type CreatePlanInput,
   type CreateSubscriptionInput,
   type NotifyChargeInput,
   type PauseSubscriptionOptions,
+  type Payment,
+  type PaymentVerification,
   type Plan,
   type Refund,
   type RefundInput,
+  type RefundPaymentInput,
   type ResumeSubscriptionOptions,
   type Subscription,
   type SubscriptionEvent,
@@ -50,48 +57,65 @@ import {
 } from '../../schemas.js';
 import { PhonePeTokenManager, redactSecrets } from './auth.js';
 import {
+  GENERATED_PAYMENT_ID_PREFIX,
+  GENERATED_PAYMENT_ID_RANDOM_BYTES,
   GENERATED_SUBSCRIPTION_ID_PREFIX,
   GENERATED_SUBSCRIPTION_ID_RANDOM_BYTES,
   ID_PART_SEPARATOR,
   MAX_ERROR_TEXT,
+  MAX_MERCHANT_ID_LENGTH,
+  MERCHANT_ID_PATTERN,
   MIN_NOTIFY_PAISE,
   NOTIFICATION_STATES,
+  ONE_TIME_PAYMENT_METHODS,
   ORDER_NOT_FOUND_CODES,
   PHONEPE_AUTH_SCHEME,
   PHONEPE_BASE_URLS,
   PHONEPE_DETAILS_ALL,
   PHONEPE_DETAILS_QUERY,
+  PHONEPE_ERROR_CONTEXT_ALL,
+  PHONEPE_ERROR_CONTEXT_QUERY,
   PHONEPE_GRANT_TYPE,
   PHONEPE_TOKEN_URLS,
   PhonePeAmountType,
   PhonePeErrorCode,
+  PhonePeEvent,
+  PhonePeOrderKind,
   PhonePeOrderState,
   PhonePePath,
   PhonePeRetryStrategy,
   PhonePePaymentFlowType,
   REDEEMED_STATES,
   CANCEL_ACCEPTED_STATUS,
+  RETURN_PAYMENT_ID_PARAM,
   RETURN_SUBSCRIPTION_ID_PARAM,
   SETUP_FLOW_TYPES,
 } from './constants.js';
 import {
   assertMerchantId,
+  assertPaymentId,
   assertSubscriptionId,
   cancelledSubscription,
+  createdPayment,
   createdSubscription,
   describeErrorBody,
   errorCodeFor,
   expiredNotificationCharge,
   mapNotification,
   mapOrderCharge,
+  mapPaymentOrder,
   mapRedeemCharge,
   mapRefund,
   mapSetupOrderAsSubscription,
   mapSubscriptionStatus,
   mapWebhook,
+  orderKindOf,
+  paymentReturnUrlFor,
+  planPayment,
   planSetup,
   returnUrlFor,
   setupOrderIdFor,
+  subscriptionIdFromSetupOrderId,
   windowExpired,
   windowNotOpen,
   type OrderLike,
@@ -103,6 +127,8 @@ import {
   PhonePeNotifyResponseSchema,
   PhonePeOrderSchema,
   PhonePePayResponseSchema,
+  PhonePePaymentRequestSchema,
+  PhonePePaymentReturnParamsSchema,
   PhonePeRedeemRequestSchema,
   PhonePeRedeemResponseSchema,
   PhonePeRefundRequestSchema,
@@ -117,6 +143,7 @@ import {
   type PhonePeConfig,
   type PhonePeOrder,
   type PhonePeTokenResponse,
+  type PhonePeWebhook,
 } from './schemas.js';
 
 function parseConfig(config: unknown): ParsedPhonePeConfig {
@@ -132,10 +159,16 @@ function parseConfig(config: unknown): ParsedPhonePeConfig {
 export interface PhonePeProviderOptions extends ProviderOptions {
   /** Generator of the subscription id used when `reference` is not given (tests). */
   generateId?: () => string;
+  /** Generator of the payment id used when `reference` is not given (tests). */
+  generatePaymentId?: () => string;
 }
 
 function defaultGenerateId(): string {
   return [GENERATED_SUBSCRIPTION_ID_PREFIX, randomBytes(GENERATED_SUBSCRIPTION_ID_RANDOM_BYTES).toString('hex')].join(ID_PART_SEPARATOR);
+}
+
+function defaultGeneratePaymentId(): string {
+  return [GENERATED_PAYMENT_ID_PREFIX, randomBytes(GENERATED_PAYMENT_ID_RANDOM_BYTES).toString('hex')].join(ID_PART_SEPARATOR);
 }
 
 /**
@@ -184,6 +217,10 @@ interface ApiRequest {
  *   `customer` (kept on the returned subscription), `metadata` keys other than `udf1`-`udf15` (kept on the returned
  *   subscription), and the invoice number and `debitAt` of a notification.
  *
+ * One-time payments use the same host, token and order-status, refund and webhook plumbing, through Standard Checkout's
+ * `POST /checkout/v2/pay` with `paymentFlow.type` `PG_CHECKOUT` (see `createPayment`). A payment's id is its
+ * `merchantOrderId`: the caller's `reference` or a generated `pay_<hex>`.
+ *
  * Authentication: an OAuth client-credentials token, cached until shortly before its expiry, one in-flight token request
  * shared between concurrent calls, one refresh-and-repeat on a 401 where repeating is safe.
  */
@@ -210,8 +247,8 @@ export class PhonePeProvider extends BaseProvider {
     signedWebhooks: true,
     idempotencyKeys: false,
     paymentMethods: [PaymentMethod.Upi],
-    oneTimePayments: false,
-    oneTimePaymentMethods: [],
+    oneTimePayments: true,
+    oneTimePaymentMethods: [...ONE_TIME_PAYMENT_METHODS],
   };
 
   // Real private fields: invisible to JSON.stringify, console.log and spreads, so the secrets cannot leak.
@@ -225,6 +262,7 @@ export class PhonePeProvider extends BaseProvider {
   readonly #webhookAuthorization: string | undefined;
   readonly #tokens: PhonePeTokenManager;
   readonly #generateId: () => string;
+  readonly #generatePaymentId: () => string;
 
   constructor(config: PhonePeConfig, options: PhonePeProviderOptions = {}) {
     const parsed = parseConfig(config);
@@ -240,6 +278,7 @@ export class PhonePeProvider extends BaseProvider {
         ? hash(HashAlgorithm.Sha256, `${parsed.webhookUsername}:${parsed.webhookPassword}`, DigestEncoding.Hex)
         : undefined;
     this.#generateId = options.generateId ?? defaultGenerateId;
+    this.#generatePaymentId = options.generatePaymentId ?? defaultGeneratePaymentId;
     this.#tokens = new PhonePeTokenManager(() => this.fetchToken(), () => this.now());
   }
 
@@ -392,13 +431,16 @@ export class PhonePeProvider extends BaseProvider {
    * (`INVALID_MERCHANT_ORDER_ID`). A bare 404 proves nothing about the order (it may be a wrong URL), so it is a
    * `PROVIDER_ERROR`, never `NOT_FOUND`: the scheduler reads `NOT_FOUND` from `getCharge` as "the debit never reached PhonePe".
    */
-  private async readOrder(merchantOrderId: string): Promise<PhonePeOrder | undefined> {
+  private async readOrder(merchantOrderId: string, options: { errorContext?: boolean } = {}): Promise<PhonePeOrder | undefined> {
     try {
       return await this.api(
         {
           method: HttpMethod.Get,
           path: PhonePePath.orderStatus(merchantOrderId),
-          query: { [PHONEPE_DETAILS_QUERY]: PHONEPE_DETAILS_ALL },
+          query: {
+            [PHONEPE_DETAILS_QUERY]: PHONEPE_DETAILS_ALL,
+            ...(options.errorContext ? { [PHONEPE_ERROR_CONTEXT_QUERY]: PHONEPE_ERROR_CONTEXT_ALL } : {}),
+          },
           idempotent: true,
           repeatOn401: true,
         },
@@ -834,6 +876,133 @@ export class PhonePeProvider extends BaseProvider {
   }
 
   // -------------------------------------------------------------------------
+  // One-time payments (Standard Checkout)
+  // -------------------------------------------------------------------------
+
+  /**
+   * `POST /checkout/v2/pay` with `paymentFlow.type` `PG_CHECKOUT`; the answer's `redirectUrl` is returned, unchanged, as a
+   * redirect checkout. The payment's `id` is the `merchantOrderId`: your `reference` (1 to 63 letters, digits, `_` and `-`,
+   * and not starting with `ST_`, which names subscription setup orders; the facade's own limit is 60) or a generated
+   * `pay_<hex>`. It is the id `getPayment` and `refundPayment` take, and the one webhooks carry as `paymentId`.
+   *
+   * What reaches PhonePe: `amount` (at least 100 paise); `description` as `paymentFlow.message` (PhonePe uses it for collect
+   * requests); `paymentMethods` as `enabledPaymentModes` (`upi` is UPI intent and QR, `card` is credit and debit cards,
+   * `netbanking`; `wallet` and the mandate methods are refused); `expiresAt` as `expireAfter` (300 to 3600 seconds from now,
+   * refused outside it); `metadata` as `metaInfo` (only the keys `udf1` to `udf15`, any other key is refused); `returnUrl`
+   * (or the config's `redirectUrl`, one is required) as the `redirectUrl`, with the order id added as `merchantOrderId`.
+   * `customer` has no PhonePe field and is kept on the returned payment; `idempotencyKey` is not used (a repeated
+   * `reference` is how PhonePe recognises a repeated order); `storeProduct` is for app stores.
+   */
+  override async createPayment(rawInput: CreatePaymentInput): Promise<Payment> {
+    const input = parseInput(CreatePaymentInputSchema, rawInput, 'payment input', this.name);
+    const merchantOrderId = assertPaymentId(input.reference ?? this.#generatePaymentId(), 'reference');
+    const returnBase = input.returnUrl ?? this.#redirectUrl;
+    if (returnBase === undefined) {
+      throw invalid('returnUrl is required (or set redirectUrl in the PhonePe config): PhonePe needs the page to send the customer back to', this.name);
+    }
+    const now = this.now();
+    const planned = planPayment(input, { now, merchantOrderId, redirectUrl: paymentReturnUrlFor(returnBase, merchantOrderId) });
+    const request = parseInput(PhonePePaymentRequestSchema, planned, 'PhonePe payment request', this.name);
+    const response = await this.api(
+      // A repeated `merchantOrderId` is refused by PhonePe, never doubled, so repeating after a refused token is safe.
+      { method: HttpMethod.Post, path: PhonePePath.Pay, body: request, idempotent: false, repeatOn401: true },
+      PhonePePayResponseSchema,
+      'payment',
+    );
+    return createdPayment(input, { merchantOrderId, response, now });
+  }
+
+  /**
+   * The order PhonePe holds under a payment id, read for a one-time payment: `NOT_FOUND` when PhonePe has none, `VALIDATION`
+   * when the order is something else (a subscription's setup, notification or debit, or a flow this adapter does not know),
+   * so that a subscription order can never be read, verified or refunded as a payment.
+   */
+  private async readPaymentOrder(paymentId: string): Promise<PhonePeOrder> {
+    const order = await this.readOrder(paymentId, { errorContext: true });
+    if (order === undefined) {
+      throw new SubscriptionError(ErrorCode.NotFound, `${this.name} has no order ${paymentId}`, {
+        provider: this.name,
+        providerCode: PhonePeErrorCode.InvalidMerchantOrderId,
+      });
+    }
+    if (orderKindOf(order) !== PhonePeOrderKind.Payment) {
+      throw invalid(`order ${paymentId} is not a one-time payment (it belongs to a subscription or to another PhonePe flow)`, this.name, order);
+    }
+    return order;
+  }
+
+  /**
+   * `GET /checkout/v2/order/{id}/status?details=true&errorContext=true`: the source of truth. `COMPLETED` is `succeeded`,
+   * `FAILED` is `failed`, `PENDING` is `pending` (`created` while no attempt has been made). PhonePe's order status carries
+   * no refund information, so a payment is never reported as `refunded`; read refunds from `refundPayment` and the
+   * `refund.*` webhooks.
+   */
+  override async getPayment(paymentId: string): Promise<Payment> {
+    const id = assertPaymentId(paymentId, 'paymentId');
+    const order = await this.readPaymentOrder(id);
+    return mapPaymentOrder(order, { merchantOrderId: id, raw: order });
+  }
+
+  /**
+   * The customer's return to the `redirectUrl` carries no documented signature, so NOTHING in it is trusted except the order
+   * id this adapter added to the URL. The order is read from PhonePe (the documented way to confirm a payment), and `paid`
+   * is true only when its state is `COMPLETED`. An order that is not a one-time payment is refused.
+   *
+   * The id comes from the browser: always pass `expectedPaymentId` to the facade, or a customer could present the return
+   * of someone else's paid order.
+   */
+  override async verifyPayment(result: CheckoutResult): Promise<PaymentVerification> {
+    const params = parseInput(PhonePePaymentReturnParamsSchema, result, `PhonePe payment result (the "${RETURN_PAYMENT_ID_PARAM}" parameter)`, this.name);
+    const paymentId = assertPaymentId(params[RETURN_PAYMENT_ID_PARAM], RETURN_PAYMENT_ID_PARAM);
+    const payment = await this.getPayment(paymentId);
+    return {
+      provider: this.name,
+      paymentId: payment.id,
+      reference: payment.reference ?? payment.id,
+      paid: payment.status === PaymentStatus.Succeeded,
+      status: payment.status,
+      payment,
+      raw: payment.raw,
+    };
+  }
+
+  /**
+   * `POST /payments/v2/refund`: `merchantRefundId` = `refundId` (1 to 63 letters, digits, `_` and `-`), `originalMerchantOrderId`
+   * = `paymentId`. The order is read first: only a completed payment can be refunded, and without `amount` all of it is. An
+   * amount above the payment's is refused (PhonePe's rule). `reason` has no PhonePe field and is refused. The refund starts
+   * `pending`; follow it with the `refund.*` webhooks. PhonePe's minimum refund is stated as 100 paise in one place and
+   * contradicted by a sample, so PhonePe is left to enforce it. A failed refund is sent again under a new `refundId`.
+   */
+  override async refundPayment(rawInput: RefundPaymentInput): Promise<Refund> {
+    const input = parseInput(RefundPaymentInputSchema, rawInput, 'refund input', this.name);
+    const merchantRefundId = assertMerchantId(input.refundId, 'refundId');
+    const paymentId = assertPaymentId(input.paymentId, 'paymentId');
+    if (input.reason !== undefined) {
+      throw invalid('PhonePe has no field for a refund reason: leave reason out', this.name);
+    }
+    const order = await this.readPaymentOrder(paymentId);
+    if (order.state !== PhonePeOrderState.Completed || typeof order.amount !== 'number') {
+      throw invalid(`payment ${paymentId} is ${order.state}: only a completed payment can be refunded, and its amount must be known`, this.name, order);
+    }
+    const amount = input.amount ?? order.amount;
+    if (amount > order.amount) {
+      throw invalid(`the refund amount (${amount} paise) is above the payment's (${order.amount} paise)`, this.name, order);
+    }
+    const request = parseInput(
+      PhonePeRefundRequestSchema,
+      { merchantRefundId, originalMerchantOrderId: paymentId, amount },
+      'PhonePe refund request',
+      this.name,
+    );
+    const body = await this.api(
+      { method: HttpMethod.Post, path: PhonePePath.Refund, body: request, idempotent: false, repeatOn401: false },
+      PhonePeRefundResponseSchema,
+      'refund',
+    );
+    return mapRefund(body, { merchantRefundId, chargeId: paymentId, paymentId, amount });
+  }
+
+  // -------------------------------------------------------------------------
   // Checkout verification
   // -------------------------------------------------------------------------
 
@@ -870,8 +1039,11 @@ export class PhonePeProvider extends BaseProvider {
    * That header authenticates the sender and nothing else: it does not cover the body, so a captured webhook can be
    * replayed and a body altered in transit is not detected. Serve the endpoint over HTTPS only. PhonePe's HMAC
    * webhook mode is not implemented: its algorithm is not documented.
+   *
+   * A refund payload carries no `paymentFlow`, so whether it refunds a one-time payment is learned by reading the original
+   * order (not for a subscription setup order, whose `ST_` id says it). That read is the only call a webhook can make.
    */
-  override parseWebhook(request: WebhookRequest): SubscriptionEvent[] {
+  override async parseWebhook(request: WebhookRequest): Promise<SubscriptionEvent[]> {
     const { rawBody, headers } = parseInput(WebhookRequestSchema, request, 'webhook request', this.name);
     if (this.#webhookAuthorization === undefined) {
       throw new SubscriptionError(
@@ -891,7 +1063,18 @@ export class PhonePeProvider extends BaseProvider {
       });
     }
     const webhook = parseResponse(PhonePeWebhookSchema, json, 'webhook body', this.name);
-    return [mapWebhook(webhook, rawBody)];
+    return [mapWebhook(webhook, rawBody, { paymentRefund: await this.refundsPayment(webhook) })];
+  }
+
+  /** True when `webhook` is a refund event whose original order is a one-time payment of this merchant. */
+  private async refundsPayment(webhook: PhonePeWebhook): Promise<boolean> {
+    if (webhook.event !== PhonePeEvent.RefundCompleted && webhook.event !== PhonePeEvent.RefundFailed) return false;
+    const orderId = webhook.payload.originalMerchantOrderId;
+    // An id that is not a legal order id, or is a setup order's, cannot be a payment of this adapter: no call.
+    if (!orderId || !MERCHANT_ID_PATTERN.test(orderId) || orderId.length > MAX_MERCHANT_ID_LENGTH) return false;
+    if (subscriptionIdFromSetupOrderId(orderId) !== undefined) return false;
+    const order = await this.readOrder(orderId);
+    return order !== undefined && orderKindOf(order) === PhonePeOrderKind.Payment;
   }
 }
 

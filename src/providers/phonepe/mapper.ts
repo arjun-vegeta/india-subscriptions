@@ -9,6 +9,7 @@ import {
   HashAlgorithm,
   IntervalUnit,
   PaymentMethod,
+  PaymentStatus,
   Provider,
   RefundStatus,
   SchedulingMode,
@@ -20,8 +21,10 @@ import {
   type BillingInterval,
   type Charge,
   type ChargeNotification,
+  type ParsedCreatePaymentInput,
   type ParsedCreateSubscriptionInput,
   type ParsedNotifyChargeInput,
+  type Payment,
   type Refund,
   type Subscription,
   type SubscriptionEvent,
@@ -43,20 +46,29 @@ import {
   MAX_SUBSCRIPTION_ID_LENGTH,
   MERCHANT_ID_PATTERN,
   MIN_NOTIFY_PAISE,
+  MIN_PAYMENT_PAISE,
   MIN_TRANSACTION_SETUP_PAISE,
+  NEW_PAYMENT_PROVIDER_STATUS,
   NOTIFICATION_STATES,
   ORDER_STATE_TO_CHARGE_STATUS,
+  ORDER_STATE_TO_PAYMENT_STATUS,
+  PAYMENT_FLOW_TYPES,
+  PAYMENT_METHOD_BY_MODE,
+  PAYMENT_MODES_BY_METHOD,
   PENNY_DROP_AMOUNT_PAISE,
   PhonePeAmountType,
   PhonePeAuthWorkflowType,
   PhonePeErrorCode,
   PhonePeEvent,
   PhonePeFrequency,
+  PhonePeOrderKind,
   PhonePeOrderState,
   PhonePePaymentFlowType,
   PhonePeProductType,
   PhonePeSubscriptionType,
+  REDEMPTION_FLOW_TYPES,
   REFUND_STATE_TO_STATUS,
+  RETURN_PAYMENT_ID_PARAM,
   RETURN_SUBSCRIPTION_ID_PARAM,
   SETUP_FLOW_TYPES,
   SETUP_ORDER_ID_PREFIX,
@@ -64,6 +76,7 @@ import {
   SUBSCRIPTION_STATE_TO_STATUS,
   UDF_KEY_PATTERN,
   UNKNOWN_CHARGE_STATUS,
+  UNKNOWN_PAYMENT_STATUS,
   UNKNOWN_REFUND_STATUS,
   UNKNOWN_SUBSCRIPTION_STATUS,
 } from './constants.js';
@@ -73,6 +86,7 @@ import type {
   PhonePeNotifyResponse,
   PhonePeOrder,
   PhonePePayResponse,
+  PhonePePaymentRequest,
   PhonePeRedeemResponse,
   PhonePeRefundResponse,
   PhonePeSubscriptionStatus,
@@ -128,6 +142,21 @@ export function assertSubscriptionId(value: string, what: string): string {
 }
 
 /**
+ * VALIDATION unless `value` can be the id of a one-time payment: a legal `merchantOrderId`, and not one that starts with the
+ * prefix this adapter gives to subscription setup orders (`ST_`), so that a payment id can never be mistaken for a setup order.
+ */
+export function assertPaymentId(value: string, what: string): string {
+  assertMerchantId(value, what);
+  if (value.startsWith(SETUP_ORDER_ID_PREFIX)) {
+    throw invalid(
+      `${what} must not start with "${SETUP_ORDER_ID_PREFIX}": this adapter names the setup order of a subscription that way, and an id with that prefix would be read as one`,
+      Provider.PhonePe,
+    );
+  }
+  return value;
+}
+
+/**
  * The `merchantOrderId` of a subscription's setup order, derived from the subscription id so that later calls (a status
  * lookup before the customer has authorised, a refund of the setup debit) can find it without storage.
  */
@@ -146,6 +175,13 @@ export function subscriptionIdFromSetupOrderId(merchantOrderId: string | null | 
 export function returnUrlFor(base: string, merchantSubscriptionId: string): string {
   const url = new URL(base);
   url.searchParams.set(RETURN_SUBSCRIPTION_ID_PARAM, merchantSubscriptionId);
+  return url.toString();
+}
+
+/** The return URL of a one-time payment with the order id added, so that the customer's return identifies the payment. */
+export function paymentReturnUrlFor(base: string, merchantOrderId: string): string {
+  const url = new URL(base);
+  url.searchParams.set(RETURN_PAYMENT_ID_PARAM, merchantOrderId);
   return url.toString();
 }
 
@@ -573,7 +609,14 @@ export function mapNotification(
 
 export function mapRefund(
   response: PhonePeRefundResponse,
-  context: { merchantRefundId: string; chargeId: string; subscriptionId?: string | undefined; amount: number },
+  context: {
+    merchantRefundId: string;
+    chargeId: string;
+    /** Set for a refund of a one-time payment: the payment's id (which is also the `chargeId`). */
+    paymentId?: string | undefined;
+    subscriptionId?: string | undefined;
+    amount: number;
+  },
 ): Refund {
   const status = lookup<RefundStatus>(REFUND_STATE_TO_STATUS, response.state, UNKNOWN_REFUND_STATUS);
   return {
@@ -581,6 +624,7 @@ export function mapRefund(
     id: response.refundId,
     reference: context.merchantRefundId,
     chargeId: context.chargeId,
+    ...(context.paymentId !== undefined ? { paymentId: context.paymentId } : {}),
     ...(context.subscriptionId !== undefined ? { subscriptionId: context.subscriptionId } : {}),
     status,
     providerStatus: response.state,
@@ -588,6 +632,197 @@ export function mapRefund(
     currency: Currency.INR,
     raw: response,
   };
+}
+
+// ---------------------------------------------------------------------------
+// One-time payments
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether an order (or a webhook payload shaped like one) belongs to a subscription or to a one-time payment.
+ *
+ * - A subscription order: `paymentFlow.type` is one of the `SUBSCRIPTION_*` types, a `merchantSubscriptionId` is present, the
+ *   order id is this adapter's own `ST_` setup order id, or the order is a notification that has not been redeemed.
+ * - A one-time payment: `paymentFlow` is absent (the Standard Checkout samples print none) or its type is `PG` / `PG_CHECKOUT`.
+ * - Anything else (a flow type this adapter does not know) is neither.
+ */
+export function orderKindOf(order: OrderLike): PhonePeOrderKind {
+  const type = order.paymentFlow?.type ?? undefined;
+  if (
+    (type !== undefined && (SETUP_FLOW_TYPES.includes(type) || REDEMPTION_FLOW_TYPES.includes(type))) ||
+    present(order.merchantSubscriptionId) !== undefined ||
+    present(order.paymentFlow?.merchantSubscriptionId) !== undefined ||
+    subscriptionIdFromSetupOrderId(order.merchantOrderId) !== undefined ||
+    NOTIFICATION_STATES.includes(order.state ?? '')
+  ) {
+    return PhonePeOrderKind.Subscription;
+  }
+  return type === undefined || PAYMENT_FLOW_TYPES.includes(type) ? PhonePeOrderKind.Payment : PhonePeOrderKind.Other;
+}
+
+/** The `paymentModeConfig` entries for the requested payment methods; VALIDATION for a method PhonePe cannot restrict a payment to. */
+function paymentModesFor(methods: readonly PaymentMethod[]): NonNullable<PhonePePaymentRequest['paymentFlow']['paymentModeConfig']> {
+  const unsupported = methods.filter((method) => PAYMENT_MODES_BY_METHOD[method] === undefined);
+  if (unsupported.length > 0) {
+    throw invalid(
+      `PhonePe cannot limit a payment to ${unsupported.join(', ')}: paymentMethods may contain only ${Object.keys(PAYMENT_MODES_BY_METHOD).join(', ')}. ` +
+        'Leave out the unsupported methods or omit paymentMethods',
+      Provider.PhonePe,
+    );
+  }
+  const entries = [...new Set(methods)].flatMap((method) => (PAYMENT_MODES_BY_METHOD[method] ?? []).map((entry) => ({
+    type: entry.type,
+    ...(entry.cardTypes ? { cardTypes: [...entry.cardTypes] } : {}),
+  })));
+  return { enabledPaymentModes: entries };
+}
+
+/**
+ * Turns the unified input into the body of `POST /checkout/v2/pay`.
+ *
+ * - `reference` (or the generated id) is the `merchantOrderId`; the amount is at least 100 paise.
+ * - `description` is `paymentFlow.message`, which PhonePe documents as the message "used for collect requests".
+ * - `paymentMethods` become `enabledPaymentModes` (only those instruments are shown); `expiresAt` becomes `expireAfter`
+ *   (300 to 3600 seconds from now, refused outside that, never clamped, never later than the deadline).
+ * - `metadata` goes to `metaInfo`, whose only keys are `udf1` to `udf15`: any other key is refused, not dropped.
+ * - `customer` has no PhonePe field; the adapter keeps it on the returned payment. `idempotencyKey` and `storeProduct`
+ *   are not used.
+ */
+export function planPayment(
+  input: ParsedCreatePaymentInput,
+  context: { now: Date; merchantOrderId: string; redirectUrl: string },
+): PhonePePaymentRequest {
+  if (input.amount < MIN_PAYMENT_PAISE) {
+    throw invalid(`amount must be at least ${MIN_PAYMENT_PAISE} paise (INR 1): PhonePe's minimum for a payment`, Provider.PhonePe);
+  }
+  let expireAfter: number | undefined;
+  if (input.expiresAt !== undefined) {
+    const seconds = Math.floor((toDate(input.expiresAt, 'expiresAt').getTime() - context.now.getTime()) / 1000);
+    if (seconds < EXPIRE_AFTER_MIN_SECONDS || seconds > EXPIRE_AFTER_MAX_SECONDS) {
+      throw invalid(
+        `expiresAt must be ${EXPIRE_AFTER_MIN_SECONDS} to ${EXPIRE_AFTER_MAX_SECONDS} seconds from now (PhonePe's order expiry); got ${seconds}. ` +
+          "Omit it for PhonePe's default.",
+        Provider.PhonePe,
+      );
+    }
+    expireAfter = seconds;
+  }
+  const metadata = input.metadata !== undefined && Object.keys(input.metadata).length > 0 ? input.metadata : undefined;
+  if (metadata !== undefined) {
+    const others = Object.keys(metadata).filter((key) => !UDF_KEY_PATTERN.test(key));
+    if (others.length > 0) {
+      throw invalid(
+        `PhonePe stores metadata only under the keys udf1 to udf15; cannot send ${others.map((key) => `"${key}"`).join(', ')}. ` +
+          'Rename the keys, or keep that data on your side under the payment id',
+        Provider.PhonePe,
+      );
+    }
+  }
+  return {
+    merchantOrderId: context.merchantOrderId,
+    amount: input.amount,
+    ...(expireAfter !== undefined ? { expireAfter } : {}),
+    ...(metadata !== undefined ? { metaInfo: metadata } : {}),
+    paymentFlow: {
+      type: PhonePePaymentFlowType.PgCheckout,
+      ...(input.description !== undefined ? { message: input.description } : {}),
+      merchantUrls: { redirectUrl: context.redirectUrl },
+      ...(input.paymentMethods !== undefined ? { paymentModeConfig: paymentModesFor(input.paymentMethods) } : {}),
+    },
+  };
+}
+
+/** The `udf` values an order carries that are not empty (the samples print unused ones as `""`). */
+function metadataOf(metaInfo: Record<string, string | null | undefined> | null | undefined): Record<string, string> | undefined {
+  const entries = Object.entries(metaInfo ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '');
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * The payment `POST /checkout/v2/pay` created: PhonePe answers `PENDING` and the redirect URL, exactly as it must be used.
+ * `id` and `reference` are the `merchantOrderId`; PhonePe's own `orderId` stays in `raw`.
+ */
+export function createdPayment(
+  input: ParsedCreatePaymentInput,
+  context: { merchantOrderId: string; response: PhonePePayResponse; now: Date },
+): Payment {
+  const metadata = input.metadata !== undefined && Object.keys(input.metadata).length > 0 ? input.metadata : undefined;
+  return {
+    provider: Provider.PhonePe,
+    id: context.merchantOrderId,
+    reference: context.merchantOrderId,
+    status: PaymentStatus.Created,
+    providerStatus: context.response.state || NEW_PAYMENT_PROVIDER_STATUS,
+    amount: input.amount,
+    currency: Currency.INR,
+    customer: input.customer,
+    createdAt: context.now.toISOString(),
+    checkout: { kind: CheckoutKind.Redirect, url: context.response.redirectUrl },
+    ...(metadata !== undefined ? { metadata } : {}),
+    raw: context.response,
+  };
+}
+
+/**
+ * The one-time payment an order holds. `id` and `reference` are the `merchantOrderId`.
+ *
+ * The status is `ORDER_STATE_TO_PAYMENT_STATUS` (an unknown state is `pending`); a `PENDING` order with no attempt yet is
+ * `created`. The payment method is the latest completed attempt's (else the latest attempt's) `paymentMode`. `paidAt` is
+ * the completed attempt's time. A failed order's failure is its own `errorCode` / `detailedErrorCode` (else the latest
+ * attempt's, else the `errorContext`'s); the reason is the `errorContext` description when PhonePe sent one.
+ */
+export function mapPaymentOrder(
+  order: OrderLike,
+  context: { merchantOrderId: string; raw?: unknown },
+): Payment {
+  const attempts = sortedByTime(order.paymentDetails ?? []);
+  const completed = attempts.find((attempt) => attempt.state === PhonePeOrderState.Completed);
+  const latest = attempts[0];
+  const amount = order.amount ?? completed?.amount ?? latest?.amount;
+  if (typeof amount !== 'number') {
+    throw new SubscriptionError(
+      ErrorCode.UnexpectedResponse,
+      `${Provider.PhonePe} returned order ${context.merchantOrderId} without an amount`,
+      { provider: Provider.PhonePe, raw: context.raw ?? order },
+    );
+  }
+  const mapped = lookup<PaymentStatus>(ORDER_STATE_TO_PAYMENT_STATUS, order.state, UNKNOWN_PAYMENT_STATUS);
+  const status = order.state === PhonePeOrderState.Pending && attempts.length === 0 ? PaymentStatus.Created : mapped;
+  const failed = status === PaymentStatus.Failed;
+  const errorCode = present(order.errorCode) ?? present(order.errorContext?.errorCode) ?? (failed ? present(latest?.errorCode) : undefined);
+  const detailedErrorCode =
+    present(order.detailedErrorCode) ?? present(order.errorContext?.detailedErrorCode) ?? (failed ? present(latest?.detailedErrorCode) : undefined);
+  const failureCode = errorCode ?? detailedErrorCode;
+  const failureReason = present(order.errorContext?.description) ?? failureReasonOf(errorCode, detailedErrorCode);
+  const mode = (completed ?? latest)?.paymentMode;
+  const paymentMethod = lookup<PaymentMethod | undefined>(PAYMENT_METHOD_BY_MODE, mode, undefined);
+  const paidAt = status === PaymentStatus.Succeeded ? epochMsToIso(completed?.timestamp ?? latest?.timestamp) : undefined;
+  const metadata = metadataOf(order.metaInfo);
+  return {
+    provider: Provider.PhonePe,
+    id: context.merchantOrderId,
+    reference: context.merchantOrderId,
+    status,
+    providerStatus: order.state ?? NEW_PAYMENT_PROVIDER_STATUS,
+    amount,
+    currency: Currency.INR,
+    ...(paymentMethod !== undefined ? { paymentMethod } : {}),
+    ...(paidAt ? { paidAt } : {}),
+    ...(failed && failureCode ? { failureCode } : {}),
+    ...(failed && failureReason ? { failureReason } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
+    raw: context.raw ?? order,
+  };
+}
+
+/** A payment from a webhook payload, or `undefined` when the payload lacks what a payment needs (the event is then `unknown`). */
+function paymentFromPayload(payload: PhonePeWebhookPayload, merchantOrderId: string): Payment | undefined {
+  try {
+    return mapPaymentOrder(payload, { merchantOrderId, raw: payload });
+  } catch (error) {
+    if (error instanceof SubscriptionError && error.code === ErrorCode.UnexpectedResponse) return undefined;
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -695,7 +930,13 @@ function orderOccurredAt(payload: PhonePeWebhookPayload): string | undefined {
  * | subscription.redemption.transaction.failed                        | unknown (one attempt; PhonePe retries)|
  * | subscription.paused / unpaused                                    | subscription.paused / resumed         |
  * | subscription.revoked / cancelled                                  | subscription.cancelled                |
+ * | checkout.order.completed / failed (a one-time payment)            | payment.succeeded / payment.failed    |
  * | pg.refund.completed / failed                                      | refund.succeeded / refund.failed      |
+ *
+ * `checkout.order.*` announce Autopay setups and one-time payments alike; `orderKindOf` tells them apart (an Autopay order
+ * is mapped as before). A one-time payment event needs the payload's own `state` to agree with the event name. A refund
+ * payload has no `paymentFlow`, so whether it refunds a one-time payment is decided by the caller, who reads the original
+ * order (`options.paymentRefund`); that refund event then carries `paymentId` and the refund's `paymentId`.
  *
  * Event ids (for de-duplication) are built from the event name and the ids in the payload. Both redemption success
  * events of one debit share one id (a consumer that fulfils on `subscription.charged` must not see it twice).
@@ -703,7 +944,11 @@ function orderOccurredAt(payload: PhonePeWebhookPayload): string | undefined {
  * with identical bodies have the same id: a second un-pause of the same subscription is indistinguishable from a
  * redelivery of the first.
  */
-export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): SubscriptionEvent {
+export function mapWebhook(
+  webhook: PhonePeWebhook,
+  rawBody: string,
+  options: { paymentRefund?: boolean } = {},
+): SubscriptionEvent {
   const { event, payload } = webhook;
   const subscriptionId = webhookSubscriptionId(payload);
   const orderId = present(payload.merchantOrderId);
@@ -727,9 +972,27 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
     case PhonePeEvent.CheckoutOrderCompleted:
     case PhonePeEvent.CheckoutOrderFailed: {
       const completed = event === PhonePeEvent.SetupCompleted || event === PhonePeEvent.CheckoutOrderCompleted;
+      const isCheckoutOrder = event === PhonePeEvent.CheckoutOrderCompleted || event === PhonePeEvent.CheckoutOrderFailed;
+      if (isCheckoutOrder && orderKindOf(payload) === PhonePeOrderKind.Payment) {
+        // A one-time payment. Only the payload's own state decides the outcome, and it must agree with the event's name.
+        if (orderId === undefined || payload.state !== (completed ? PhonePeOrderState.Completed : PhonePeOrderState.Failed)) {
+          return unknown([orderId ?? fallbackId]);
+        }
+        const payment = paymentFromPayload(payload, orderId);
+        if (payment === undefined) return unknown([orderId]);
+        const occurredAt = orderOccurredAt(payload);
+        return {
+          id: eventId(event, orderId),
+          ...base,
+          type: completed ? EventType.PaymentSucceeded : EventType.PaymentFailed,
+          ...(occurredAt ? { occurredAt } : {}),
+          paymentId: orderId,
+          payment,
+        };
+      }
       const flowType = payload.paymentFlow?.type;
       const isSetup = flowType !== null && flowType !== undefined && SETUP_FLOW_TYPES.includes(flowType);
-      // `checkout.order.*` also announce ordinary one-off payments of the merchant: only a subscription setup is ours.
+      // What is left of `checkout.order.*` is an order that is not a one-time payment: only a subscription setup is ours.
       const expectedState = completed ? PhonePeOrderState.Completed : PhonePeOrderState.Failed;
       if (!isSetup || subscriptionId === undefined || orderId === undefined || payload.state !== expectedState) {
         return unknown([orderId ?? fallbackId]);
@@ -861,17 +1124,20 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
       const succeeded = event === PhonePeEvent.RefundCompleted;
       const occurredAt = epochMsToIso(payload.timestamp);
       const refundSubscriptionId = subscriptionIdFromSetupOrderId(chargeId);
+      const paymentRefund = options.paymentRefund === true && refundSubscriptionId === undefined;
       return {
         id: eventId(event, merchantRefundId ?? refundId),
         ...base,
         type: succeeded ? EventType.RefundSucceeded : EventType.RefundFailed,
         ...(occurredAt ? { occurredAt } : {}),
         ...(refundSubscriptionId !== undefined ? { subscriptionId: refundSubscriptionId } : {}),
+        ...(paymentRefund ? { paymentId: chargeId } : {}),
         refund: {
           provider: Provider.PhonePe,
           id: refundId ?? merchantRefundId ?? fallbackId,
           ...(merchantRefundId !== undefined ? { reference: merchantRefundId } : {}),
           chargeId,
+          ...(paymentRefund ? { paymentId: chargeId } : {}),
           ...(refundSubscriptionId !== undefined ? { subscriptionId: refundSubscriptionId } : {}),
           status: succeeded ? RefundStatus.Succeeded : RefundStatus.Failed,
           ...(payload.state !== null && payload.state !== undefined ? { providerStatus: payload.state } : {}),
@@ -882,8 +1148,8 @@ export function mapWebhook(webhook: PhonePeWebhook, rawBody: string): Subscripti
     }
 
     default:
-      // `pg.refund.accepted`, `checkout.transaction.attempt.failed`, `paylink.*`, one-off checkout payments, and anything
-      // PhonePe adds later: verified, but not a subscription event this library normalises.
+      // `pg.refund.accepted`, `checkout.transaction.attempt.failed`, `paylink.*`, and anything PhonePe adds later: verified,
+      // but not an event this library normalises.
       return unknown([orderId ?? present(payload.merchantRefundId) ?? subscriptionId ?? fallbackId]);
   }
 }

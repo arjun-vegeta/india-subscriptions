@@ -17,6 +17,7 @@ import {
   WEBHOOK_SETUP_COMPLETED_A_WEBHOOK,
   WEBHOOK_SETUP_FAILED_A_WEBHOOK,
   WEBHOOK_UNPAUSED,
+  REDEMPTION_ORDER_COMPLETED_A_REDORDER,
 } from './fixtures.js';
 import {
   CLIENT_ID,
@@ -32,26 +33,37 @@ import {
   webhookRequest,
 } from './helpers.js';
 import { phonepe } from '../../src/providers/phonepe/index.js';
-import { Environment } from '../../src/constants.js';
+import { Environment, HttpMethod } from '../../src/constants.js';
 
 const { provider } = makeProvider();
 
 /** Parses one verified webhook and returns its single event. */
-function eventOf(body: unknown) {
-  const events = provider.parseWebhook(webhookRequest(body));
+async function eventOf(body: unknown) {
+  const events = await provider.parseWebhook(webhookRequest(body));
+  expect(events).toHaveLength(1);
+  return events[0]!;
+}
+
+/**
+ * A refund payload has no `paymentFlow`, so the adapter reads the original order to learn what it refunds. This parses one
+ * verified refund webhook while PhonePe answers that read with `order` (an Autopay redemption order by default).
+ */
+async function refundEventOf(body: unknown, order: unknown = REDEMPTION_ORDER_COMPLETED_A_REDORDER) {
+  const harness = makeProvider([{ method: HttpMethod.Get, url: /\/checkout\/v2\/order\/[^/]+\/status/, json: order }]);
+  const events = await harness.provider.parseWebhook(webhookRequest(body));
   expect(events).toHaveLength(1);
   return events[0]!;
 }
 
 describe('webhook authentication [G-UATCHECK, SDK CommonUtils: Authorization = SHA256(username:password)]', () => {
-  it('the expected value is computed independently here from node:crypto', () => {
+  it('the expected value is computed independently here from node:crypto', async () => {
     expect(WEBHOOK_AUTHORIZATION).toBe(sha256Hex(`${WEBHOOK_USERNAME}:${WEBHOOK_PASSWORD}`));
     expect(WEBHOOK_AUTHORIZATION).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('accepts the right Authorization header (any header-name case) and returns the events', () => {
+  it('accepts the right Authorization header (any header-name case) and returns the events', async () => {
     for (const name of ['authorization', 'Authorization', 'AUTHORIZATION']) {
-      const events = provider.parseWebhook({
+      const events = await provider.parseWebhook({
         rawBody: JSON.stringify(WEBHOOK_PAUSED),
         headers: { [name]: WEBHOOK_AUTHORIZATION },
       });
@@ -59,7 +71,7 @@ describe('webhook authentication [G-UATCHECK, SDK CommonUtils: Authorization = S
     }
     // A header received as a list uses its first value.
     expect(
-      provider.parseWebhook({ rawBody: JSON.stringify(WEBHOOK_PAUSED), headers: { authorization: [WEBHOOK_AUTHORIZATION, 'x'] } })[0]?.type,
+      (await provider.parseWebhook({ rawBody: JSON.stringify(WEBHOOK_PAUSED), headers: { authorization: [WEBHOOK_AUTHORIZATION, 'x'] } }))[0]?.type,
     ).toBe(EventType.SubscriptionPaused);
   });
 
@@ -100,8 +112,8 @@ describe('webhook authentication [G-UATCHECK, SDK CommonUtils: Authorization = S
 });
 
 describe('setup events', () => {
-  it('subscription.setup.order.completed [A-WEBHOOK] is subscription.authorized for the merchantSubscriptionId', () => {
-    const event = eventOf(WEBHOOK_SETUP_COMPLETED_A_WEBHOOK);
+  it('subscription.setup.order.completed [A-WEBHOOK] is subscription.authorized for the merchantSubscriptionId', async () => {
+    const event = await eventOf(WEBHOOK_SETUP_COMPLETED_A_WEBHOOK);
     expect(event).toMatchObject({
       id: 'subscription.setup.order.completed:MO1708797962855',
       provider: Provider.PhonePe,
@@ -133,8 +145,8 @@ describe('setup events', () => {
     expect(event.subscription?.interval).toBeUndefined();
   });
 
-  it('subscription.setup.order.failed is subscription.authorization_failed with the failure kept on the charge', () => {
-    const event = eventOf(WEBHOOK_SETUP_FAILED_A_WEBHOOK);
+  it('subscription.setup.order.failed is subscription.authorization_failed with the failure kept on the charge', async () => {
+    const event = await eventOf(WEBHOOK_SETUP_FAILED_A_WEBHOOK);
     expect(event).toMatchObject({
       id: 'subscription.setup.order.failed:MO1708797962855',
       type: EventType.SubscriptionAuthorizationFailed,
@@ -144,8 +156,8 @@ describe('setup events', () => {
     });
   });
 
-  it('checkout.order.completed [SC-WEBHOOK] of a PENNY_DROP setup: authorized, an authorization charge, DAILY read back as an interval', () => {
-    const event = eventOf(WEBHOOK_CHECKOUT_ORDER_COMPLETED_SC_WEBHOOK);
+  it('checkout.order.completed [SC-WEBHOOK] of a PENNY_DROP setup: authorized, an authorization charge, DAILY read back as an interval', async () => {
+    const event = await eventOf(WEBHOOK_CHECKOUT_ORDER_COMPLETED_SC_WEBHOOK);
     expect(event).toMatchObject({
       id: 'checkout.order.completed:TEST_ORD76218257999841196127',
       type: EventType.SubscriptionAuthorized,
@@ -156,8 +168,8 @@ describe('setup events', () => {
     });
   });
 
-  it('checkout.order.failed [SC-WEBHOOK] (INTENT_EXPIRED) is authorization_failed', () => {
-    const event = eventOf(WEBHOOK_CHECKOUT_ORDER_FAILED_SC_WEBHOOK);
+  it('checkout.order.failed [SC-WEBHOOK] (INTENT_EXPIRED) is authorization_failed', async () => {
+    const event = await eventOf(WEBHOOK_CHECKOUT_ORDER_FAILED_SC_WEBHOOK);
     expect(event).toMatchObject({
       type: EventType.SubscriptionAuthorizationFailed,
       subscriptionId: 'MSUB_5580745967290798888',
@@ -165,30 +177,34 @@ describe('setup events', () => {
     });
   });
 
-  it('a one-off checkout payment of the same merchant is NOT a subscription event: unknown, with its name', () => {
-    const event = eventOf(WEBHOOK_CHECKOUT_ORDER_COMPLETED_ONE_OFF);
+  it('an order of a flow this adapter knows nothing about is NOT a subscription event: unknown, with its name (one-time payments: see payments.test.ts)', async () => {
+    const body = {
+      ...WEBHOOK_CHECKOUT_ORDER_COMPLETED_ONE_OFF,
+      payload: { ...WEBHOOK_CHECKOUT_ORDER_COMPLETED_ONE_OFF.payload, paymentFlow: { type: 'PAYMENT_LINK' } },
+    };
+    const event = await eventOf(body);
     expect(event).toMatchObject({ type: EventType.Unknown, providerEventType: 'checkout.order.completed' });
     expect(event.subscriptionId).toBeUndefined();
     expect(event.id).toBe('checkout.order.completed:ONE_OFF_ORDER_1');
   });
 
-  it('a setup event whose payload contradicts its name (completed event, FAILED state) is unknown, never authorized', () => {
+  it('a setup event whose payload contradicts its name (completed event, FAILED state) is unknown, never authorized', async () => {
     const body = { ...WEBHOOK_SETUP_COMPLETED_A_WEBHOOK, payload: { ...WEBHOOK_SETUP_COMPLETED_A_WEBHOOK.payload, state: 'FAILED' } };
-    expect(eventOf(body).type).toBe(EventType.Unknown);
+    expect((await eventOf(body)).type).toBe(EventType.Unknown);
   });
 
-  it('the subscription id is recovered from the derived setup order id when the payload has no paymentFlow', () => {
+  it('the subscription id is recovered from the derived setup order id when the payload has no paymentFlow', async () => {
     const body = {
       event: 'subscription.setup.order.completed',
       payload: { merchantOrderId: 'ST_sub_ref_1', state: 'COMPLETED', amount: 200, paymentFlow: { type: 'SUBSCRIPTION_SETUP' } },
     };
-    expect(eventOf(body)).toMatchObject({ type: EventType.SubscriptionAuthorized, subscriptionId: 'sub_ref_1' });
+    expect(await eventOf(body)).toMatchObject({ type: EventType.SubscriptionAuthorized, subscriptionId: 'sub_ref_1' });
   });
 });
 
 describe('mandate state changes', () => {
-  it('subscription.paused is subscription.paused, with the pause start as occurredAt and in the id', () => {
-    const event = eventOf(WEBHOOK_PAUSED);
+  it('subscription.paused is subscription.paused, with the pause start as occurredAt and in the id', async () => {
+    const event = await eventOf(WEBHOOK_PAUSED);
     expect(event).toMatchObject({
       id: 'subscription.paused:MS1708797962855:1708798426196:1708885799000',
       type: EventType.SubscriptionPaused,
@@ -199,8 +215,8 @@ describe('mandate state changes', () => {
     });
   });
 
-  it('subscription.unpaused is subscription.resumed', () => {
-    expect(eventOf(WEBHOOK_UNPAUSED)).toMatchObject({
+  it('subscription.unpaused is subscription.resumed', async () => {
+    expect(await eventOf(WEBHOOK_UNPAUSED)).toMatchObject({
       id: 'subscription.unpaused:MS1708797962855:-:-',
       type: EventType.SubscriptionResumed,
       subscriptionId: 'MS1708797962855',
@@ -208,29 +224,29 @@ describe('mandate state changes', () => {
     });
   });
 
-  it('subscription.revoked (the customer, in their app) and subscription.cancelled are both subscription.cancelled', () => {
-    expect(eventOf(WEBHOOK_REVOKED)).toMatchObject({
+  it('subscription.revoked (the customer, in their app) and subscription.cancelled are both subscription.cancelled', async () => {
+    expect(await eventOf(WEBHOOK_REVOKED)).toMatchObject({
       type: EventType.SubscriptionCancelled,
       providerEventType: 'subscription.revoked',
       subscriptionId: 'MS1708797962855',
       subscription: { status: SubscriptionStatus.Cancelled, providerStatus: 'REVOKED' },
     });
-    expect(eventOf(WEBHOOK_CANCELLED)).toMatchObject({
+    expect(await eventOf(WEBHOOK_CANCELLED)).toMatchObject({
       type: EventType.SubscriptionCancelled,
       providerEventType: 'subscription.cancelled',
       subscription: { status: SubscriptionStatus.Cancelled, providerStatus: 'CANCELLED' },
     });
   });
 
-  it('a state change with no subscription id is unknown (it cannot be matched to anything)', () => {
+  it('a state change with no subscription id is unknown (it cannot be matched to anything)', async () => {
     const body = { event: 'subscription.paused', payload: { state: 'PAUSED' } };
-    expect(eventOf(body).type).toBe(EventType.Unknown);
+    expect((await eventOf(body)).type).toBe(EventType.Unknown);
   });
 });
 
 describe('pre-debit notification events', () => {
-  it('subscription.notification.completed [SC-WEBHOOK] is subscription.charge_scheduled, naming the debit by the notification id', () => {
-    const event = eventOf(WEBHOOK_NOTIFICATION_COMPLETED);
+  it('subscription.notification.completed [SC-WEBHOOK] is subscription.charge_scheduled, naming the debit by the notification id', async () => {
+    const event = await eventOf(WEBHOOK_NOTIFICATION_COMPLETED);
     expect(event).toMatchObject({
       id: 'subscription.notification.completed:MO1708797962855',
       type: EventType.SubscriptionChargeScheduled,
@@ -248,20 +264,20 @@ describe('pre-debit notification events', () => {
     });
   });
 
-  it('subscription.notification.failed (no page shows its payload) is unknown, not a failed charge: no debit was tried', () => {
+  it('subscription.notification.failed (no page shows its payload) is unknown, not a failed charge: no debit was tried', async () => {
     const body = {
       event: 'subscription.notification.failed',
       payload: { ...WEBHOOK_NOTIFICATION_COMPLETED.payload, state: 'FAILED' },
     };
-    const event = eventOf(body);
+    const event = await eventOf(body);
     expect(event).toMatchObject({ type: EventType.Unknown, providerEventType: 'subscription.notification.failed', subscriptionId: 'MS121312' });
     expect(event.charge).toBeUndefined();
   });
 });
 
 describe('redemption events', () => {
-  it('subscription.redemption.order.completed is subscription.charged: the merchant order id on charge.id and charge.reference, the subscription id on the event', () => {
-    const event = eventOf(WEBHOOK_REDEMPTION_ORDER_COMPLETED);
+  it('subscription.redemption.order.completed is subscription.charged: the merchant order id on charge.id and charge.reference, the subscription id on the event', async () => {
+    const event = await eventOf(WEBHOOK_REDEMPTION_ORDER_COMPLETED);
     expect(event).toMatchObject({
       id: 'subscription.redemption.order.completed:MO1708797962855',
       type: EventType.SubscriptionCharged,
@@ -280,9 +296,9 @@ describe('redemption events', () => {
     });
   });
 
-  it('subscription.redemption.transaction.completed (one attempt; the order is still PENDING) is also subscription.charged, with the SAME id so a consumer sees one charge', () => {
-    const order = eventOf(WEBHOOK_REDEMPTION_ORDER_COMPLETED);
-    const attempt = eventOf(WEBHOOK_REDEMPTION_TRANSACTION_COMPLETED);
+  it('subscription.redemption.transaction.completed (one attempt; the order is still PENDING) is also subscription.charged, with the SAME id so a consumer sees one charge', async () => {
+    const order = await eventOf(WEBHOOK_REDEMPTION_ORDER_COMPLETED);
+    const attempt = await eventOf(WEBHOOK_REDEMPTION_TRANSACTION_COMPLETED);
     expect(attempt).toMatchObject({
       type: EventType.SubscriptionCharged,
       providerEventType: 'subscription.redemption.transaction.completed',
@@ -292,8 +308,8 @@ describe('redemption events', () => {
     expect(attempt.id).toBe(order.id);
   });
 
-  it('subscription.redemption.order.failed is subscription.charge_failed with the failure kept', () => {
-    const event = eventOf(WEBHOOK_REDEMPTION_ORDER_FAILED);
+  it('subscription.redemption.order.failed is subscription.charge_failed with the failure kept', async () => {
+    const event = await eventOf(WEBHOOK_REDEMPTION_ORDER_FAILED);
     expect(event).toMatchObject({
       id: 'subscription.redemption.order.failed:MO1708797962855',
       type: EventType.SubscriptionChargeFailed,
@@ -308,34 +324,34 @@ describe('redemption events', () => {
     });
   });
 
-  it('subscription.redemption.transaction.failed is ONE attempt (PhonePe retries inside its window): unknown, never a failed charge', () => {
-    const event = eventOf(WEBHOOK_REDEMPTION_TRANSACTION_FAILED);
+  it('subscription.redemption.transaction.failed is ONE attempt (PhonePe retries inside its window): unknown, never a failed charge', async () => {
+    const event = await eventOf(WEBHOOK_REDEMPTION_TRANSACTION_FAILED);
     expect(event).toMatchObject({ type: EventType.Unknown, providerEventType: 'subscription.redemption.transaction.failed', subscriptionId: 'MS121312' });
     expect(event.charge).toBeUndefined();
     expect(event.id).toBe('subscription.redemption.transaction.failed:MO1708797962855:OM124');
   });
 
-  it('events whose payload contradicts their name are unknown: money events are never guessed', () => {
+  it('events whose payload contradicts their name are unknown: money events are never guessed', async () => {
     const completedButPending = { ...WEBHOOK_REDEMPTION_ORDER_COMPLETED, payload: { ...WEBHOOK_REDEMPTION_ORDER_COMPLETED.payload, state: 'PENDING' } };
-    expect(eventOf(completedButPending).type).toBe(EventType.Unknown);
+    expect((await eventOf(completedButPending)).type).toBe(EventType.Unknown);
     const failedButCompleted = { ...WEBHOOK_REDEMPTION_ORDER_FAILED, payload: { ...WEBHOOK_REDEMPTION_ORDER_FAILED.payload, state: 'COMPLETED' } };
-    expect(eventOf(failedButCompleted).type).toBe(EventType.Unknown);
+    expect((await eventOf(failedButCompleted)).type).toBe(EventType.Unknown);
     const attemptCompletedWithoutAttempt = {
       ...WEBHOOK_REDEMPTION_TRANSACTION_COMPLETED,
       payload: { ...WEBHOOK_REDEMPTION_TRANSACTION_COMPLETED.payload, paymentDetails: [] },
     };
-    expect(eventOf(attemptCompletedWithoutAttempt).type).toBe(EventType.Unknown);
+    expect((await eventOf(attemptCompletedWithoutAttempt)).type).toBe(EventType.Unknown);
   });
 
-  it('a debit event without an amount cannot be a charge: unknown (the webhook is still acknowledged), never an error PhonePe would redeliver forever', () => {
+  it('a debit event without an amount cannot be a charge: unknown (the webhook is still acknowledged), never an error PhonePe would redeliver forever', async () => {
     const body = { ...WEBHOOK_REDEMPTION_ORDER_COMPLETED, payload: { ...WEBHOOK_REDEMPTION_ORDER_COMPLETED.payload, amount: undefined, paymentDetails: [] } };
-    expect(eventOf(body)).toMatchObject({ type: EventType.Unknown, providerEventType: 'subscription.redemption.order.completed' });
+    expect(await eventOf(body)).toMatchObject({ type: EventType.Unknown, providerEventType: 'subscription.redemption.order.completed' });
   });
 });
 
 describe('refund events', () => {
-  it('pg.refund.completed [A-WEBHOOK] is refund.succeeded', () => {
-    expect(eventOf(WEBHOOK_REFUND_COMPLETED)).toMatchObject({
+  it('pg.refund.completed [A-WEBHOOK] is refund.succeeded', async () => {
+    expect(await refundEventOf(WEBHOOK_REFUND_COMPLETED)).toMatchObject({
       id: 'pg.refund.completed:Refund-id-1231003121201223',
       type: EventType.RefundSucceeded,
       providerEventType: 'pg.refund.completed',
@@ -353,54 +369,54 @@ describe('refund events', () => {
     });
   });
 
-  it('pg.refund.failed is refund.failed', () => {
-    expect(eventOf(WEBHOOK_REFUND_FAILED)).toMatchObject({
+  it('pg.refund.failed is refund.failed', async () => {
+    expect(await refundEventOf(WEBHOOK_REFUND_FAILED)).toMatchObject({
       type: EventType.RefundFailed,
       refund: { status: RefundStatus.Failed, chargeId: 'TX1103221212123', amount: 100 },
     });
   });
 
-  it('a refund of a setup order carries the subscription id derived from the order id', () => {
+  it('a refund of a setup order carries the subscription id derived from the order id', async () => {
     const body = { ...WEBHOOK_REFUND_COMPLETED, payload: { ...WEBHOOK_REFUND_COMPLETED.payload, originalMerchantOrderId: 'ST_sub_ref_1' } };
-    expect(eventOf(body)).toMatchObject({ subscriptionId: 'sub_ref_1', refund: { subscriptionId: 'sub_ref_1' } });
+    expect(await eventOf(body)).toMatchObject({ subscriptionId: 'sub_ref_1', refund: { subscriptionId: 'sub_ref_1' } });
   });
 
-  it('pg.refund.accepted (a legacy event) is unknown', () => {
+  it('pg.refund.accepted (a legacy event) is unknown', async () => {
     const body = { type: 'PG_REFUND_ACCEPTED', event: 'pg.refund.accepted', payload: { ...WEBHOOK_REFUND_COMPLETED.payload, state: 'ACCEPTED' } };
-    expect(eventOf(body)).toMatchObject({ type: EventType.Unknown, providerEventType: 'pg.refund.accepted' });
+    expect(await eventOf(body)).toMatchObject({ type: EventType.Unknown, providerEventType: 'pg.refund.accepted' });
   });
 });
 
 describe('unknown events and event ids', () => {
-  it('an event this library does not normalise is a verified `unknown` with its name and payload', () => {
+  it('an event this library does not normalise is a verified `unknown` with its name and payload', async () => {
     const body = { event: 'checkout.transaction.attempt.failed', payload: { merchantOrderId: 'ORD_1', state: 'FAILED' } };
-    const event = eventOf(body);
+    const event = await eventOf(body);
     expect(event).toMatchObject({ type: EventType.Unknown, providerEventType: 'checkout.transaction.attempt.failed', id: 'checkout.transaction.attempt.failed:ORD_1' });
     expect(event.raw).toMatchObject({ event: 'checkout.transaction.attempt.failed' });
   });
 
-  it('an event with nothing to identify it gets an id from a hash of the body: stable across redeliveries', () => {
+  it('an event with nothing to identify it gets an id from a hash of the body: stable across redeliveries', async () => {
     const body = { event: 'something.new', payload: { x: 1 } };
-    const first = eventOf(body);
-    const second = eventOf(body);
+    const first = await eventOf(body);
+    const second = await eventOf(body);
     expect(first.id).toBe(second.id);
     expect(first.id).toBe(`something.new:${sha256Hex(JSON.stringify(body))}`);
-    expect(eventOf({ event: 'something.new', payload: { x: 2 } }).id).not.toBe(first.id);
+    expect((await eventOf({ event: 'something.new', payload: { x: 2 } })).id).not.toBe(first.id);
   });
 
-  it('the same webhook delivered twice has the same id; the paused events of two different pauses do not', () => {
-    expect(eventOf(WEBHOOK_PAUSED).id).toBe(eventOf(WEBHOOK_PAUSED).id);
+  it('the same webhook delivered twice has the same id; the paused events of two different pauses do not', async () => {
+    expect((await eventOf(WEBHOOK_PAUSED)).id).toBe((await eventOf(WEBHOOK_PAUSED)).id);
     const later = { ...WEBHOOK_PAUSED, payload: { ...WEBHOOK_PAUSED.payload, pauseStartDate: 1709999999999, pauseEndDate: 1710999999999 } };
-    expect(eventOf(later).id).not.toBe(eventOf(WEBHOOK_PAUSED).id);
+    expect((await eventOf(later)).id).not.toBe((await eventOf(WEBHOOK_PAUSED)).id);
   });
 
-  it('a `type` field is ignored: PhonePe deprecates it, the event name decides', () => {
+  it('a `type` field is ignored: PhonePe deprecates it, the event name decides', async () => {
     const body = { ...WEBHOOK_REFUND_COMPLETED, type: 'SOMETHING_ELSE' };
-    expect(eventOf(body).type).toBe(EventType.RefundSucceeded);
+    expect((await refundEventOf(body)).type).toBe(EventType.RefundSucceeded);
   });
 
-  it('reads the exact raw body, whitespace and all', () => {
+  it('reads the exact raw body, whitespace and all', async () => {
     const rawBody = `\n  ${JSON.stringify(WEBHOOK_PAUSED, null, 4)}\n`;
-    expect(provider.parseWebhook({ rawBody, headers: { authorization: WEBHOOK_AUTHORIZATION } })[0]?.type).toBe(EventType.SubscriptionPaused);
+    expect((await provider.parseWebhook({ rawBody, headers: { authorization: WEBHOOK_AUTHORIZATION } }))[0]?.type).toBe(EventType.SubscriptionPaused);
   });
 });
