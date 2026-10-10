@@ -10,6 +10,7 @@ import {
   IntervalUnit,
   PaymentMethod,
   Provider,
+  ProviderKind,
   RefundStatus,
   SchedulingMode,
   SubscriptionStatus,
@@ -168,6 +169,7 @@ function capabilitiesFor(name: Provider, style: Style, pause: boolean, resume: b
   };
   return {
     provider: name,
+    kind: ProviderKind.Gateway,
     scheduling: schedulingModes[style],
     gatewayPlans: false,
     trial: true,
@@ -175,6 +177,7 @@ function capabilitiesFor(name: Provider, style: Style, pause: boolean, resume: b
     quantity: false,
     pause,
     resume,
+    cancel: true,
     cancelAtPeriodEnd: false,
     changePlan: false,
     merchantCharges: style !== Style.Gateway,
@@ -185,6 +188,8 @@ function capabilitiesFor(name: Provider, style: Style, pause: boolean, resume: b
     signedWebhooks: true,
     idempotencyKeys: true,
     paymentMethods: [PaymentMethod.Upi],
+    oneTimePayments: false,
+    oneTimePaymentMethods: [],
   };
 }
 

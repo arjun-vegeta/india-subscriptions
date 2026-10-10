@@ -158,6 +158,8 @@ describe('the README capability table against the capabilities objects', () => {
       [PaymentMethod.Card]: /cards?/i,
       [PaymentMethod.ENach]: /eMandate|eNACH/i,
       [PaymentMethod.PhysicalNach]: /physical/i,
+      [PaymentMethod.NetBanking]: /net ?banking/i,
+      [PaymentMethod.Wallet]: /wallet/i,
     };
     const caps = adapters();
     const cells = row('Payment methods');
@@ -397,7 +399,7 @@ describe('PhonePe: every flag', () => {
     await t.create();
     await t.authoriseAndVerify();
     const good = t.fake.mandateWebhook(PP_REFERENCE, 'paused');
-    expect(t.subs.webhooks.parse(Provider.PhonePe, good)).toHaveLength(1);
+    expect(await t.subs.webhooks.parse(Provider.PhonePe, good)).toHaveLength(1);
     expect((await rejection(async () => t.subs.webhooks.parse(Provider.PhonePe, { ...good, headers: {} }))).code).toBe(ErrorCode.SignatureInvalid);
     expect((await rejection(async () => t.subs.webhooks.parse(Provider.PhonePe, { ...good, headers: { authorization: 'nope' } }))).code).toBe(ErrorCode.SignatureInvalid);
   });
@@ -481,7 +483,7 @@ describe('Paytm: every flag', () => {
     const subscription = await t.create();
     await t.authoriseAndVerify(subscription);
     const good = t.fake.mandateWebhook(EventType.SubscriptionPaused);
-    expect(t.subs.webhooks.parse(Provider.Paytm, good)).toHaveLength(1);
+    expect(await t.subs.webhooks.parse(Provider.Paytm, good)).toHaveLength(1);
     const wrong = new URLSearchParams(good.rawBody);
     wrong.set('STATUS', 'ACTIVE');
     expect((await rejection(async () => t.subs.webhooks.parse(Provider.Paytm, { rawBody: wrong.toString(), headers: {} }))).code).toBe(ErrorCode.SignatureInvalid);

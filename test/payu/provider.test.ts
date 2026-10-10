@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Environment, ErrorCode, PaymentMethod, Provider, SchedulingMode } from '../../src/constants.js';
+import { Environment, ErrorCode, PaymentMethod, Provider, SchedulingMode, ProviderKind } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
 import { PayUConfigSchema, PayUProvider, payu } from '../../src/providers/payu/index.js';
 import { CUSTOMER, KEY, MONTHLY_PLAN, SALT, TEST_API_URL, apiRoute, makeProvider, signPayment } from './helpers.js';
@@ -92,6 +92,7 @@ describe('capabilities', () => {
     expect(provider.name).toBe(Provider.PayU);
     expect(provider.capabilities).toEqual({
       provider: Provider.PayU,
+      kind: ProviderKind.Gateway,
       scheduling: [SchedulingMode.Merchant],
       gatewayPlans: false,
       trial: true,
@@ -99,6 +100,7 @@ describe('capabilities', () => {
       quantity: false,
       pause: false,
       resume: false,
+      cancel: true,
       cancelAtPeriodEnd: false,
       changePlan: false,
       merchantCharges: true,
@@ -108,6 +110,8 @@ describe('capabilities', () => {
       signedWebhooks: false,
       idempotencyKeys: false,
       paymentMethods: [PaymentMethod.Card, PaymentMethod.Upi, PaymentMethod.ENach],
+      oneTimePayments: false,
+      oneTimePaymentMethods: [],
     });
   });
 });

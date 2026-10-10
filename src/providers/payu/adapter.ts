@@ -9,6 +9,7 @@ import {
   HttpMethod,
   PaymentMethod,
   Provider,
+  ProviderKind,
   SchedulingMode,
   SubscriptionStatus,
   CheckoutKind,
@@ -212,6 +213,7 @@ export class PayUProvider extends BaseProvider {
    */
   readonly capabilities: Capabilities = {
     provider: Provider.PayU,
+    kind: ProviderKind.Gateway,
     scheduling: [SchedulingMode.Merchant],
     gatewayPlans: false,
     trial: true,
@@ -219,6 +221,7 @@ export class PayUProvider extends BaseProvider {
     quantity: false,
     pause: false,
     resume: false,
+    cancel: true,
     cancelAtPeriodEnd: false,
     changePlan: false,
     merchantCharges: true,
@@ -228,6 +231,8 @@ export class PayUProvider extends BaseProvider {
     signedWebhooks: false,
     idempotencyKeys: false,
     paymentMethods: [PaymentMethod.Card, PaymentMethod.Upi, PaymentMethod.ENach],
+    oneTimePayments: false,
+    oneTimePaymentMethods: [],
   };
 
   // Real private fields: invisible to JSON.stringify, console.log and spreads, so the salt cannot leak.

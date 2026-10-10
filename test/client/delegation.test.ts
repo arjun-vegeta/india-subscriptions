@@ -161,7 +161,7 @@ describe.each(rigs())('pure delegation to a gateway-scheduled provider (%s)', (_
   it('webhooks.parse and webhooks.handle return the adapter events unchanged and write nothing', async () => {
     const { subs, stub, store } = build();
     const request: WebhookRequest = { rawBody: '{}', headers: {} };
-    expect(subs.webhooks.parse(rzp, request)).toBe(stub.results.events);
+    expect(await subs.webhooks.parse(rzp, request)).toBe(stub.results.events);
     expect(await subs.webhooks.handle(rzp, request)).toBe(stub.results.events);
     expect(stub.calls.map((call) => call.method)).toStrictEqual([GatewayMethod.ParseWebhook, GatewayMethod.ParseWebhook]);
     expect(stub.calls[0]?.args[0]).toBe(request);

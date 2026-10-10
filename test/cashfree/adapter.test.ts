@@ -14,6 +14,7 @@ import {
   RefundStatus,
   SchedulingMode,
   SubscriptionStatus,
+  ProviderKind,
 } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
 import type { ProviderOptions } from '../../src/provider.js';
@@ -469,6 +470,7 @@ describe('capabilities', () => {
     const { provider } = setup([]);
     expect(provider.capabilities).toEqual({
       provider: Provider.Cashfree,
+      kind: ProviderKind.Gateway,
       scheduling: [SchedulingMode.Gateway, SchedulingMode.Merchant],
       gatewayPlans: true,
       trial: true,
@@ -476,6 +478,7 @@ describe('capabilities', () => {
       quantity: false,
       pause: true,
       resume: true,
+      cancel: true,
       cancelAtPeriodEnd: false,
       changePlan: true,
       merchantCharges: true,
@@ -488,6 +491,8 @@ describe('capabilities', () => {
       signedWebhooks: true,
       idempotencyKeys: true,
       paymentMethods: [PaymentMethod.Upi, PaymentMethod.Card, PaymentMethod.ENach],
+      oneTimePayments: false,
+      oneTimePaymentMethods: [],
     });
   });
 

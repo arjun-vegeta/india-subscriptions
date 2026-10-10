@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Environment, ErrorCode, PaymentMethod, Provider, SchedulingMode } from '../../src/constants.js';
+import { Environment, ErrorCode, PaymentMethod, Provider, SchedulingMode, ProviderKind } from '../../src/constants.js';
 import { PhonePeConfigSchema, PhonePeProvider, phonepe } from '../../src/providers/phonepe/index.js';
 import { CLIENT_ID, CLIENT_SECRET, CLIENT_VERSION, WEBHOOK_PASSWORD, WEBHOOK_USERNAME, everythingIn } from './helpers.js';
 
@@ -50,6 +50,7 @@ describe('PhonePe config', () => {
   it('declares exactly the capabilities PhonePe Autopay has', () => {
     expect(phonepe(VALID).capabilities).toEqual({
       provider: Provider.PhonePe,
+      kind: ProviderKind.Gateway,
       scheduling: [SchedulingMode.Merchant],
       gatewayPlans: false,
       trial: true,
@@ -57,6 +58,7 @@ describe('PhonePe config', () => {
       quantity: false,
       pause: false,
       resume: false,
+      cancel: true,
       cancelAtPeriodEnd: false,
       changePlan: false,
       merchantCharges: true,
@@ -66,6 +68,8 @@ describe('PhonePe config', () => {
       signedWebhooks: true,
       idempotencyKeys: false,
       paymentMethods: [PaymentMethod.Upi],
+      oneTimePayments: false,
+      oneTimePaymentMethods: [],
     });
     expect(phonepe(VALID).name).toBe(Provider.PhonePe);
   });

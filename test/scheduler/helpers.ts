@@ -1,4 +1,4 @@
-import { ChargeKind, ChargeStatus, Currency, ErrorCode, EventType, IntervalUnit, PaymentMethod, Provider, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
+import { ChargeKind, ChargeStatus, Currency, ErrorCode, EventType, IntervalUnit, PaymentMethod, Provider, ProviderKind, SchedulingMode, SubscriptionStatus } from '../../src/constants.js';
 import { SubscriptionError, unsupported } from '../../src/errors.js';
 import type { SubscriptionProvider } from '../../src/provider.js';
 import type {
@@ -9,14 +9,18 @@ import type {
   CheckoutResult,
   CheckoutVerification,
   CreateChargeInput,
+  CreatePaymentInput,
   CreatePlanInput,
   CreateSubscriptionInput,
   ListChargesOptions,
   NotifyChargeInput,
   PauseSubscriptionOptions,
+  Payment,
+  PaymentVerification,
   Plan,
   Refund,
   RefundInput,
+  RefundPaymentInput,
   ResumeSubscriptionOptions,
   Subscription,
   SubscriptionEvent,
@@ -132,6 +136,7 @@ export class FakeProvider implements SubscriptionProvider {
     const style = options.style ?? Style.Notify;
     this.capabilities = {
       provider: Provider.PayU,
+      kind: ProviderKind.Gateway,
       scheduling: [SchedulingMode.Merchant],
       gatewayPlans: false,
       trial: true,
@@ -139,6 +144,7 @@ export class FakeProvider implements SubscriptionProvider {
       quantity: false,
       pause: false,
       resume: false,
+      cancel: true,
       cancelAtPeriodEnd: false,
       changePlan: false,
       merchantCharges: options.merchantCharges ?? true,
@@ -154,6 +160,8 @@ export class FakeProvider implements SubscriptionProvider {
       signedWebhooks: true,
       idempotencyKeys: true,
       paymentMethods: [PaymentMethod.Upi],
+      oneTimePayments: false,
+      oneTimePaymentMethods: [],
     };
   }
 
@@ -304,6 +312,18 @@ export class FakeProvider implements SubscriptionProvider {
   }
   verifyCheckout(_result: CheckoutResult): Promise<CheckoutVerification> {
     return Promise.reject(unsupported(this.name, 'checkout'));
+  }
+  createPayment(_input: CreatePaymentInput): Promise<Payment> {
+    return Promise.reject(unsupported(this.name, 'one-time payments'));
+  }
+  getPayment(_paymentId: string): Promise<Payment> {
+    return Promise.reject(unsupported(this.name, 'fetching a payment'));
+  }
+  verifyPayment(_result: CheckoutResult): Promise<PaymentVerification> {
+    return Promise.reject(unsupported(this.name, 'verifying a payment'));
+  }
+  refundPayment(_input: RefundPaymentInput): Promise<Refund> {
+    return Promise.reject(unsupported(this.name, 'refunding a payment'));
   }
   parseWebhook(_request: WebhookRequest): SubscriptionEvent[] {
     throw unsupported(this.name, 'webhooks');

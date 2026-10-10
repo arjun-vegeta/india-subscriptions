@@ -105,7 +105,7 @@ describe('every environment variable reaches the adapter config', () => {
     expect(calls[0]?.url).toBe(`https://razorpay.proxy.example${RazorpayEndpoint.plans}`);
     expect(calls[0]?.headers[HeaderName.Authorization]).toBe(basicAuth(RZP.id, RZP.secret));
     expect(calls[1]?.json).toMatchObject({ total_count: 60 });
-    const [event] = service.client.webhooks.parse(Provider.Razorpay, razorpayWebhookRequest(fixtureText(RAZORPAY_WEBHOOK_TEST, 'WEBHOOK_HALTED'), RZP.hook));
+    const [event] = await service.client.webhooks.parse(Provider.Razorpay, razorpayWebhookRequest(fixtureText(RAZORPAY_WEBHOOK_TEST, 'WEBHOOK_HALTED'), RZP.hook));
     expect(event?.type).toBe(EventType.SubscriptionHalted);
 
     // Defaults: the public host, ten years, and no webhook secret means webhooks are refused with CONFIG.
@@ -115,7 +115,7 @@ describe('every environment variable reaches the adapter config', () => {
     await minimal.service.client.create(Provider.Razorpay, { plan: { name: 'Pro', amount: 49900, interval: { unit: IntervalUnit.Month, count: 1 } }, customer: CUSTOMER });
     expect(minimal.calls[0]?.url).toBe(`${RAZORPAY_BASE_URL}${RazorpayEndpoint.plans}`);
     expect(minimal.calls[1]?.json).toMatchObject({ total_count: RAZORPAY_DEFAULT_DURATION_YEARS * 12 });
-    expect(() => minimal.service.client.webhooks.parse(Provider.Razorpay, razorpayWebhookRequest('{}', RZP.hook))).toThrowError(expect.objectContaining({ code: ErrorCode.Config }));
+    await expect(minimal.service.client.webhooks.parse(Provider.Razorpay, razorpayWebhookRequest('{}', RZP.hook))).rejects.toMatchObject({ code: ErrorCode.Config });
     expect(minimal.service.config.warnings.join('\n')).toContain(EnvVar.RazorpayWebhookSecret);
   });
 
@@ -126,8 +126,8 @@ describe('every environment variable reaches the adapter config', () => {
     expect(calls[0]?.url).toBe(`https://cashfree.proxy.example/pg${CashfreePath.plan('plan_1')}`);
     expect(calls[0]?.headers).toMatchObject({ [CashfreeHeader.ClientId]: CF.id, [CashfreeHeader.ClientSecret]: CF.secret, [CashfreeHeader.ApiVersion]: '2025-01-01' });
     const body = fixtureText(CASHFREE_WEBHOOK_TEST, 'STATUS_CHANGED_2023');
-    expect(service.client.webhooks.parse(Provider.Cashfree, cashfreeWebhookRequest(body, CF.hook))).toHaveLength(1);
-    expect(() => service.client.webhooks.parse(Provider.Cashfree, cashfreeWebhookRequest(body, CF.secret))).toThrowError(expect.objectContaining({ code: ErrorCode.SignatureInvalid }));
+    expect(await service.client.webhooks.parse(Provider.Cashfree, cashfreeWebhookRequest(body, CF.hook))).toHaveLength(1);
+    await expect(service.client.webhooks.parse(Provider.Cashfree, cashfreeWebhookRequest(body, CF.secret))).rejects.toMatchObject({ code: ErrorCode.SignatureInvalid });
 
     for (const [environment, host] of [[Environment.Test, CASHFREE_BASE_URLS[Environment.Test]], [Environment.Live, CASHFREE_BASE_URLS[Environment.Live]]] as const) {
       const minimal = await build(
@@ -138,7 +138,7 @@ describe('every environment variable reaches the adapter config', () => {
       expect(minimal.calls[0]?.url).toBe(`${host}${CashfreePath.plan('plan_1')}`);
       expect(minimal.calls[0]?.headers[CashfreeHeader.ApiVersion]).toBe(CASHFREE_API_VERSION);
       // Without CASHFREE_WEBHOOK_SECRET webhooks verify with the client secret.
-      expect(minimal.service.client.webhooks.parse(Provider.Cashfree, cashfreeWebhookRequest(body, CF.secret))).toHaveLength(1);
+      expect(await minimal.service.client.webhooks.parse(Provider.Cashfree, cashfreeWebhookRequest(body, CF.secret))).toHaveLength(1);
     }
   });
 
@@ -169,7 +169,7 @@ describe('every environment variable reaches the adapter config', () => {
 
     // PAYU_ACCEPT_UNSIGNED_WEBHOOKS=true: the unsigned eNACH cancellation is a cancellation.
     const unsigned = { rawBody: JSON.stringify({ statusCode: 1, notificationType: PAYU_ENACH_CANCELLATION_NOTIFICATION, status: 'CANCEL_SUCCESS', authPayuid: '26108200310' }), headers: {} };
-    expect(service.client.webhooks.parse(Provider.PayU, unsigned)[0]?.type).toBe(EventType.SubscriptionCancelled);
+    expect((await service.client.webhooks.parse(Provider.PayU, unsigned))[0]?.type).toBe(EventType.SubscriptionCancelled);
 
     // Defaults for a minimal PayU env: the test hosts of PAYU_ENVIRONMENT and the six-pipe layout; unsigned webhooks stay `unknown`.
     const minimal = await build({ [EnvVar.ApiKey]: API_KEY, [EnvVar.PayuKey]: PAYU.key, [EnvVar.PayuSalt]: PAYU.salt, [EnvVar.PayuEnvironment]: Environment.Test, [EnvVar.PayuSuccessUrl]: PAYU.success }, () => ({ json: {} }));
@@ -178,7 +178,7 @@ describe('every environment variable reaches the adapter config', () => {
     expect(mf.url).toBe(PAYU_PAYMENT_URLS[Environment.Test]);
     expect(mf.fields.furl).toBe(PAYU.success); // failureUrl falls back to successUrl
     expect(mf.fields.hash).toBe(sha512Hex(`${mf.fields.key}|${mf.fields.txnid}|${mf.fields.amount}|${mf.fields.productinfo}|${mf.fields.firstname}|${mf.fields.email}|||||||||||${mf.fields.si_details}|${PAYU.salt}`));
-    expect(minimal.service.client.webhooks.parse(Provider.PayU, unsigned)[0]?.type).toBe(EventType.Unknown);
+    expect((await minimal.service.client.webhooks.parse(Provider.PayU, unsigned))[0]?.type).toBe(EventType.Unknown);
     expect(PAYU_API_URLS[Environment.Test]).toContain('form=2');
   });
 });

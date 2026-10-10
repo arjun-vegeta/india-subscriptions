@@ -249,7 +249,10 @@ export type CashfreeRequestMethod =
   | typeof CashfreeMethod.Enach
   | typeof CashfreeMethod.Pnach;
 
-export const PAYMENT_METHOD_TO_REQUEST_METHOD: Record<PaymentMethod, CashfreeRequestMethod> = {
+/** The payment methods a Cashfree subscription can be authorised with; net banking and wallets are one-time payment methods. */
+export type CashfreeMandateMethod = Exclude<PaymentMethod, typeof PaymentMethod.NetBanking | typeof PaymentMethod.Wallet>;
+
+export const PAYMENT_METHOD_TO_REQUEST_METHOD: Record<CashfreeMandateMethod, CashfreeRequestMethod> = {
   [PaymentMethod.Upi]: CashfreeMethod.Upi,
   [PaymentMethod.Card]: CashfreeMethod.Card,
   [PaymentMethod.ENach]: CashfreeMethod.Enach,

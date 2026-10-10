@@ -11,6 +11,7 @@ import {
   HttpMethod,
   PaymentMethod,
   Provider,
+  ProviderKind,
   SchedulingMode,
   SubscriptionStatus,
   TERMINAL_SUBSCRIPTION_STATUSES,
@@ -191,6 +192,7 @@ export class PhonePeProvider extends BaseProvider {
 
   readonly capabilities: Capabilities = {
     provider: Provider.PhonePe,
+    kind: ProviderKind.Gateway,
     scheduling: [SchedulingMode.Merchant],
     gatewayPlans: false,
     trial: true,
@@ -198,6 +200,7 @@ export class PhonePeProvider extends BaseProvider {
     quantity: false,
     pause: false,
     resume: false,
+    cancel: true,
     cancelAtPeriodEnd: false,
     changePlan: false,
     merchantCharges: true,
@@ -207,6 +210,8 @@ export class PhonePeProvider extends BaseProvider {
     signedWebhooks: true,
     idempotencyKeys: false,
     paymentMethods: [PaymentMethod.Upi],
+    oneTimePayments: false,
+    oneTimePaymentMethods: [],
   };
 
   // Real private fields: invisible to JSON.stringify, console.log and spreads, so the secrets cannot leak.

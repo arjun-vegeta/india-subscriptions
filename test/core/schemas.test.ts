@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { CheckoutKind, Currency, Environment, IntervalUnit, PaymentMethod, SchedulingMode } from '../../src/constants.js';
+import { CheckoutKind, Currency, Environment, IntervalUnit, PaymentMethod, ProductKind, SchedulingMode } from '../../src/constants.js';
 import * as schemas from '../../src/schemas.js';
 import {
   CheckoutInstructionSchema,
@@ -313,6 +313,19 @@ describe('CheckoutInstructionSchema', () => {
     [CheckoutKind.FormPost]: { kind: CheckoutKind.FormPost, url: 'https://secure.example.com/_payment', fields: { key: 'k', hash: 'h' } },
     [CheckoutKind.RazorpayCheckout]: { kind: CheckoutKind.RazorpayCheckout, keyId: 'rzp_test_1', subscriptionId: 'sub_1' },
     [CheckoutKind.CashfreeCheckout]: { kind: CheckoutKind.CashfreeCheckout, sessionId: 'session_1', environment: Environment.Test },
+    [CheckoutKind.AppleStoreKit]: {
+      kind: CheckoutKind.AppleStoreKit,
+      productId: 'com.example.pro.monthly',
+      appAccountToken: '7e3f4a1c-9d2b-4c6e-8f10-3a5b7c9d1e2f',
+    },
+    [CheckoutKind.GooglePlayBilling]: {
+      kind: CheckoutKind.GooglePlayBilling,
+      productKind: ProductKind.Subscription,
+      productId: 'pro_monthly',
+      basePlanId: 'monthly',
+      obfuscatedAccountId: 'acct_1',
+      userChoiceBilling: false,
+    },
   };
 
   it.each(Object.entries(examples))('accepts %s', (_kind, value) => {

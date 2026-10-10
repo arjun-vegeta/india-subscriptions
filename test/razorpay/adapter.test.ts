@@ -9,6 +9,7 @@ import {
   RefundStatus,
   SchedulingMode,
   SubscriptionStatus,
+  ProviderKind,
 } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
 import type { ProviderOptions } from '../../src/provider.js';
@@ -719,6 +720,7 @@ describe('capabilities', () => {
     const { provider } = setup([]);
     expect(provider.capabilities).toEqual({
       provider: 'razorpay',
+      kind: ProviderKind.Gateway,
       scheduling: ['gateway'],
       gatewayPlans: true,
       trial: true,
@@ -726,6 +728,7 @@ describe('capabilities', () => {
       quantity: true,
       pause: true,
       resume: true,
+      cancel: true,
       cancelAtPeriodEnd: true,
       changePlan: true,
       merchantCharges: false,
@@ -735,6 +738,8 @@ describe('capabilities', () => {
       signedWebhooks: true,
       idempotencyKeys: false,
       paymentMethods: [PaymentMethod.Card, PaymentMethod.Upi, PaymentMethod.ENach],
+      oneTimePayments: false,
+      oneTimePaymentMethods: [],
     });
   });
 });

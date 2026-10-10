@@ -8,6 +8,7 @@ import {
   HttpMethod,
   PaymentMethod,
   Provider,
+  ProviderKind,
   SchedulingMode,
   ContentType,
 } from '../../constants.js';
@@ -144,6 +145,7 @@ export class RazorpayProvider extends BaseProvider {
 
   readonly capabilities: Capabilities = {
     provider: Provider.Razorpay,
+    kind: ProviderKind.Gateway,
     scheduling: [SchedulingMode.Gateway],
     gatewayPlans: true,
     trial: true,
@@ -151,6 +153,7 @@ export class RazorpayProvider extends BaseProvider {
     quantity: true,
     pause: true,
     resume: true,
+    cancel: true,
     cancelAtPeriodEnd: true,
     changePlan: true,
     merchantCharges: false,
@@ -161,6 +164,8 @@ export class RazorpayProvider extends BaseProvider {
     idempotencyKeys: false,
     // "Razorpay Subscriptions supports Cards, UPI Autopay and Emandate."
     paymentMethods: [PaymentMethod.Card, PaymentMethod.Upi, PaymentMethod.ENach],
+    oneTimePayments: false,
+    oneTimePaymentMethods: [],
   };
 
   // ES private fields: invisible to JSON.stringify, console.log and spreads, so the secrets cannot leak.

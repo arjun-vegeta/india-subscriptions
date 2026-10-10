@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { ErrorCode, HttpMethod, Provider, SchedulingMode, PaymentMethod } from '../../src/constants.js';
+import { ErrorCode, HttpMethod, Provider, ProviderKind, SchedulingMode, PaymentMethod } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
 import type { HttpRequest, HttpResponse } from '../../src/http.js';
 import { BaseProvider, type GatewayErrorInfo, type ProviderOptions } from '../../src/provider.js';
@@ -12,6 +12,7 @@ const SECRET_HEADER = 'Basic c2VjcmV0LWtleS1zZWNyZXQ=';
 
 const capabilities: Capabilities = {
   provider: Provider.Razorpay,
+  kind: ProviderKind.Gateway,
   scheduling: [SchedulingMode.Gateway],
   gatewayPlans: true,
   trial: true,
@@ -19,6 +20,7 @@ const capabilities: Capabilities = {
   quantity: true,
   pause: false,
   resume: false,
+  cancel: true,
   cancelAtPeriodEnd: false,
   changePlan: false,
   merchantCharges: false,
@@ -28,6 +30,8 @@ const capabilities: Capabilities = {
   signedWebhooks: true,
   idempotencyKeys: true,
   paymentMethods: [PaymentMethod.Upi],
+  oneTimePayments: false,
+  oneTimePaymentMethods: [],
 };
 
 const thingSchema = z.object({ id: z.string(), amount: z.number().int() });
@@ -108,6 +112,14 @@ describe('BaseProvider: unsupported optional operations', () => {
     ],
     ['createCharge', () => provider.createCharge({ subscriptionId: 'sub_1', chargeId: 'c1', amount: 100 }), /merchant-raised charges/],
     ['refundCharge', () => provider.refundCharge({ chargeId: 'pay_1', refundId: 'r1' }), /refunds/],
+    [
+      'createPayment',
+      () => provider.createPayment({ amount: 49900, customer: { email: 'asha@example.com' } }),
+      /one-time payments/,
+    ],
+    ['getPayment', () => provider.getPayment('pay_1'), /fetching a payment/],
+    ['verifyPayment', () => provider.verifyPayment({ razorpay_payment_id: 'pay_1' }), /verifying a payment/],
+    ['refundPayment', () => provider.refundPayment({ paymentId: 'pay_1', refundId: 'r1' }), /refunding a payment/],
   ];
 
   it.each(operations)('%s rejects with UNSUPPORTED naming the provider', async (_name, call, message) => {

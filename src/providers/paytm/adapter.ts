@@ -12,6 +12,7 @@ import {
   HttpMethod,
   PaymentMethod,
   Provider,
+  ProviderKind,
   RefundStatus,
   SchedulingMode,
   SubscriptionStatus,
@@ -294,6 +295,7 @@ export class PaytmProvider extends BaseProvider {
 
   readonly capabilities: Capabilities = {
     provider: Provider.Paytm,
+    kind: ProviderKind.Gateway,
     scheduling: [SchedulingMode.Merchant, SchedulingMode.Gateway],
     gatewayPlans: false,
     trial: true,
@@ -301,6 +303,7 @@ export class PaytmProvider extends BaseProvider {
     quantity: false,
     pause: true,
     resume: true,
+    cancel: true,
     cancelAtPeriodEnd: false,
     changePlan: false,
     merchantCharges: true,
@@ -310,6 +313,8 @@ export class PaytmProvider extends BaseProvider {
     signedWebhooks: true,
     idempotencyKeys: false,
     paymentMethods: [...PAYTM_PAYMENT_METHODS],
+    oneTimePayments: false,
+    oneTimePaymentMethods: [],
   };
 
   // Real private fields: invisible to JSON.stringify, console.log and spreads, so the merchant key cannot leak.

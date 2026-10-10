@@ -150,6 +150,9 @@ export const PAYTM_MODES_FOR_METHOD: Record<PaymentMethod, readonly PaytmPayment
   [PaymentMethod.ENach]: [PaytmPaymentModeName.BankMandate],
   /** Paper mandates are a separate form-download/upload integration this adapter does not implement. */
   [PaymentMethod.PhysicalNach]: [],
+  /** Net banking and wallets are one-time payment methods; a subscription request for them is refused before this table is read. */
+  [PaymentMethod.NetBanking]: [],
+  [PaymentMethod.Wallet]: [],
 };
 
 /** The payment methods this adapter can authorise a mandate with. Paytm Wallet (`PPI`) has no unified value. [§11] */

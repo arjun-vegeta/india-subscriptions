@@ -13,8 +13,56 @@ export const Provider = {
   PayU: 'payu',
   PhonePe: 'phonepe',
   Paytm: 'paytm',
+  /** Apple App Store: StoreKit 2 on the device, the App Store Server API on the server. */
+  AppStore: 'app_store',
+  /** Google Play: Play Billing on the device, the Google Play Developer API on the server. */
+  GooglePlay: 'google_play',
 } as const;
 export type Provider = (typeof Provider)[keyof typeof Provider];
+
+/** What kind of provider an adapter is. */
+export const ProviderKind = {
+  /** A payment gateway: the merchant creates the payment or mandate on the server and the customer authorises it. */
+  Gateway: 'gateway',
+  /** An app store: the product lives in the store and the purchase starts on the device. */
+  Store: 'store',
+} as const;
+export type ProviderKind = (typeof ProviderKind)[keyof typeof ProviderKind];
+
+/** The platform a customer buys on. */
+export const Platform = {
+  Ios: 'ios',
+  Android: 'android',
+  Web: 'web',
+} as const;
+export type Platform = (typeof Platform)[keyof typeof Platform];
+
+/** Where purchases on a platform may be taken. */
+export const ChannelPolicy = {
+  /** The platform's app store only. */
+  Store: 'store',
+  /** The app store, with the store's own choice screen offering an alternative payment gateway (Google Play user choice billing). */
+  UserChoice: 'user_choice',
+  /** Payment gateways only. */
+  Gateways: 'gateways',
+} as const;
+export type ChannelPolicy = (typeof ChannelPolicy)[keyof typeof ChannelPolicy];
+
+/** The channel a purchase went through. */
+export const SalesChannel = {
+  Store: 'store',
+  Gateway: 'gateway',
+} as const;
+export type SalesChannel = (typeof SalesChannel)[keyof typeof SalesChannel];
+
+/** What a product is. */
+export const ProductKind = {
+  /** Billed again every interval. */
+  Subscription: 'subscription',
+  /** Paid once. */
+  OneTime: 'one_time',
+} as const;
+export type ProductKind = (typeof ProductKind)[keyof typeof ProductKind];
 
 export const Currency = {
   INR: 'INR',
@@ -114,8 +162,26 @@ export const PaymentMethod = {
   ENach: 'enach',
   /** Paper NACH mandate. */
   PhysicalNach: 'physical_nach',
+  /** Net banking (one-time payments only). */
+  NetBanking: 'netbanking',
+  /** A wallet (one-time payments only). */
+  Wallet: 'wallet',
 } as const;
 export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
+
+/** Normalised status of a one-time payment. Each gateway's own status is preserved verbatim in `Payment.providerStatus`. */
+export const PaymentStatus = {
+  /** Created, the customer has not paid yet. */
+  Created: 'created',
+  /** The customer paid or approved; the final result is not known yet. */
+  Pending: 'pending',
+  Succeeded: 'succeeded',
+  Failed: 'failed',
+  Cancelled: 'cancelled',
+  Refunded: 'refunded',
+  PartiallyRefunded: 'partially_refunded',
+} as const;
+export type PaymentStatus = (typeof PaymentStatus)[keyof typeof PaymentStatus];
 
 export const CancelMode = {
   /** Stop now; no further charges. */
@@ -141,6 +207,10 @@ export const CheckoutKind = {
   RazorpayCheckout: 'razorpay_checkout',
   /** Call Cashfree.js `subscriptionsCheckout` with a session id. */
   CashfreeCheckout: 'cashfree_checkout',
+  /** Start a StoreKit purchase of a product on the device, with an app account token. */
+  AppleStoreKit: 'apple_storekit',
+  /** Start a Google Play Billing flow for a product on the device, with an obfuscated account id. */
+  GooglePlayBilling: 'google_play_billing',
 } as const;
 export type CheckoutKind = (typeof CheckoutKind)[keyof typeof CheckoutKind];
 
@@ -160,6 +230,8 @@ export const EventType = {
   SubscriptionCancelled: 'subscription.cancelled',
   SubscriptionCompleted: 'subscription.completed',
   SubscriptionExpired: 'subscription.expired',
+  PaymentSucceeded: 'payment.succeeded',
+  PaymentFailed: 'payment.failed',
   RefundSucceeded: 'refund.succeeded',
   RefundFailed: 'refund.failed',
   /** A verified event this library does not normalise; inspect `raw`. */
@@ -190,6 +262,8 @@ export const ErrorCode = {
   Timeout: 'TIMEOUT',
   OutcomeUnknown: 'OUTCOME_UNKNOWN',
   SignatureInvalid: 'SIGNATURE_INVALID',
+  /** No configured gateway can take this purchase. */
+  NoRoute: 'NO_ROUTE',
   /** A failure inside this library or its storage, not at a gateway. */
   Internal: 'INTERNAL_ERROR',
 } as const;

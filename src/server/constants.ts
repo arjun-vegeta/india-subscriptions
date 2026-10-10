@@ -171,6 +171,7 @@ export type ServerErrorCode = (typeof ServerErrorCode)[keyof typeof ServerErrorC
 export const ERROR_HTTP_STATUS: Record<ErrorCode, HttpStatus> = {
   [ErrorCode.Validation]: HttpStatus.BadRequest,
   [ErrorCode.SignatureInvalid]: HttpStatus.Unauthorized,
+  [ErrorCode.NoRoute]: HttpStatus.Unprocessable,
   [ErrorCode.NotFound]: HttpStatus.NotFound,
   [ErrorCode.Conflict]: HttpStatus.Conflict,
   [ErrorCode.Unsupported]: HttpStatus.Unprocessable,

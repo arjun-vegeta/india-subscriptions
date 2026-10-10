@@ -30,7 +30,13 @@ export {
 } from './errors.js';
 
 // Write your own gateway adapter.
-export { BaseProvider, type GatewayErrorInfo, type ProviderOptions, type SubscriptionProvider } from './provider.js';
+export {
+  BaseProvider,
+  type ExternalTransactionReporter,
+  type GatewayErrorInfo,
+  type ProviderOptions,
+  type SubscriptionProvider,
+} from './provider.js';
 export { HttpClient, basicAuth, codeForStatus, formEncode, withQuery } from './http.js';
 export type { FetchLike, HttpOptions, HttpRequest, HttpResponse } from './http.js';
 export { assertSignature, getHeader, hash, hmac, safeEqual, sha256Hmac, sha512 } from './crypto.js';

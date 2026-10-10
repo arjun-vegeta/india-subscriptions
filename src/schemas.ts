@@ -6,12 +6,18 @@ import {
   ChargeStatus,
   CheckoutKind,
   Currency,
+  ChannelPolicy,
   Environment,
   EventType,
   IntervalUnit,
   PaymentMethod,
+  PaymentStatus,
+  Platform,
+  ProductKind,
   Provider,
+  ProviderKind,
   RefundStatus,
+  SalesChannel,
   SchedulingMode,
   SubscriptionStatus,
 } from './constants.js';
@@ -35,7 +41,29 @@ import {
 // Primitives
 // ---------------------------------------------------------------------------
 
-export const ProviderSchema = z.enum(Provider).describe('A supported payment gateway.');
+export const ProviderSchema = z.enum(Provider).describe('A supported provider: a payment gateway or an app store.');
+export const ProviderKindSchema = z
+  .enum(ProviderKind)
+  .describe('`gateway` is a payment gateway, `store` is an app store (Apple App Store, Google Play).');
+export const PlatformSchema = z.enum(Platform).describe('The platform a customer buys on: `ios`, `android` or `web`.');
+export const ChannelPolicySchema = z
+  .enum(ChannelPolicy)
+  .describe(
+    'Where purchases on a platform may be taken: `store` is the platform\'s app store only, `user_choice` is the app store ' +
+      'with its own choice screen offering a payment gateway, `gateways` is payment gateways only.',
+  );
+export const SalesChannelSchema = z
+  .enum(SalesChannel)
+  .describe('The channel a purchase went through: `store` (an app store) or `gateway` (a payment gateway).');
+export const ProductKindSchema = z
+  .enum(ProductKind)
+  .describe('`subscription` is billed again every interval, `one_time` is paid once.');
+export const PaymentStatusSchema = z
+  .enum(PaymentStatus)
+  .describe(
+    'Normalised status of a one-time payment. The gateway\'s own status is preserved verbatim in `providerStatus`. ' +
+      '`succeeded`, `failed`, `cancelled`, `refunded` and `partially_refunded` follow a payment that was created.',
+  );
 export const CurrencySchema = z.enum(Currency).describe('ISO 4217 currency code. Only INR is supported.');
 export const SubscriptionStatusSchema = z
   .enum(SubscriptionStatus)
@@ -55,7 +83,7 @@ export const PaymentMethodSchema = z
   .enum(PaymentMethod)
   .describe(
     '`upi` is a UPI Autopay mandate, `card` a card standing instruction, `enach` an eNACH e-mandate on a bank ' +
-      'account, `physical_nach` a paper NACH mandate.',
+      'account, `physical_nach` a paper NACH mandate. `netbanking` and `wallet` apply to one-time payments only.',
   );
 export const SchedulingModeSchema = z
   .enum(SchedulingMode)
@@ -121,9 +149,32 @@ export const CustomerSchema = z
       .regex(/^\+?[0-9]{10,15}$/)
       .optional()
       .describe('Mobile number; 10 digits or E.164. Adapters format it for their gateway.'),
+    state: z
+      .string()
+      .min(2)
+      .max(60)
+      .optional()
+      .describe(
+        'The customer\'s state or union territory in India (for example "Karnataka"). Needed when a purchase made through ' +
+          'Google Play user choice billing is reported to Google.',
+      ),
   })
   .describe('A customer: identity and contact details.');
 export type Customer = z.infer<typeof CustomerSchema>;
+
+export const StoreProductSchema = z
+  .object({
+    productId: z.string().min(1).describe('The product id in App Store Connect or Play Console.'),
+    basePlanId: z.string().min(1).optional().describe('Google Play subscriptions: the base plan id.'),
+    offerId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Google Play offer id, or the App Store promotional offer id.'),
+    consumable: z.boolean().optional().describe('One-time products: true when the product can be bought again.'),
+  })
+  .describe('A product as the app store knows it. Only app stores read it; gateways ignore it.');
+export type StoreProduct = z.infer<typeof StoreProductSchema>;
 
 // ---------------------------------------------------------------------------
 // Plans
@@ -207,7 +258,9 @@ export const RazorpayCheckoutSchema = z
   .object({
     kind: z.literal(CheckoutKind.RazorpayCheckout).describe('Discriminator: open Razorpay Standard Checkout.'),
     keyId: z.string().describe('The Razorpay key id to open Checkout with.'),
-    subscriptionId: z.string().describe('The Razorpay subscription id to authorise.'),
+    subscriptionId: z.string().optional().describe('The Razorpay subscription id to authorise (subscriptions).'),
+    orderId: z.string().optional().describe('The Razorpay order id to pay (one-time payments).'),
+    amount: PaiseSchema.optional().describe('The order amount in paise (one-time payments).'),
     hostedUrl: z.url().optional().describe('Razorpay-hosted authorisation page, usable instead of the JS checkout.'),
     callbackUrl: z
       .url()
@@ -215,15 +268,60 @@ export const RazorpayCheckoutSchema = z
       .describe('Where Razorpay Checkout redirects after authorisation (its `callback_url` option).'),
     prefill: CustomerSchema.optional().describe('Customer details to prefill in the checkout form.'),
   })
-  .describe('Authorise with Razorpay Standard Checkout.');
+  .refine((checkout) => (checkout.subscriptionId === undefined) !== (checkout.orderId === undefined), {
+    error: 'Razorpay checkout needs exactly one of subscriptionId or orderId',
+  })
+  .describe('Authorise or pay with Razorpay Standard Checkout. Carries exactly one of `subscriptionId` and `orderId`.');
 
 export const CashfreeCheckoutSchema = z
   .object({
     kind: z.literal(CheckoutKind.CashfreeCheckout).describe('Discriminator: call Cashfree.js `subscriptionsCheckout`.'),
-    sessionId: z.string().describe('The subscription session id to pass to Cashfree.js.'),
+    sessionId: z.string().describe('The session id to pass to Cashfree.js: the subscription session id or the payment session id.'),
     environment: EnvironmentSchema.describe('Which Cashfree environment to initialise Cashfree.js with.'),
+    productKind: ProductKindSchema.optional().describe(
+      'Absent or `subscription`: call Cashfree.js `subscriptionsCheckout`. `one_time`: call Cashfree.js `checkout` with the ' +
+        'same `sessionId` as the payment session id.',
+    ),
   })
-  .describe('Authorise with Cashfree.js `subscriptionsCheckout`.');
+  .describe('Authorise or pay with Cashfree.js: `subscriptionsCheckout` for a subscription, `checkout` for a one-time payment.');
+
+export const AppleStoreKitCheckoutSchema = z
+  .object({
+    kind: z.literal(CheckoutKind.AppleStoreKit).describe('Discriminator: start a StoreKit purchase on the device.'),
+    productId: z.string().describe('The App Store Connect product id to purchase.'),
+    appAccountToken: z
+      .uuid()
+      .describe('Pass to StoreKit\'s purchase option `appAccountToken`; it ties the purchase to this order.'),
+    promotionalOffer: z
+      .object({
+        offerId: z.string().describe('The promotional offer id.'),
+        keyId: z.string().describe('The id of the key that signed the offer.'),
+        nonce: z.uuid().describe('A one-time UUID for this signature.'),
+        timestamp: z.number().int().describe('When the signature was made, in milliseconds since the Unix epoch.'),
+        signature: z.string().describe('The signature, as StoreKit\'s promotional offer purchase option expects it.'),
+      })
+      .optional()
+      .describe('A signed promotional offer to apply to the purchase.'),
+  })
+  .describe('Purchase through StoreKit on an Apple device.');
+
+export const GooglePlayBillingCheckoutSchema = z
+  .object({
+    kind: z.literal(CheckoutKind.GooglePlayBilling).describe('Discriminator: start a Google Play Billing flow on the device.'),
+    productKind: ProductKindSchema.describe('Whether the product is a subscription or a one-time product.'),
+    productId: z.string().describe('The Play Console product id.'),
+    basePlanId: z.string().optional().describe('Subscriptions: the base plan id.'),
+    offerId: z.string().optional().describe('The offer id, where an offer applies.'),
+    obfuscatedAccountId: z
+      .string()
+      .min(1)
+      .max(64)
+      .describe('Pass to `BillingFlowParams.setObfuscatedAccountId`; it ties the purchase to this order.'),
+    userChoiceBilling: z
+      .boolean()
+      .describe('True: build the `BillingClient` with `enableUserChoiceBilling`, so Google shows its choice screen.'),
+  })
+  .describe('Purchase through Google Play Billing on an Android device.');
 
 export const CheckoutInstructionSchema = z
   .discriminatedUnion('kind', [
@@ -231,8 +329,10 @@ export const CheckoutInstructionSchema = z
     FormPostCheckoutSchema,
     RazorpayCheckoutSchema,
     CashfreeCheckoutSchema,
+    AppleStoreKitCheckoutSchema,
+    GooglePlayBillingCheckoutSchema,
   ])
-  .describe('What the customer\'s browser or app must do to authorise the mandate; branch on `kind`.');
+  .describe('What the customer\'s browser or app must do to authorise the mandate or pay; branch on `kind`.');
 export type CheckoutInstruction = z.infer<typeof CheckoutInstructionSchema>;
 
 // ---------------------------------------------------------------------------
@@ -277,6 +377,9 @@ export const CreateSubscriptionInputSchema = z
       'One-off amount collected together with the authorisation (setup fee or first payment), in paise.',
     ),
     upfrontLabel: z.string().min(1).max(100).optional().describe('Label shown to the customer for the upfront amount.'),
+    storeProduct: StoreProductSchema.optional().describe(
+      'The product in the app store. App stores require it; gateways ignore it.',
+    ),
     paymentMethods: z
       .array(PaymentMethodSchema)
       .min(1)
@@ -522,7 +625,11 @@ export const RefundSchema = z
     provider: ProviderSchema.describe('The gateway that holds the refund.'),
     id: z.string().describe('The gateway\'s refund id.'),
     reference: z.string().optional().describe('Your own refund id, where one was supplied.'),
-    chargeId: z.string().describe('The charge that was refunded.'),
+    chargeId: z.string().describe('The charge that was refunded. For a refund of a one-time payment, the payment\'s id.'),
+    paymentId: z
+      .string()
+      .optional()
+      .describe('The one-time payment that was refunded. A refund of a one-time payment sets both `chargeId` and `paymentId` to the payment\'s id.'),
     subscriptionId: z.string().optional().describe('The subscription the charge belongs to.'),
     status: RefundStatusSchema.describe('Normalised refund status.'),
     providerStatus: z.string().optional().describe('The gateway\'s own status, verbatim.'),
@@ -575,6 +682,161 @@ export const CheckoutVerificationSchema = z
   .describe('The outcome of verifying a checkout result.');
 export type CheckoutVerification = z.infer<typeof CheckoutVerificationSchema>;
 
+// ---------------------------------------------------------------------------
+// One-time payments
+// ---------------------------------------------------------------------------
+
+export const CreatePaymentInputSchema = z
+  .object({
+    reference: z
+      .string()
+      .min(1)
+      .max(60)
+      .optional()
+      .describe('Your own id for this payment. Sent to the gateway where it accepts one, and echoed back on `Payment.reference`.'),
+    amount: PositivePaiseSchema.describe('Amount to collect, in paise.'),
+    description: z.string().min(1).max(250).optional().describe('What the payment is for.'),
+    customer: CustomerSchema.describe('The paying customer.'),
+    paymentMethods: z
+      .array(PaymentMethodSchema)
+      .min(1)
+      .optional()
+      .describe('Restrict the payment to these payment methods. Omit to allow all the gateway supports.'),
+    returnUrl: z.url().optional().describe('Where the gateway sends the customer after paying.'),
+    expiresAt: IsoDateTimeSchema.optional().describe('Deadline for the customer to pay.'),
+    metadata: MetadataSchema.optional().describe('Free-form key/value pairs stored with the payment.'),
+    idempotencyKey: z
+      .string()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe('Makes the create call safe to retry, where the gateway supports idempotency keys.'),
+    storeProduct: StoreProductSchema.optional().describe(
+      'The product in the app store. App stores require it; gateways ignore it.',
+    ),
+  })
+  .describe('Everything needed to create a one-time payment.');
+export type CreatePaymentInput = z.input<typeof CreatePaymentInputSchema>;
+export type ParsedCreatePaymentInput = z.output<typeof CreatePaymentInputSchema>;
+
+export const PaymentSchema = z
+  .object({
+    provider: ProviderSchema.describe('The provider that holds the payment.'),
+    id: z.string().describe('The identifier to pass back to this library for every later call.'),
+    reference: z.string().optional().describe('Your own reference, where one was supplied.'),
+    status: PaymentStatusSchema.describe('Normalised payment status.'),
+    providerStatus: z.string().describe('The provider\'s own status, verbatim.'),
+    amount: PaiseSchema.describe('Amount of the payment in paise.'),
+    currency: CurrencySchema.optional().describe('Currency of the payment.'),
+    refundedAmount: PaiseSchema.optional().describe('Amount refunded so far, in paise.'),
+    paymentMethod: PaymentMethodSchema.optional().describe('The payment method the customer paid with.'),
+    customer: CustomerSchema.optional().describe('The paying customer, where known.'),
+    createdAt: IsoDateTimeSchema.optional().describe('When the payment was created.'),
+    paidAt: IsoDateTimeSchema.optional().describe('When the payment succeeded.'),
+    failureCode: z.string().optional().describe('The provider\'s failure code, where the payment failed.'),
+    failureReason: z.string().optional().describe('Human-readable reason the payment failed.'),
+    checkout: CheckoutInstructionSchema.optional().describe(
+      'Present on freshly created payments: what the customer must do to pay.',
+    ),
+    metadata: MetadataSchema.optional().describe('Key/value pairs stored with the payment.'),
+    raw: rawField(RAW_RESPONSE),
+  })
+  .describe('A one-time payment.');
+export type Payment = z.infer<typeof PaymentSchema>;
+
+export const VerifyPaymentInputSchema = z
+  .object({
+    result: CheckoutResultSchema.describe('The data the provider handed back to the browser or device, untouched.'),
+    expectedPaymentId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'The payment id (or your reference) that your server stored when it created the payment. When given, a result that ' +
+          'verifies but belongs to a different payment is rejected, so a customer cannot replay one payment to unlock another.',
+      ),
+  })
+  .describe('What the HTTP service and the facade accept when verifying the result of a one-time payment.');
+export type VerifyPaymentInput = z.infer<typeof VerifyPaymentInputSchema>;
+
+export const PaymentVerificationSchema = z
+  .object({
+    provider: ProviderSchema.describe('The provider that issued the result.'),
+    paymentId: z.string().describe('The payment id to store and use for later calls.'),
+    reference: z.string().optional().describe('Your own reference for the payment, where known.'),
+    paid: z.boolean().describe('True when the payment succeeded.'),
+    status: PaymentStatusSchema.optional().describe('The payment status the result implies, where known.'),
+    payment: PaymentSchema.optional().describe('The payment, where the verification fetched or carries it.'),
+    raw: rawField('The verified provider data, untouched. Absent when there is none.'),
+  })
+  .describe('The outcome of verifying the result of a one-time payment.');
+export type PaymentVerification = z.infer<typeof PaymentVerificationSchema>;
+
+export const RefundPaymentInputSchema = z
+  .object({
+    paymentId: z.string().min(1).describe('The payment to refund.'),
+    refundId: z.string().min(1).max(40).describe('Your unique id for this refund.'),
+    amount: PositivePaiseSchema.optional().describe('Amount to refund in paise. Omit to refund the full payment.'),
+    reason: z.string().max(250).optional().describe('Why the payment is refunded.'),
+  })
+  .describe('A refund of a one-time payment.');
+export type RefundPaymentInput = z.input<typeof RefundPaymentInputSchema>;
+export type ParsedRefundPaymentInput = z.output<typeof RefundPaymentInputSchema>;
+
+// ---------------------------------------------------------------------------
+// Google Play external transactions (user choice billing)
+// ---------------------------------------------------------------------------
+
+export const ExternalTransactionReportSchema = z
+  .object({
+    externalTransactionId: z
+      .string()
+      .min(1)
+      .max(128)
+      .describe('Your unique id for this transaction.'),
+    externalTransactionToken: z
+      .string()
+      .optional()
+      .describe('The token from the device. Needed on the first transaction only.'),
+    initialExternalTransactionId: z
+      .string()
+      .optional()
+      .describe('Renewals: the `externalTransactionId` of the first transaction of the subscription.'),
+    productKind: ProductKindSchema.describe('Whether the transaction is a subscription charge or a one-time purchase.'),
+    amount: PaiseSchema.describe('Pre-tax amount in paise (0 for a free trial).'),
+    taxAmount: PaiseSchema.describe('Tax in paise.'),
+    transactionTime: IsoDateTimeSchema.describe('When the payment was authorised.'),
+    state: z
+      .string()
+      .min(2)
+      .describe('The customer\'s state, sent as `userTaxAddress.administrativeArea` with region code `IN`.'),
+  })
+  .refine(
+    (report) => (report.externalTransactionToken === undefined) !== (report.initialExternalTransactionId === undefined),
+    { error: 'A report needs exactly one of externalTransactionToken (first transaction) or initialExternalTransactionId (renewal)' },
+  )
+  .describe('A transaction made outside Google Play billing (user choice billing), reported to Google.');
+export type ExternalTransactionReport = z.input<typeof ExternalTransactionReportSchema>;
+
+export const ExternalTransactionRefundSchema = z
+  .object({
+    externalTransactionId: z.string().min(1).describe('The `externalTransactionId` of the transaction that was refunded.'),
+    refundTime: IsoDateTimeSchema.describe('When the refund was made.'),
+    amount: PaiseSchema.optional().describe('Pre-tax amount refunded, in paise. Omit for a full refund.'),
+    taxAmount: PaiseSchema.optional().describe('Tax refunded, in paise. Omit for a full refund.'),
+  })
+  .describe('A refund of an external transaction, reported to Google.');
+export type ExternalTransactionRefund = z.infer<typeof ExternalTransactionRefundSchema>;
+
+export const ExternalTransactionRecordSchema = z
+  .object({
+    externalTransactionId: z.string().describe('Your id for the transaction.'),
+    state: z.string().describe('The state Google holds the transaction in, verbatim.'),
+    raw: rawField(RAW_RESPONSE),
+  })
+  .describe('An external transaction as Google holds it.');
+export type ExternalTransactionRecord = z.infer<typeof ExternalTransactionRecordSchema>;
+
 export const WebhookRequestSchema = z
   .object({
     rawBody: z
@@ -600,6 +862,8 @@ export const SubscriptionEventSchema = z
     subscription: SubscriptionSchema.optional().describe('The subscription, where the event carries it.'),
     charge: ChargeSchema.optional().describe('The charge, where the event carries it.'),
     refund: RefundSchema.optional().describe('The refund, where the event carries it.'),
+    paymentId: z.string().optional().describe('The one-time payment the event is about.'),
+    payment: PaymentSchema.optional().describe('The one-time payment, where the event carries it.'),
     raw: rawField('The gateway\'s webhook payload, untouched. Absent when there is none.'),
   })
   .describe('A verified, normalised webhook event.');
@@ -611,7 +875,8 @@ export type SubscriptionEvent = z.infer<typeof SubscriptionEventSchema>;
 
 export const CapabilitiesSchema = z
   .object({
-    provider: ProviderSchema.describe('The gateway these capabilities describe.'),
+    provider: ProviderSchema.describe('The provider these capabilities describe.'),
+    kind: ProviderKindSchema.describe('`gateway` or `store`.'),
     scheduling: z
       .array(SchedulingModeSchema)
       .min(1)
@@ -624,6 +889,7 @@ export const CapabilitiesSchema = z
     quantity: z.boolean().describe('A subscription can bill several units of a plan.'),
     pause: z.boolean().describe('A subscription can be paused.'),
     resume: z.boolean().describe('A paused subscription can be resumed.'),
+    cancel: z.boolean().describe('A subscription can be cancelled from the server.'),
     cancelAtPeriodEnd: z.boolean().describe('A subscription can be cancelled at the end of the paid period.'),
     changePlan: z.boolean().describe('A subscription can move to another plan.'),
     merchantCharges: z.boolean().describe('The merchant can raise debits itself (`createCharge`).'),
@@ -651,6 +917,10 @@ export const CapabilitiesSchema = z
     signedWebhooks: z.boolean().describe('Webhooks carry a signature this library verifies.'),
     idempotencyKeys: z.boolean().describe('Create calls accept an idempotency key.'),
     paymentMethods: z.array(PaymentMethodSchema).describe('The payment methods mandates can be authorised with.'),
+    oneTimePayments: z.boolean().describe('One-time payments are supported (`createPayment`).'),
+    oneTimePaymentMethods: z
+      .array(PaymentMethodSchema)
+      .describe('The payment methods one-time payments can be taken with.'),
   })
   .describe('What a gateway adapter can do, so callers never have to guess.');
 export type Capabilities = z.infer<typeof CapabilitiesSchema>;

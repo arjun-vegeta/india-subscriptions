@@ -9,14 +9,18 @@ import type {
   CheckoutResult,
   CheckoutVerification,
   CreateChargeInput,
+  CreatePaymentInput,
   CreatePlanInput,
   CreateSubscriptionInput,
   ListChargesOptions,
   NotifyChargeInput,
   PauseSubscriptionOptions,
+  Payment,
+  PaymentVerification,
   Plan,
   Refund,
   RefundInput,
+  RefundPaymentInput,
   ResumeSubscriptionOptions,
   Subscription,
   SubscriptionEvent,
@@ -76,13 +80,51 @@ export class Subscriptions {
       this.provider(provider).refundCharge(input),
   };
 
+  /**
+   * One-time payments. `verify` mirrors `verifyCheckout`: always pass `expectedPaymentId` (the id or reference your server
+   * stored at creation), because the browser or device supplies the result.
+   */
+  readonly payments = {
+    create: async (provider: Provider, input: CreatePaymentInput): Promise<Payment> =>
+      this.provider(provider).createPayment(input),
+    get: async (provider: Provider, paymentId: string): Promise<Payment> => this.provider(provider).getPayment(paymentId),
+    verify: async (
+      provider: Provider,
+      result: CheckoutResult,
+      options: { expectedPaymentId?: string } = {},
+    ): Promise<PaymentVerification> => {
+      const adapter = this.provider(provider);
+      const verification = await adapter.verifyPayment(result);
+      const expected = options.expectedPaymentId;
+      if (expected !== undefined && expected !== verification.paymentId && expected !== verification.reference) {
+        // Some results carry no reference: read the verified payment once and compare ITS reference. A lookup that fails
+        // proves nothing, so it counts as no match (the result is refused, never accepted on a guess).
+        const fetched =
+          verification.reference === undefined
+            ? await adapter.getPayment(verification.paymentId).catch(() => undefined)
+            : undefined;
+        if (fetched?.reference !== expected) {
+          // The signature is genuine but it is for another payment: treat it exactly like a forged result.
+          throw new SubscriptionError(
+            ErrorCode.SignatureInvalid,
+            `${provider} payment result is for a different payment than expected`,
+            { provider },
+          );
+        }
+      }
+      return verification;
+    },
+    refund: async (provider: Provider, input: RefundPaymentInput): Promise<Refund> =>
+      this.provider(provider).refundPayment(input),
+  };
+
   readonly webhooks = {
     /** Verifies the signature and returns normalised events. Pure: nothing is stored. */
-    parse: (provider: Provider, request: WebhookRequest): SubscriptionEvent[] =>
+    parse: async (provider: Provider, request: WebhookRequest): Promise<SubscriptionEvent[]> =>
       this.provider(provider).parseWebhook(request),
     /** `parse`, then applies each event to the billing scheduler. Use this in your webhook route. */
     handle: async (provider: Provider, request: WebhookRequest): Promise<SubscriptionEvent[]> => {
-      const events = this.provider(provider).parseWebhook(request);
+      const events = await this.provider(provider).parseWebhook(request);
       const scheduler = this.schedulerFor(provider);
       if (scheduler) {
         for (const event of events) {

@@ -10,14 +10,21 @@ import type {
   CheckoutResult,
   CheckoutVerification,
   CreateChargeInput,
+  CreatePaymentInput,
   CreatePlanInput,
   CreateSubscriptionInput,
+  ExternalTransactionRecord,
+  ExternalTransactionRefund,
+  ExternalTransactionReport,
   ListChargesOptions,
   NotifyChargeInput,
   PauseSubscriptionOptions,
+  Payment,
+  PaymentVerification,
   Plan,
   Refund,
   RefundInput,
+  RefundPaymentInput,
   ResumeSubscriptionOptions,
   Subscription,
   SubscriptionEvent,
@@ -83,6 +90,23 @@ export interface ProviderOptions extends HttpOptions {
  *    and matches webhook events to the cycle by it. It is saved with the notification before any charge call. A retry
  *    sends a fresh notification and adopts the new one's `chargeId`. The same unknown-outcome rules apply to it: the
  *    id is re-sent, never replaced, until `getCharge` settles the attempt.
+ *
+ * ## One-time payments
+ *
+ * `createPayment` returns a `Payment` with `checkout`; `verifyPayment` verifies what came back to the browser or device;
+ * `getPayment` is the source of truth; webhook events about a payment are `payment.succeeded` / `payment.failed` with
+ * `paymentId` and `payment`. `refundPayment` returns a `Refund` whose `chargeId` and `paymentId` are both the payment's id.
+ * A provider that takes no one-time payments (`capabilities.oneTimePayments: false`) answers `UNSUPPORTED`, which is what
+ * `BaseProvider` does by default.
+ *
+ * ## App stores (`capabilities.kind: 'store'`)
+ *
+ * The product lives in the store and the purchase starts on the device. `createSubscription` / `createPayment` make no
+ * purchase: they validate `storeProduct`, mint the account token and return an object with `status: created`, `id` = that
+ * token and `checkout` (`apple_storekit` or `google_play_billing`). After the purchase the device result goes to
+ * `verifyCheckout` / `verifyPayment`, which return the store's real id as `subscriptionId` / `paymentId` and the token as
+ * `reference` (the same pattern PayU uses: the id only exists after authorisation). The caller passes the token as
+ * `expectedSubscriptionId` / `expectedPaymentId`, so a purchase made for one order cannot unlock another.
  */
 export interface SubscriptionProvider {
   readonly name: Provider;
@@ -107,6 +131,17 @@ export interface SubscriptionProvider {
   createCharge(input: CreateChargeInput): Promise<Charge>;
   refundCharge(input: RefundInput): Promise<Refund>;
 
+  /** Creates a one-time payment and returns it with `checkout` instructions for the customer. */
+  createPayment(input: CreatePaymentInput): Promise<Payment>;
+  /** The current state of a one-time payment, read from the provider: the source of truth. */
+  getPayment(paymentId: string): Promise<Payment>;
+  /**
+   * Verifies what the provider returned to the browser, return URL or device after the customer paid. Throws
+   * `SIGNATURE_INVALID` if it was tampered with.
+   */
+  verifyPayment(result: CheckoutResult): Promise<PaymentVerification>;
+  refundPayment(input: RefundPaymentInput): Promise<Refund>;
+
   /**
    * Verifies what the gateway returned to the browser / return URL after the
    * customer authorised. Throws `SIGNATURE_INVALID` if it was tampered with.
@@ -114,9 +149,19 @@ export interface SubscriptionProvider {
   verifyCheckout(result: CheckoutResult): Promise<CheckoutVerification>;
   /**
    * Verifies a webhook's signature and returns its normalised events.
-   * Throws `SIGNATURE_INVALID` when verification fails.
+   * Throws `SIGNATURE_INVALID` when verification fails. Most adapters answer synchronously; an adapter whose verification
+   * needs I/O (fetching a certificate or a public key) answers with a promise. Callers await the result either way.
    */
-  parseWebhook(request: WebhookRequest): SubscriptionEvent[];
+  parseWebhook(request: WebhookRequest): SubscriptionEvent[] | Promise<SubscriptionEvent[]>;
+}
+
+/**
+ * Implemented by the Google Play adapter: reports transactions made outside Google Play billing (user choice billing) to
+ * Google, as its external transactions API requires.
+ */
+export interface ExternalTransactionReporter {
+  reportExternalTransaction(input: ExternalTransactionReport): Promise<ExternalTransactionRecord>;
+  refundExternalTransaction(input: ExternalTransactionRefund): Promise<ExternalTransactionRecord>;
 }
 
 export interface GatewayErrorInfo {
@@ -222,6 +267,18 @@ export abstract class BaseProvider implements SubscriptionProvider {
   refundCharge(_input: RefundInput): Promise<Refund> {
     return Promise.reject(unsupported(this.name, 'refunds'));
   }
+  createPayment(_input: CreatePaymentInput): Promise<Payment> {
+    return Promise.reject(unsupported(this.name, 'one-time payments'));
+  }
+  getPayment(_paymentId: string): Promise<Payment> {
+    return Promise.reject(unsupported(this.name, 'fetching a payment'));
+  }
+  verifyPayment(_result: CheckoutResult): Promise<PaymentVerification> {
+    return Promise.reject(unsupported(this.name, 'verifying a payment'));
+  }
+  refundPayment(_input: RefundPaymentInput): Promise<Refund> {
+    return Promise.reject(unsupported(this.name, 'refunding a payment'));
+  }
   abstract verifyCheckout(result: CheckoutResult): Promise<CheckoutVerification>;
-  abstract parseWebhook(request: WebhookRequest): SubscriptionEvent[];
+  abstract parseWebhook(request: WebhookRequest): SubscriptionEvent[] | Promise<SubscriptionEvent[]>;
 }

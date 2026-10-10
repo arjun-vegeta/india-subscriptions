@@ -8,7 +8,9 @@ import {
   ErrorCode,
   HeaderName,
   HttpMethod,
+  PaymentMethod,
   Provider,
+  ProviderKind,
   SchedulingMode,
   SubscriptionStatus,
   type Environment,
@@ -183,6 +185,7 @@ export class CashfreeProvider extends BaseProvider {
    */
   readonly capabilities: Capabilities = {
     provider: Provider.Cashfree,
+    kind: ProviderKind.Gateway,
     scheduling: [SchedulingMode.Gateway, SchedulingMode.Merchant],
     gatewayPlans: true,
     trial: true,
@@ -190,6 +193,7 @@ export class CashfreeProvider extends BaseProvider {
     quantity: false,
     pause: true,
     resume: true,
+    cancel: true,
     cancelAtPeriodEnd: false,
     changePlan: true,
     merchantCharges: true,
@@ -201,6 +205,8 @@ export class CashfreeProvider extends BaseProvider {
     signedWebhooks: true,
     idempotencyKeys: true,
     paymentMethods: [...SUPPORTED_PAYMENT_METHODS],
+    oneTimePayments: false,
+    oneTimePaymentMethods: [],
   };
 
   // Real private fields: they stay out of JSON.stringify, console.log and util.inspect.
@@ -820,15 +826,23 @@ export class CashfreeProvider extends BaseProvider {
       return {
         authorization_amount: paiseToRupeeNumber(parsed.upfrontAmount),
         authorization_amount_refund: false,
-        payment_methods: (requested ?? UPFRONT_CAPABLE_METHODS).map((method) => PAYMENT_METHOD_TO_REQUEST_METHOD[method]),
+        payment_methods: (requested ?? UPFRONT_CAPABLE_METHODS).map((method) => this.requestMethodFor(method)),
       };
     }
     const zeroAmountOnly = requested !== undefined && requested.every((method) => ZERO_AUTHORIZATION_METHODS.includes(method));
     return {
       authorization_amount: paiseToRupeeNumber(zeroAmountOnly ? ZERO_AUTHORIZATION_PAISE : MIN_VERIFICATION_PAISE),
       authorization_amount_refund: !zeroAmountOnly,
-      payment_methods: requested?.map((method): CashfreeRequestMethod => PAYMENT_METHOD_TO_REQUEST_METHOD[method]),
+      payment_methods: requested?.map((method): CashfreeRequestMethod => this.requestMethodFor(method)),
     };
+  }
+
+  /** The method as Cashfree's subscription API names it; net banking and wallets exist for one-time payments only. */
+  private requestMethodFor(method: PaymentMethod): CashfreeRequestMethod {
+    if (method === PaymentMethod.NetBanking || method === PaymentMethod.Wallet) {
+      throw unsupported(this.name, `${method} on a subscription`, 'Cashfree subscriptions are authorised with upi, card or enach');
+    }
+    return PAYMENT_METHOD_TO_REQUEST_METHOD[method];
   }
 
   private rejectUnsupportedSubscriptionInput(parsed: ParsedCreateSubscriptionInput): void {

@@ -9,6 +9,7 @@ import {
   SchedulingMode,
   SubscriptionStatus,
   CancelMode,
+  ProviderKind,
 } from '../../src/constants.js';
 import { SubscriptionError } from '../../src/errors.js';
 import {
@@ -1087,6 +1088,7 @@ describe('config and capabilities', () => {
     expect(provider.name).toBe('paytm');
     expect(provider.capabilities).toEqual({
       provider: 'paytm',
+      kind: ProviderKind.Gateway,
       scheduling: [SchedulingMode.Merchant, SchedulingMode.Gateway],
       gatewayPlans: false,
       trial: true,
@@ -1094,6 +1096,7 @@ describe('config and capabilities', () => {
       quantity: false,
       pause: true,
       resume: true,
+      cancel: true,
       cancelAtPeriodEnd: false,
       changePlan: false,
       merchantCharges: true,
@@ -1103,6 +1106,8 @@ describe('config and capabilities', () => {
       signedWebhooks: true,
       idempotencyKeys: false,
       paymentMethods: [PaymentMethod.Upi, PaymentMethod.Card, PaymentMethod.ENach],
+      oneTimePayments: false,
+      oneTimePaymentMethods: [],
     });
   });
 });

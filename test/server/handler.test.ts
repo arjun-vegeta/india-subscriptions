@@ -12,6 +12,7 @@ import {
   HeaderName,
   HttpMethod,
   Provider,
+  ProviderKind,
   RefundStatus,
   SchedulingMode,
   SubscriptionStatus,
@@ -131,6 +132,7 @@ const EVENT: SubscriptionEvent = {
 };
 const CAPABILITIES: Capabilities = {
   provider: Provider.Razorpay,
+  kind: ProviderKind.Gateway,
   scheduling: [SchedulingMode.Gateway],
   gatewayPlans: true,
   trial: true,
@@ -138,6 +140,7 @@ const CAPABILITIES: Capabilities = {
   quantity: true,
   pause: true,
   resume: true,
+  cancel: true,
   cancelAtPeriodEnd: true,
   changePlan: true,
   merchantCharges: false,
@@ -147,6 +150,8 @@ const CAPABILITIES: Capabilities = {
   signedWebhooks: true,
   idempotencyKeys: true,
   paymentMethods: [],
+  oneTimePayments: false,
+  oneTimePaymentMethods: [],
 };
 
 interface Call {
@@ -806,6 +811,7 @@ describe('request validation', () => {
 const EXPECTED_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.Validation]: 400,
   [ErrorCode.SignatureInvalid]: 401,
+  [ErrorCode.NoRoute]: 422,
   [ErrorCode.NotFound]: 404,
   [ErrorCode.Conflict]: 409,
   [ErrorCode.Unsupported]: 422,

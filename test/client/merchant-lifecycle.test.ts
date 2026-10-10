@@ -441,18 +441,18 @@ describe('errors that must not reach the scheduler', () => {
     const created = await world.subs.create(PAYU, trialInput());
     world.gateway.authorize(created.id);
     const callsBefore = world.store.calls.length;
-    const events = world.subs.webhooks.parse(PAYU, world.gateway.webhook(EventType.SubscriptionAuthorized, created.id));
+    const events = await world.subs.webhooks.parse(PAYU, world.gateway.webhook(EventType.SubscriptionAuthorized, created.id));
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe(EventType.SubscriptionAuthorized);
     expect(world.store.calls.length).toBe(callsBefore);
     expect((await scheduleOf(world)).status).toBe(ScheduleStatus.PendingAuthorization);
   });
 
-  it('webhooks.parse with a forged signature throws SIGNATURE_INVALID synchronously', () => {
+  it('webhooks.parse with a forged signature rejects with SIGNATURE_INVALID', async () => {
     const world = makeWorld();
-    expect(() =>
+    await expect(
       world.subs.webhooks.parse(PAYU, world.gateway.webhook(EventType.SubscriptionAuthorized, 'x', { signature: 'forged' })),
-    ).toThrowError(expect.objectContaining({ code: ErrorCode.SignatureInvalid }));
+    ).rejects.toMatchObject({ code: ErrorCode.SignatureInvalid });
   });
 
   it('webhooks.handle for an event that matches no schedule is ignored', async () => {
