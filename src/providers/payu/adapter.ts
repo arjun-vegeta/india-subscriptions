@@ -8,6 +8,7 @@ import {
   HeaderName,
   HttpMethod,
   PaymentMethod,
+  PaymentStatus,
   Provider,
   ProviderKind,
   SchedulingMode,
@@ -23,9 +24,11 @@ import { BaseProvider, type GatewayErrorInfo, type ProviderOptions } from '../..
 import {
   CancelSubscriptionOptionsSchema,
   CreateChargeInputSchema,
+  CreatePaymentInputSchema,
   CreateSubscriptionInputSchema,
   NotifyChargeInputSchema,
   RefundInputSchema,
+  RefundPaymentInputSchema,
   UpdateSubscriptionInputSchema,
   WebhookRequestSchema,
   type CancelSubscriptionOptions,
@@ -35,12 +38,16 @@ import {
   type CheckoutResult,
   type CheckoutVerification,
   type CreateChargeInput,
+  type CreatePaymentInput,
   type CreatePlanInput,
   type CreateSubscriptionInput,
   type NotifyChargeInput,
+  type Payment,
+  type PaymentVerification,
   type Plan,
   type Refund,
   type RefundInput,
+  type RefundPaymentInput,
   type Subscription,
   type SubscriptionEvent,
   type UpdateSubscriptionInput,
@@ -48,6 +55,7 @@ import {
 } from '../../schemas.js';
 import { fromIstDateString, resolveFirstChargeAt, toDate, toIso, toIstDateString } from '../../time.js';
 import {
+  GENERATED_PAYMENT_TXNID_PREFIX,
   GENERATED_REQUEST_ID_PREFIX,
   GENERATED_REQUEST_ID_RANDOM_BYTES,
   GENERATED_TXNID_PREFIX,
@@ -61,7 +69,14 @@ import {
   PAYU_API_URLS,
   PAYU_API_VERSION,
   PAYU_CONSENT_CREATED,
+  PAYMENT_REFUND_TOKEN_PREFIX,
+  PAYU_ACTION_STATUS_BY_PAYU_ID,
+  PAYU_DEFAULT_PRODUCTINFO,
   PAYU_ENACH_CANCELLATION_NOTIFICATION,
+  PAYU_NO_ACTION_STATUS,
+  PAYU_ONE_TIME_MARKER,
+  PAYU_ONE_TIME_METHODS,
+  PAYU_PAYMENT_CREATED,
   PAYU_PAYMENT_URLS,
   PAYU_PRE_DEBIT_NOT_REQUIRED,
   PAYU_REFUND_ACTION,
@@ -74,6 +89,7 @@ import {
   PayUCommand,
   PayUCommandField,
   PayUConsentField,
+  PayUPaymentField,
   PayUUpiMandateAction,
   PayUWebhookKind,
   REFUND_TOKEN_MAX_LENGTH,
@@ -85,6 +101,7 @@ import {
   cardMandateWebhookHash,
   commandHash,
   consentRequestHash,
+  paymentRequestHash,
   reverseResponseHash,
   upiMandateWebhookHash,
 } from './hash.js';
@@ -95,14 +112,18 @@ import {
   consentCharge,
   decodeSubscriptionId,
   deriveMandateDates,
+  encodeMetadata,
+  enforcePaymethod,
   envelopeMessage,
   evaluateConsent,
   formatPhone,
+  isMandateResult,
   isNotFoundTransaction,
   mapCardMandateWebhook,
   mapDebitDetail,
   mapEnachCancellationWebhook,
   mapMandateSubscription,
+  mapPayment,
   mapPaymentWebhook,
   mapPreDebit,
   mapRefundResponse,
@@ -110,11 +131,16 @@ import {
   mapRevokedSubscription,
   mapUpiMandateWebhook,
   mapVerifiedTransaction,
+  paymentProductInfo,
+  paymentSourceFromResponse,
+  paymentSourceFromTransaction,
   pickAuthPayuId,
   refundableAmountPaise,
+  refundedPaiseOf,
   sanitizeFirstName,
   sanitizeProductInfo,
   sanitizeRefundRemarks,
+  unsupportedExpiry,
   type BodyFailure,
   type BodyFailurePolicy,
   type MandateRef,
@@ -122,6 +148,7 @@ import {
 import {
   PayUCardMandateWebhookSchema,
   PayUConfigSchema,
+  PayUActionStatusResponseSchema,
   PayUConsentFormSchema,
   PayUEnachCancellationWebhookSchema,
   PayUEnvelopeSchema,
@@ -130,6 +157,7 @@ import {
   PayUMandateStatusResponseSchema,
   PayUMandateVar1CamelSchema,
   PayUMandateVar1LowerSchema,
+  PayUPaymentFormSchema,
   PayUPaymentResponseSchema,
   PayUPreDebitResponseSchema,
   PayUPreDebitVar1Schema,
@@ -146,6 +174,7 @@ import {
   type ParsedPayUConfig,
   type PayUConfig,
   type PayUPaymentResponse,
+  type PayUVerifiedTransaction,
   type PayUWebhookSniff,
 } from './schemas.js';
 
@@ -201,6 +230,11 @@ function firstOf(...values: (string | null | undefined)[]): string | undefined {
  *   `bankcode` only for merchant-hosted flows that need card, VPA or bank
  *   details this adapter never holds, and no "enforce" parameter at all.
  * - `pause` / `resume`: PayU has no API; the scheduler pauses by not charging.
+ *
+ * One-time payments use the same hosted checkout without the mandate parameters. `Payment.id` is the PayU `txnid` (your
+ * `reference`, or a generated `pay_...` id): it is the only id that exists before the customer pays, `verify_payment` and the
+ * refund command accept it, and the response and the webhooks carry it. The payments this adapter creates carry a marker in `udf5`
+ * (covered by the response hash), which is how a payment webhook is told from a mandate result.
  */
 export class PayUProvider extends BaseProvider {
   readonly name = Provider.PayU;
@@ -231,8 +265,8 @@ export class PayUProvider extends BaseProvider {
     signedWebhooks: false,
     idempotencyKeys: false,
     paymentMethods: [PaymentMethod.Card, PaymentMethod.Upi, PaymentMethod.ENach],
-    oneTimePayments: false,
-    oneTimePaymentMethods: [],
+    oneTimePayments: true,
+    oneTimePaymentMethods: [...PAYU_ONE_TIME_METHODS],
   };
 
   // Real private fields: invisible to JSON.stringify, console.log and spreads, so the salt cannot leak.
@@ -332,6 +366,27 @@ export class PayUProvider extends BaseProvider {
     return this.#generateId(GENERATED_REQUEST_ID_PREFIX, GENERATED_REQUEST_ID_RANDOM_BYTES);
   }
 
+  /** The txnid PayU takes: at most 25 characters of letters, digits, `_` and `-`. */
+  private checkedTxnid(txnid: string): string {
+    if (txnid.length > TXNID_MAX_LENGTH || !TXNID_PATTERN.test(txnid)) {
+      throw invalid(
+        `reference "${txnid.slice(0, 40)}" cannot be PayU's txnid: it must be at most ${TXNID_MAX_LENGTH} characters of letters, digits, "_" and "-"`,
+        this.name,
+      );
+    }
+    return txnid;
+  }
+
+  /** `surl` and `furl`: the `returnUrl`, else the configured URLs. */
+  private returnUrls(returnUrl: string | undefined): { surl: string; furl: string } {
+    const surl = returnUrl ?? this.#successUrl;
+    const furl = returnUrl ?? this.#failureUrl ?? this.#successUrl;
+    if (surl === undefined || furl === undefined) {
+      throw invalid('returnUrl is required (or set successUrl in the PayU config): PayU needs surl and furl', this.name);
+    }
+    return { surl, furl };
+  }
+
   // -------------------------------------------------------------------------
   // Plans: PayU has no plan API
   // -------------------------------------------------------------------------
@@ -393,19 +448,8 @@ export class PayUProvider extends BaseProvider {
     const { firstChargeAt, isTrial } = resolveFirstChargeAt(input, now);
     const firstDebit = firstChargeAt ?? now;
 
-    const txnid = input.reference ?? this.#generateId(GENERATED_TXNID_PREFIX, GENERATED_TXNID_RANDOM_BYTES);
-    if (txnid.length > TXNID_MAX_LENGTH || !TXNID_PATTERN.test(txnid)) {
-      throw invalid(
-        `reference "${txnid.slice(0, 40)}" cannot be PayU's txnid: it must be at most ${TXNID_MAX_LENGTH} characters of letters, digits, "_" and "-"`,
-        this.name,
-      );
-    }
-
-    const surl = input.returnUrl ?? this.#successUrl;
-    const furl = input.returnUrl ?? this.#failureUrl ?? this.#successUrl;
-    if (surl === undefined || furl === undefined) {
-      throw invalid('returnUrl is required (or set successUrl in the PayU config): PayU needs surl and furl', this.name);
-    }
+    const txnid = this.checkedTxnid(input.reference ?? this.#generateId(GENERATED_TXNID_PREFIX, GENERATED_TXNID_RANDOM_BYTES));
+    const { surl, furl } = this.returnUrls(input.returnUrl);
 
     // The mandate ceiling per debit, the schedule, and the exact JSON string that is both hashed and posted.
     const totalCycles = input.totalCycles ?? plan.maxCycles;
@@ -724,7 +768,7 @@ export class PayUProvider extends BaseProvider {
   override async createCharge(rawInput: CreateChargeInput): Promise<Charge> {
     const input = parseInput(CreateChargeInputSchema, rawInput, 'charge input', this.name);
     const ref = decodeSubscriptionId(input.subscriptionId);
-    const existing = await this.findDebit(input.chargeId);
+    const existing = await this.findTransaction(input.chargeId);
     if (existing !== undefined) {
       return mapVerifiedTransaction({
         transaction: existing,
@@ -796,7 +840,7 @@ export class PayUProvider extends BaseProvider {
   }
 
   /** The transaction PayU holds under this merchant `txnid`, or `undefined` when it has none. Any other failure propagates. */
-  private async findDebit(txnid: string) {
+  private async findTransaction(txnid: string) {
     try {
       return (await this.fetchTransaction(txnid)).transaction;
     } catch (error) {
@@ -805,9 +849,9 @@ export class PayUProvider extends BaseProvider {
     }
   }
 
-  private async fetchTransaction(txnid: string) {
-    const id = requireText(txnid, 'chargeId');
-    if (id.includes('|')) throw invalid('chargeId must not contain "|": PayU reads it as a list of transactions', this.name);
+  private async fetchTransaction(txnid: string, what = 'chargeId') {
+    const id = requireText(txnid, what);
+    if (id.includes('|')) throw invalid(`${what} must not contain "|": PayU reads it as a list of transactions`, this.name);
     const body = await this.command({
       command: PayUCommand.VerifyPayment,
       var1: id,
@@ -853,20 +897,49 @@ export class PayUProvider extends BaseProvider {
       );
     }
     if (input.subscriptionId !== undefined) decodeSubscriptionId(input.subscriptionId);
+    return this.refundTransaction({
+      id: input.chargeId,
+      token: input.refundId,
+      payuIdFallback: true,
+      ...(input.amount !== undefined ? { amount: input.amount } : {}),
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      ...(input.subscriptionId !== undefined ? { subscriptionId: input.subscriptionId } : {}),
+    });
+  }
 
+  /**
+   * `cancel_refund_transaction` for the transaction PayU holds under the merchant `txnid` `id`. `payuIdFallback` lets an id PayU does
+   * not know as a txnid, made of digits, stand for the payment id (`refundCharge`); a payment id is always a txnid.
+   */
+  private async refundTransaction(input: {
+    id: string;
+    token: string;
+    /** Your own refund id, where the token sent carries a prefix. */
+    reference?: string;
+    payuIdFallback: boolean;
+    amount?: number;
+    reason?: string;
+    subscriptionId?: string;
+    paymentId?: string;
+  }): Promise<Refund> {
     let payuId: string;
     let defaultAmount: number | undefined;
     try {
-      const { transaction } = await this.fetchTransaction(input.chargeId);
+      const { transaction } = await this.fetchTransaction(input.id, input.paymentId !== undefined ? 'paymentId' : 'chargeId');
       const found = firstOf(transaction.mihpayid);
-      if (found === undefined) throw invalid(`PayU holds transaction ${input.chargeId} without a payment id`, this.name);
+      if (found === undefined) throw invalid(`PayU holds transaction ${input.id} without a payment id`, this.name);
       payuId = found;
       defaultAmount = refundableAmountPaise(transaction);
     } catch (error) {
-      if (!(error instanceof SubscriptionError) || error.code !== ErrorCode.NotFound || !DIGITS_ONLY.test(input.chargeId)) {
+      if (
+        !input.payuIdFallback ||
+        !(error instanceof SubscriptionError) ||
+        error.code !== ErrorCode.NotFound ||
+        !DIGITS_ONLY.test(input.id)
+      ) {
         throw error;
       }
-      payuId = input.chargeId;
+      payuId = input.id;
     }
     const amount = input.amount ?? defaultAmount;
     if (amount === undefined || amount <= 0) {
@@ -875,7 +948,7 @@ export class PayUProvider extends BaseProvider {
 
     const remarks = input.reason !== undefined ? sanitizeRefundRemarks(input.reason) : '';
     const extra: Record<string, string> = {
-      [PayUCommandField.Var2]: input.refundId,
+      [PayUCommandField.Var2]: input.token,
       [PayUCommandField.Var3]: paiseToRupeeString(amount),
       ...(remarks !== ''
         ? { [PayUCommandField.Var9]: JSON.stringify(parseInput(PayURefundVar9Schema, { refundDetails: { remarks } }, 'refund var9', this.name)) }
@@ -892,9 +965,11 @@ export class PayUProvider extends BaseProvider {
     });
     const mapped = mapRefundResponse({
       body,
-      chargeId: input.chargeId,
-      refundToken: input.refundId,
+      chargeId: input.id,
+      refundToken: input.token,
       amountPaise: amount,
+      ...(input.reference !== undefined ? { reference: input.reference } : {}),
+      ...(input.paymentId !== undefined ? { paymentId: input.paymentId } : {}),
       ...(input.subscriptionId !== undefined ? { subscriptionId: input.subscriptionId } : {}),
     });
     if ('failure' in mapped) {
@@ -905,6 +980,200 @@ export class PayUProvider extends BaseProvider {
       throw this.bodyError(refined ?? mapped.failure, 'refund', body);
     }
     return mapped.refund;
+  }
+
+  // -------------------------------------------------------------------------
+  // One-time payments
+  // -------------------------------------------------------------------------
+
+  /**
+   * Builds the signed hosted-checkout form. The customer's browser posts `checkout.fields` to `checkout.url`; no mandate parameter
+   * is in it. The returned `id` is the `txnid`, the id every later call takes.
+   *
+   * PayU does not stop a repeated `txnid` from being tried again before a payment succeeds, so when the caller supplies the
+   * `reference` (the txnid) PayU is asked first: a transaction PayU already holds under it is returned as it stands, without a
+   * checkout, instead of a second form. A lookup that fails for any reason other than "not found" aborts. A generated id is
+   * new by construction and is not looked up.
+   *
+   * `paymentMethods` becomes `enforce_paymethod`, `metadata` goes into `udf1`, `returnUrl` is `surl` and `furl`. `expiresAt` is
+   * refused: PayU takes no expiry. `idempotencyKey` is not used (PayU has none): the txnid is the guard.
+   */
+  override async createPayment(rawInput: CreatePaymentInput): Promise<Payment> {
+    const input = parseInput(CreatePaymentInputSchema, rawInput, 'payment input', this.name);
+    if (input.expiresAt !== undefined) throw unsupportedExpiry();
+    const enforced = enforcePaymethod(input.paymentMethods);
+
+    const customer = input.customer;
+    const name = requireText(customer.name, 'customer.name (PayU requires firstname)');
+    const email = requireText(customer.email, 'customer.email (PayU requires email)');
+    const phone = requireText(customer.phone, 'customer.phone (PayU requires phone)');
+
+    const callerTxnid = input.reference !== undefined;
+    const txnid = this.checkedTxnid(
+      input.reference ?? this.#generateId(GENERATED_PAYMENT_TXNID_PREFIX, GENERATED_TXNID_RANDOM_BYTES),
+    );
+    const { surl, furl } = this.returnUrls(input.returnUrl);
+
+    const amount = paiseToRupeeString(input.amount);
+    const productinfo = paymentProductInfo(input.description, PAYU_DEFAULT_PRODUCTINFO);
+    const firstname = sanitizeFirstName(name);
+    const safeEmail = checkEmail(email, EMAIL_MAX_LENGTH);
+    const safePhone = formatPhone(phone).slice(0, PHONE_MAX_LENGTH);
+    const udf1 = input.metadata !== undefined && Object.keys(input.metadata).length > 0 ? encodeMetadata(input.metadata) : undefined;
+
+    const hash = paymentRequestHash({
+      key: this.#key,
+      salt: this.#salt,
+      txnid,
+      amount,
+      productinfo,
+      firstname,
+      email: safeEmail,
+      ...(udf1 !== undefined ? { udf1 } : {}),
+      udf5: PAYU_ONE_TIME_MARKER,
+    });
+    const form = parseInput(
+      PayUPaymentFormSchema,
+      {
+        key: this.#key,
+        txnid,
+        amount,
+        productinfo,
+        firstname,
+        email: safeEmail,
+        phone: safePhone,
+        surl,
+        furl,
+        ...(udf1 !== undefined ? { udf1 } : {}),
+        udf5: PAYU_ONE_TIME_MARKER,
+        ...(enforced !== undefined ? { enforce_paymethod: enforced } : {}),
+        hash,
+      },
+      'PayU payment form',
+      this.name,
+    );
+    // The salt is not a field and never will be.
+    const fields: Record<string, string> = {
+      [PayUPaymentField.Key]: form.key,
+      [PayUPaymentField.Txnid]: form.txnid,
+      [PayUPaymentField.Amount]: form.amount,
+      [PayUPaymentField.Productinfo]: form.productinfo,
+      [PayUPaymentField.Firstname]: form.firstname,
+      [PayUPaymentField.Email]: form.email,
+      [PayUPaymentField.Phone]: form.phone,
+      [PayUPaymentField.Surl]: form.surl,
+      [PayUPaymentField.Furl]: form.furl,
+      ...(form.udf1 !== undefined ? { [PayUPaymentField.Udf1]: form.udf1 } : {}),
+      [PayUPaymentField.Udf5]: form.udf5,
+      ...(form.enforce_paymethod !== undefined ? { [PayUPaymentField.EnforcePaymethod]: form.enforce_paymethod } : {}),
+      [PayUPaymentField.Hash]: form.hash,
+    };
+
+    if (callerTxnid) {
+      try {
+        return await this.getPayment(txnid);
+      } catch (error) {
+        if (!(error instanceof SubscriptionError) || error.code !== ErrorCode.NotFound) throw error;
+      }
+    }
+
+    return {
+      provider: this.name,
+      id: txnid,
+      reference: txnid,
+      status: PaymentStatus.Created,
+      providerStatus: PAYU_PAYMENT_CREATED,
+      amount: input.amount,
+      currency: Currency.INR,
+      customer: { name, email, phone },
+      createdAt: toIso(this.now()),
+      checkout: { kind: CheckoutKind.FormPost, url: this.#paymentUrl, fields },
+      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      raw: fields,
+    };
+  }
+
+  /**
+   * The state of a payment by its `txnid`, through `verify_payment`: the source of truth. PayU registers the transaction when the
+   * customer reaches its page, so a payment the customer never opened answers `NOT_FOUND`. A succeeded payment is followed by
+   * `check_action_status` for the refunds PayU holds, which gives `refundedAmount` and `partially_refunded` / `refunded`.
+   */
+  override async getPayment(paymentId: string): Promise<Payment> {
+    const { transaction } = await this.fetchTransaction(paymentId, 'paymentId');
+    return this.paymentFromTransaction(paymentId.trim(), transaction);
+  }
+
+  private async paymentFromTransaction(txnid: string, transaction: PayUVerifiedTransaction): Promise<Payment> {
+    const source = paymentSourceFromTransaction(transaction, txnid);
+    const payuId = firstOf(transaction.mihpayid);
+    if (mapPayment(source, transaction).status !== PaymentStatus.Succeeded || payuId === undefined) {
+      return mapPayment(source, transaction);
+    }
+    return mapPayment({ ...source, refundedPaise: await this.refundedPaise(payuId) }, transaction);
+  }
+
+  /** The amount of the refunds PayU holds for the payment id, through `check_action_status`. */
+  private async refundedPaise(payuId: string): Promise<number> {
+    const body = await this.command({
+      command: PayUCommand.CheckActionStatus,
+      var1: payuId,
+      schema: PayUActionStatusResponseSchema,
+      what: 'refund lookup',
+      idempotent: true,
+      extra: { [PayUCommandField.Var2]: PAYU_ACTION_STATUS_BY_PAYU_ID },
+    });
+    const details = Object.values(body.transaction_details ?? {});
+    if (details.length > 0 && details.every((entry) => entry === PAYU_NO_ACTION_STATUS)) return 0;
+    this.failOnBody(body, 'refund lookup', { unclear: ErrorCode.ProviderUnavailable, otherwise: ErrorCode.ProviderError });
+    return refundedPaiseOf(body);
+  }
+
+  /**
+   * `result` is what PayU posts to `surl` / `furl`. The response hash is verified first, in constant time (`SIGNATURE_INVALID` on
+   * mismatch); then the outcome follows PayU's rule: only `status` = `success` is paid. A result of a mandate (a consent or a
+   * recurring debit) belongs to `verifyCheckout` and is refused. `getPayment` is the source of truth.
+   */
+  override async verifyPayment(result: CheckoutResult): Promise<PaymentVerification> {
+    const fields = parseInput(PayUPaymentResponseSchema, result, 'PayU checkout result', this.name);
+    this.assertPaymentHash(fields, 'checkout result');
+    if (isMandateResult(fields)) {
+      throw invalid('this result belongs to a mandate (a consent or a recurring debit): verify it with verifyCheckout', this.name);
+    }
+    const payment = mapPayment(paymentSourceFromResponse(fields), fields);
+    return {
+      provider: this.name,
+      paymentId: payment.id,
+      reference: fields.txnid,
+      paid: payment.status === PaymentStatus.Succeeded,
+      status: payment.status,
+      payment,
+      raw: fields,
+    };
+  }
+
+  /**
+   * `cancel_refund_transaction` for a payment. The refund token PayU receives is `pay_` plus your `refundId`, so the refund
+   * callback can be told from the refund of a recurring debit; PayU limits a token to 23 characters, which leaves 19 for `refundId`.
+   * The returned refund has your `refundId` as `reference` and the payment id as `chargeId` and `paymentId`.
+   */
+  override async refundPayment(rawInput: RefundPaymentInput): Promise<Refund> {
+    const input = parseInput(RefundPaymentInputSchema, rawInput, 'payment refund input', this.name);
+    const token = `${PAYMENT_REFUND_TOKEN_PREFIX}${input.refundId}`;
+    if (token.length > REFUND_TOKEN_MAX_LENGTH) {
+      throw invalid(
+        `refundId is longer than the ${REFUND_TOKEN_MAX_LENGTH - PAYMENT_REFUND_TOKEN_PREFIX.length} characters a payment refund allows: PayU limits the refund token to ${REFUND_TOKEN_MAX_LENGTH} characters and the adapter adds "${PAYMENT_REFUND_TOKEN_PREFIX}"`,
+        this.name,
+      );
+    }
+    return this.refundTransaction({
+      id: input.paymentId,
+      token,
+      reference: input.refundId,
+      paymentId: input.paymentId,
+      payuIdFallback: false,
+      ...(input.amount !== undefined ? { amount: input.amount } : {}),
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+    });
   }
 
   // -------------------------------------------------------------------------

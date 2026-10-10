@@ -5,18 +5,22 @@ import {
   ErrorCode,
   EventType,
   PaymentMethod,
+  PaymentStatus,
   Provider,
   RefundStatus,
   SchedulingMode,
   IntervalUnit,
   SubscriptionStatus,
 } from '../../constants.js';
-import { SubscriptionError, invalid } from '../../errors.js';
+import { SubscriptionError, invalid, unsupported } from '../../errors.js';
 import { paiseToRupeeString, rupeesToPaise } from '../../money.js';
+import { CustomerSchema, MetadataSchema } from '../../schemas.js';
 import type {
   BillingInterval,
   Charge,
   ChargeNotification,
+  Metadata,
+  Payment,
   Refund,
   Subscription,
   SubscriptionEvent,
@@ -32,6 +36,8 @@ import {
   CHARGE_STATUS_BY_STATE,
   DEFAULT_MANDATE_HORIZON_YEARS,
   ENACH_MANDATE_STATUS,
+  ENFORCE_PAYMETHOD_BY_METHOD,
+  ENFORCE_PAYMETHOD_SEPARATOR,
   EVENT_BY_MANDATE_NOTIFICATION,
   EVENT_BY_UPI_ACTION,
   FIRSTNAME_MAX_LENGTH,
@@ -41,8 +47,12 @@ import {
   IST_TIMESTAMP_PATTERN,
   MANDATE_END_GRACE_DAYS,
   MANDATE_ID_PATTERN,
+  ONE_TIME_METHOD_BY_MODE,
+  ONE_TIME_METHOD_BY_PG_TYPE,
   PAYMENT_METHOD_BY_MODE,
   PAYMENT_METHOD_BY_PG_TYPE,
+  PAYMENT_REFUND_TOKEN_PREFIX,
+  PAYMENT_STATUS_BY_STATE,
   PAYU_BILLING_CURRENCY,
   PAYU_DISALLOWED_EMAIL_CHARS,
   PAYU_DISALLOWED_TEXT_CHARS,
@@ -52,9 +62,12 @@ import {
   PAYU_FREE_TRIAL_CONSENT_PAISE,
   PAYU_MANDATE_METHODS,
   PAYU_NONE_FETCHED_PATTERN,
+  PAYU_NO_ACTION_STATUS,
   PAYU_NO_ERROR_CODE,
   PAYU_NO_ERROR_MESSAGE,
   PAYU_NOT_FOUND,
+  PAYU_ONE_TIME_METHODS,
+  PAYU_REFUND_ENTRY_ACTION,
   PAYU_STATUS_OK,
   PRODUCTINFO_MAX_LENGTH,
   PayUPaymentSource,
@@ -64,13 +77,17 @@ import {
   PayUPreDebitCode,
   PayURefundCode,
   PayUWebhookRefundStatus,
+  PAYU_ONE_TIME_MARKER,
   REFUND_CAPTURED_TODAY_PATTERN,
   REFUND_ERROR_CODES,
   REFUND_REMARKS_DISALLOWED_CHARS,
+  REFUND_ACTION_COUNTS,
   REFUND_REMARKS_MAX_LENGTH,
   SUBSCRIPTION_ID_SEPARATOR,
+  UDF_MAX_LENGTH,
   UNKNOWN_CHARGE_STATUS,
   UNKNOWN_MANDATE_STATUS,
+  UNKNOWN_PAYMENT_STATUS,
   UPI_MANDATE_STATUS,
   WEBHOOK_UNKNOWN_ID,
   type PayUMandateMethod,
@@ -79,6 +96,7 @@ import type {
   PayUCardMandateWebhook,
   PayUDebitDetail,
   PayUEnachCancellationWebhook,
+  PayUActionStatusResponse,
   PayUEnvelope,
   PayUMandateStatusResponse,
   PayUPaymentResponse,
@@ -329,15 +347,40 @@ export interface MappedChargeStatus {
  * not in the table is `pending`, never a guess at success or failure.
  */
 export function mapChargeStatus(...candidates: (string | null | undefined)[]): MappedChargeStatus {
+  const { value, providerStatus } = mapState(CHARGE_STATUS_BY_STATE, UNKNOWN_CHARGE_STATUS, candidates);
+  return { status: value, ...(providerStatus !== undefined ? { providerStatus } : {}) };
+}
+
+/** The first candidate that is in the table wins; blanks are ignored; none in the table gives the fallback. `providerStatus` is the first non-blank state. */
+function mapState<V>(
+  table: Record<string, V>,
+  fallback: V,
+  candidates: readonly (string | null | undefined)[],
+): { value: V; providerStatus?: string } {
   let verbatim: string | undefined;
   for (const candidate of candidates) {
     const state = present(candidate);
     if (state === undefined) continue;
     verbatim ??= state;
-    const mapped = lookup(CHARGE_STATUS_BY_STATE, state);
-    if (mapped !== undefined) return { status: mapped, providerStatus: verbatim };
+    const mapped = lookup(table, state);
+    if (mapped !== undefined) return { value: mapped, providerStatus: verbatim };
   }
-  return { status: UNKNOWN_CHARGE_STATUS, ...(verbatim !== undefined ? { providerStatus: verbatim } : {}) };
+  return { value: fallback, ...(verbatim !== undefined ? { providerStatus: verbatim } : {}) };
+}
+
+export interface MappedPaymentStatus {
+  status: PaymentStatus;
+  /** The first non-blank PayU state, verbatim. */
+  providerStatus?: string;
+}
+
+/**
+ * Translates PayU's transaction state for a one-time payment: the first candidate (`unmappedstatus`, then `status`) that is in
+ * `PAYMENT_STATUS_BY_STATE` wins; a state that is not in the table is `pending`.
+ */
+export function mapPaymentStatus(...candidates: (string | null | undefined)[]): MappedPaymentStatus {
+  const { value, providerStatus } = mapState(PAYMENT_STATUS_BY_STATE, UNKNOWN_PAYMENT_STATUS, candidates);
+  return { status: value, ...(providerStatus !== undefined ? { providerStatus } : {}) };
 }
 
 /** Mandate status -> SubscriptionStatus for one payment method. Unknown: `pending_authorization`. */
@@ -463,6 +506,247 @@ function failureReason(...candidates: (string | null | undefined)[]): { failureR
     if (text !== undefined && text.toLowerCase() !== PAYU_NO_ERROR_MESSAGE.toLowerCase()) return { failureReason: text };
   }
   return {};
+}
+
+// ---------------------------------------------------------------------------
+// One-time payments
+// ---------------------------------------------------------------------------
+
+/**
+ * `productinfo` for a payment: the description with the characters PayU removes taken out, or the default text. A description that
+ * does not fit PayU's 100 characters is refused rather than cut.
+ */
+export function paymentProductInfo(description: string | undefined, fallback: string): string {
+  if (description === undefined) return fallback;
+  const cleaned = sanitizePayUText(description, Number.POSITIVE_INFINITY, 'description (sent as productinfo)');
+  if (cleaned.length > PRODUCTINFO_MAX_LENGTH) {
+    throw invalid(
+      `description is longer than the ${PRODUCTINFO_MAX_LENGTH} characters PayU accepts for productinfo (${cleaned.length} after the characters PayU removes are taken out)`,
+      PROVIDER,
+    );
+  }
+  return cleaned;
+}
+
+/**
+ * `enforce_paymethod` for the requested methods, or `undefined` when the caller restricts nothing. A method PayU's hosted checkout
+ * cannot take (mandate methods) is refused: the restriction would not hold.
+ */
+export function enforcePaymethod(methods: readonly PaymentMethod[] | undefined): string | undefined {
+  if (methods === undefined) return undefined;
+  const refused = methods.filter((method) => !PAYU_ONE_TIME_METHODS.includes(method));
+  if (refused.length > 0) {
+    throw invalid(
+      `PayU takes ${PAYU_ONE_TIME_METHODS.join(', ')} for a one-time payment; paymentMethods contains ${refused.join(', ')}`,
+      PROVIDER,
+    );
+  }
+  const values = methods.flatMap((method) => ENFORCE_PAYMETHOD_BY_METHOD[method] ?? []);
+  return [...new Set(values)].join(ENFORCE_PAYMETHOD_SEPARATOR);
+}
+
+/**
+ * Metadata travels in `udf1` as base64url of its JSON: that alphabet is inside the characters PayU keeps, and `udf1` comes back in
+ * the response, the verify API and the webhook. Refused when it does not fit PayU's 255 characters.
+ */
+export function encodeMetadata(metadata: Metadata): string {
+  const encoded = Buffer.from(JSON.stringify(metadata), 'utf8').toString('base64url');
+  if (encoded.length > UDF_MAX_LENGTH) {
+    throw invalid(
+      `metadata is too large: PayU stores at most ${UDF_MAX_LENGTH} characters in a user-defined field and the metadata takes ${encoded.length} once encoded`,
+      PROVIDER,
+    );
+  }
+  return encoded;
+}
+
+/** The metadata `encodeMetadata` wrote, or `undefined` when `udf1` holds something else. */
+export function decodeMetadata(udf1: string | null | undefined): Metadata | undefined {
+  const text = present(udf1);
+  if (text === undefined) return undefined;
+  try {
+    const parsed = MetadataSchema.safeParse(JSON.parse(Buffer.from(text, 'base64url').toString('utf8')));
+    return parsed.success && Object.keys(parsed.data).length > 0 ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The unified payment method of a one-time payment: `mode`, else `PG_TYPE`. Modes with no unified method give `undefined`. */
+export function oneTimeMethodOf(response: { mode?: string | null; PG_TYPE?: string | null }): PaymentMethod | undefined {
+  return lookup(ONE_TIME_METHOD_BY_MODE, response.mode) ?? lookup(ONE_TIME_METHOD_BY_PG_TYPE, response.PG_TYPE);
+}
+
+/** True for a result that belongs to a mandate: the registration (`sist`) or a recurring debit (`sirecurring`, `SI-PG`). */
+export function isMandateResult(response: { payment_source?: string | null; PG_TYPE?: string | null }): boolean {
+  const source = normalizeKey(response.payment_source ?? '');
+  return (
+    source === PayUPaymentSource.MandateRegistered ||
+    source === PayUPaymentSource.RecurringDebit ||
+    normalizeKey(response.PG_TYPE ?? '') === normalizeKey(PayUPgType.StandingInstruction)
+  );
+}
+
+/** True when the payment carries the marker this adapter puts in `udf5`. */
+export function isOneTimePayment(udf5: string | null | undefined): boolean {
+  return present(udf5) === PAYU_ONE_TIME_MARKER;
+}
+
+/** What a payment is built from: the fields PayU posts to `surl` / `furl` and the webhook, or a `verify_payment` transaction. */
+export interface PaymentSource {
+  txnid: string;
+  mihpayid?: string | null;
+  status?: string | null;
+  unmappedstatus?: string | null;
+  amountPaise: number;
+  mode?: string | null;
+  PG_TYPE?: string | null;
+  addedon?: string | null;
+  success_at?: string | null;
+  error?: string | null;
+  error_Message?: string | null;
+  field9?: string | null;
+  udf1?: string | null;
+  firstname?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  refundedPaise?: number;
+}
+
+/**
+ * The customer PayU echoes, field by field and only what is a valid unified value (PayU masks the phone in webhooks).
+ * `firstname` is the text this adapter sent.
+ */
+function customerOf(source: PaymentSource): Payment['customer'] {
+  const candidate = { name: present(source.firstname), email: present(source.email), phone: present(source.phone) };
+  const customer: NonNullable<Payment['customer']> = {};
+  for (const field of ['name', 'email', 'phone'] as const) {
+    const value = candidate[field];
+    if (value !== undefined && CustomerSchema.shape[field].safeParse(value).success) customer[field] = value;
+  }
+  return Object.keys(customer).length > 0 ? customer : undefined;
+}
+
+/**
+ * A PayU transaction as a Payment. `id` and `reference` are the txnid. The outcome follows PayU's rule ("treat only `success` as
+ * successful"): a state that says captured next to a `status` that is not `success` is `pending`, never `succeeded`. A succeeded
+ * payment with accepted refunds is `partially_refunded` or `refunded`.
+ */
+export function mapPayment(source: PaymentSource, raw: unknown): Payment {
+  const mapped = mapPaymentStatus(source.unmappedstatus, source.status);
+  const statusIsSuccess = normalizeKey(source.status ?? '') === PayUPaymentStatus.Success;
+  let status = mapped.status === PaymentStatus.Succeeded && !statusIsSuccess ? PaymentStatus.Pending : mapped.status;
+  const refunded = source.refundedPaise ?? 0;
+  if (status === PaymentStatus.Succeeded && refunded > 0) {
+    status = refunded >= source.amountPaise ? PaymentStatus.Refunded : PaymentStatus.PartiallyRefunded;
+  }
+  const failed = status === PaymentStatus.Failed || status === PaymentStatus.Cancelled;
+  const code = present(source.error);
+  const method = oneTimeMethodOf(source);
+  const createdAt = parsePayUDate(source.addedon);
+  const paidAt = status === PaymentStatus.Succeeded ? parsePayUDate(source.success_at) ?? createdAt : undefined;
+  const metadata = decodeMetadata(source.udf1);
+  const customer = customerOf(source);
+  return {
+    provider: PROVIDER,
+    id: source.txnid,
+    reference: source.txnid,
+    status,
+    providerStatus: mapped.providerStatus ?? present(source.status) ?? '',
+    amount: source.amountPaise,
+    currency: Currency.INR,
+    ...(refunded > 0 ? { refundedAmount: refunded } : {}),
+    ...(method !== undefined ? { paymentMethod: method } : {}),
+    ...(customer !== undefined ? { customer } : {}),
+    ...(createdAt !== undefined ? { createdAt } : {}),
+    ...(paidAt !== undefined ? { paidAt } : {}),
+    ...(failed && code !== undefined && code !== PAYU_NO_ERROR_CODE ? { failureCode: code } : {}),
+    ...(failed ? failureReason(source.error_Message, source.field9) : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
+    raw,
+  };
+}
+
+/** The payment source of the fields PayU posts to `surl` / `furl` and to the payment webhook. */
+export function paymentSourceFromResponse(response: PayUPaymentResponse): PaymentSource {
+  return {
+    txnid: response.txnid,
+    mihpayid: response.mihpayid,
+    status: response.status,
+    unmappedstatus: response.unmappedstatus,
+    amountPaise: amountPaise(response.amount, 'a payment amount'),
+    mode: response.mode,
+    PG_TYPE: response.PG_TYPE,
+    addedon: response.addedon,
+    success_at: response.success_at,
+    error: response.error,
+    error_Message: response.error_Message,
+    field9: response.field9,
+    udf1: response.udf1,
+    firstname: response.firstname,
+    email: response.email,
+    phone: response.phone,
+  };
+}
+
+/** The payment source of a `verify_payment` transaction. `transaction_amount` is read first, as for debits. */
+export function paymentSourceFromTransaction(tx: PayUVerifiedTransaction, txnid: string, refundedPaise?: number): PaymentSource {
+  const amount = rupeesToPaise(tx.transaction_amount) ?? rupeesToPaise(tx.amt) ?? rupeesToPaise(tx.net_amount_debit);
+  if (amount === undefined) {
+    throw new SubscriptionError(ErrorCode.UnexpectedResponse, `payu returned transaction ${txnid} without an amount`, {
+      provider: PROVIDER,
+      raw: tx,
+    });
+  }
+  return {
+    txnid,
+    mihpayid: tx.mihpayid,
+    status: tx.status,
+    unmappedstatus: tx.unmappedstatus,
+    amountPaise: amount,
+    mode: tx.mode,
+    PG_TYPE: tx.PG_TYPE,
+    addedon: tx.addedon,
+    success_at: tx.success_at,
+    error: tx.error_code,
+    error_Message: tx.error_Message,
+    field9: tx.field9,
+    udf1: tx.udf1,
+    firstname: tx.firstname,
+    email: tx.email,
+    phone: tx.phone,
+    ...(refundedPaise !== undefined ? { refundedPaise } : {}),
+  };
+}
+
+/**
+ * What `check_action_status` says has been refunded: the sum of the refund entries in a state that counts (see
+ * `REFUND_ACTION_COUNTS`). An id PayU holds no action for answers with a text instead of entries: nothing refunded.
+ */
+export function refundedPaiseOf(body: PayUActionStatusResponse): number {
+  let total = 0;
+  for (const entries of Object.values(body.transaction_details ?? {})) {
+    if (typeof entries === 'string') {
+      if (entries !== PAYU_NO_ACTION_STATUS) {
+        throw new SubscriptionError(ErrorCode.UnexpectedResponse, `payu answered the refund lookup with "${entries.slice(0, 80)}"`, {
+          provider: PROVIDER,
+          raw: body,
+        });
+      }
+      continue;
+    }
+    for (const entry of Object.values(entries)) {
+      if (normalizeKey(entry.action ?? '') !== PAYU_REFUND_ENTRY_ACTION) continue;
+      if (lookup(REFUND_ACTION_COUNTS, entry.status) !== true) continue;
+      total += rupeesToPaise(entry.amt) ?? 0;
+    }
+  }
+  return total;
+}
+
+/** `expiresAt` is refused: PayU's hosted checkout takes no expiry. */
+export function unsupportedExpiry(): SubscriptionError {
+  return unsupported(PROVIDER, 'expiresAt', 'PayU hosted checkout has no parameter that ends a payment at a time');
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +976,10 @@ export function mapRefundResponse(input: {
   refundToken: string;
   amountPaise: number;
   subscriptionId?: string;
+  /** Your own refund id when it differs from the token sent (a payment refund token carries a prefix). */
+  reference?: string;
+  /** Set for a refund of a one-time payment. */
+  paymentId?: string;
 }): { refund: Refund } | { failure: BodyFailure } {
   const { body } = input;
   const message = envelopeMessage(body);
@@ -717,8 +1005,9 @@ export function mapRefundResponse(input: {
   const refund: Refund = {
     provider: PROVIDER,
     id: present(body.request_id) ?? input.refundToken,
-    reference: input.refundToken,
+    reference: input.reference ?? input.refundToken,
     chargeId: input.chargeId,
+    ...(input.paymentId !== undefined ? { paymentId: input.paymentId } : {}),
     ...(input.subscriptionId !== undefined ? { subscriptionId: input.subscriptionId } : {}),
     status: code === PayURefundCode.Success ? RefundStatus.Succeeded : RefundStatus.Pending,
     ...(message !== undefined ? { providerStatus: message } : {}),
@@ -743,7 +1032,7 @@ function baseEvent(
   return { id, provider: PROVIDER, type, providerEventType, ...extra, raw };
 }
 
-/** A payment webhook (form-encoded): the consent result or a recurring debit. */
+/** A payment webhook (form-encoded): the consent result, a recurring debit or a one-time payment. */
 export function mapPaymentWebhook(response: PayUPaymentResponse): SubscriptionEvent {
   const source = normalizeKey(response.payment_source ?? '');
   const mapped = mapChargeStatus(response.unmappedstatus, response.status);
@@ -789,7 +1078,18 @@ export function mapPaymentWebhook(response: PayUPaymentResponse): SubscriptionEv
     return baseEvent(id, outcome.authorized ? EventType.SubscriptionAuthorized : EventType.Unknown, eventName, response, common);
   }
 
-  // An ordinary payment, or a failed consent (PayU marks a failed consent `payu`, like any failed payment).
+  // A payment this adapter created carries the marker in `udf5`, which the verified hash covers.
+  if (isOneTimePayment(response.udf5)) {
+    const payment = mapPayment(paymentSourceFromResponse(response), response);
+    const common = { ...when, paymentId: payment.id, payment };
+    if (payment.status === PaymentStatus.Succeeded) return baseEvent(id, EventType.PaymentSucceeded, eventName, response, common);
+    if (payment.status === PaymentStatus.Failed || payment.status === PaymentStatus.Cancelled) {
+      return baseEvent(id, EventType.PaymentFailed, eventName, response, common);
+    }
+    return baseEvent(id, EventType.Unknown, eventName, response, common);
+  }
+
+  // Any other payment, or a failed consent (PayU marks a failed consent `payu`, like any failed payment).
   return baseEvent(id, EventType.Unknown, eventName, response, when);
 }
 
@@ -906,10 +1206,17 @@ export function mapEnachCancellationWebhook(body: PayUEnachCancellationWebhook, 
   );
 }
 
-/** The refund callback. Unsigned, so only a `refund.*` event when the caller opted in. */
+/**
+ * The refund callback. Unsigned, so only a `refund.*` event when the caller opted in. A refund whose `token` has the prefix
+ * `refundPayment` puts on it is a refund of a one-time payment: its `merchantTxnId` is the payment id, the refund carries it as
+ * `chargeId` and `paymentId`, and the reference is the token without the prefix.
+ */
 export function mapRefundWebhook(body: PayURefundWebhook, trusted: boolean): SubscriptionEvent {
   const requestId = present(body.request_id) ?? present(body.token) ?? WEBHOOK_UNKNOWN_ID;
-  const chargeId = present(body.mihpayid) ?? present(body.merchantTxnId) ?? WEBHOOK_UNKNOWN_ID;
+  const token = present(body.token);
+  const paymentId = token?.startsWith(PAYMENT_REFUND_TOKEN_PREFIX) ? present(body.merchantTxnId) : undefined;
+  const chargeId = paymentId ?? present(body.mihpayid) ?? present(body.merchantTxnId) ?? WEBHOOK_UNKNOWN_ID;
+  const reference = paymentId !== undefined ? token?.slice(PAYMENT_REFUND_TOKEN_PREFIX.length) : token;
   const success = normalizeKey(body.status) === PayUWebhookRefundStatus.Success;
   const failure = normalizeKey(body.status) === PayUWebhookRefundStatus.Failure;
   const paise = rupeesToPaise(body.amt);
@@ -918,8 +1225,9 @@ export function mapRefundWebhook(body: PayURefundWebhook, trusted: boolean): Sub
       ? {
           provider: PROVIDER,
           id: requestId,
-          ...(present(body.token) !== undefined ? { reference: present(body.token) as string } : {}),
+          ...(reference !== undefined && reference !== '' ? { reference } : {}),
           chargeId,
+          ...(paymentId !== undefined ? { paymentId } : {}),
           status: success ? RefundStatus.Succeeded : RefundStatus.Failed,
           providerStatus: body.status,
           amount: paise ?? 0,
@@ -928,5 +1236,6 @@ export function mapRefundWebhook(body: PayURefundWebhook, trusted: boolean): Sub
         }
       : undefined;
   const type = trusted && refund ? (success ? EventType.RefundSucceeded : EventType.RefundFailed) : EventType.Unknown;
-  return baseEvent(`${requestId}:${normalizeKey(body.status)}`, type, body.action, body, refund && trusted ? { refund } : {});
+  const attached = refund && trusted ? { refund, ...(paymentId !== undefined ? { paymentId } : {}) } : {};
+  return baseEvent(`${requestId}:${normalizeKey(body.status)}`, type, body.action, body, attached);
 }

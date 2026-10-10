@@ -6,6 +6,8 @@ import {
   PAYU_BILLING_CURRENCY,
   PAYU_DATE_PATTERN,
   PayUBillingCycle,
+  RETURN_URL_MAX_LENGTH,
+  UDF_MAX_LENGTH,
 } from './constants.js';
 
 /**
@@ -107,6 +109,27 @@ export const PayUConsentFormSchema = z.object({
 });
 export type PayUConsentForm = z.output<typeof PayUConsentFormSchema>;
 
+/**
+ * The form posted to `_payment` for a one-time payment: every value is a string. Limits are PayU's (`surl` and `furl` 50 characters,
+ * udf 255). [docs__addl_info-payment-apis]
+ */
+export const PayUPaymentFormSchema = z.object({
+  key: z.string().min(1),
+  txnid: z.string().min(1),
+  amount: z.string().regex(/^\d+\.\d{2}$/, { error: 'amount must look like 10.00' }),
+  productinfo: z.string().min(1),
+  firstname: z.string().min(1),
+  email: z.string().min(1),
+  phone: z.string().min(1),
+  surl: z.url().max(RETURN_URL_MAX_LENGTH, { error: `surl is longer than the ${RETURN_URL_MAX_LENGTH} characters PayU accepts` }),
+  furl: z.url().max(RETURN_URL_MAX_LENGTH, { error: `furl is longer than the ${RETURN_URL_MAX_LENGTH} characters PayU accepts` }),
+  udf1: z.string().max(UDF_MAX_LENGTH).optional(),
+  udf5: z.string().max(UDF_MAX_LENGTH),
+  enforce_paymethod: z.string().min(1).optional(),
+  hash: z.string().min(1),
+});
+export type PayUPaymentForm = z.output<typeof PayUPaymentFormSchema>;
+
 // ---------------------------------------------------------------------------
 // Consent response (`surl` / `furl` / payment webhook) [§2.3]
 // ---------------------------------------------------------------------------
@@ -142,6 +165,8 @@ export const PayUPaymentResponseSchema = z.looseObject({
   cardToken: OptionalTextSchema,
   card_token: OptionalTextSchema,
   addedon: OptionalTextSchema,
+  success_at: OptionalTextSchema,
+  phone: OptionalTextSchema,
   error: OptionalTextSchema,
   error_Message: OptionalTextSchema,
   field9: OptionalTextSchema,
@@ -236,9 +261,20 @@ export const PayUVerifiedTransactionSchema = z.looseObject({
   transaction_amount: OptionalTextSchema,
   net_amount_debit: OptionalTextSchema,
   addedon: OptionalTextSchema,
+  success_at: OptionalTextSchema,
   mode: OptionalTextSchema,
   PG_TYPE: OptionalTextSchema,
   payment_source: OptionalTextSchema,
+  bankcode: OptionalTextSchema,
+  productinfo: OptionalTextSchema,
+  firstname: OptionalTextSchema,
+  email: OptionalTextSchema,
+  phone: OptionalTextSchema,
+  udf1: OptionalTextSchema,
+  udf2: OptionalTextSchema,
+  udf3: OptionalTextSchema,
+  udf4: OptionalTextSchema,
+  udf5: OptionalTextSchema,
   field9: z.string().nullish(),
   error_code: OptionalTextSchema,
   error_Message: z.string().nullish(),
@@ -249,6 +285,24 @@ export const PayUVerifyPaymentResponseSchema = PayUEnvelopeSchema.extend({
   transaction_details: z.record(z.string(), PayUVerifiedTransactionSchema).nullish(),
 });
 export type PayUVerifyPaymentResponse = z.output<typeof PayUVerifyPaymentResponseSchema>;
+
+/**
+ * `check_action_status` by PayU payment id: `transaction_details[mihpayid][request_id]` is one action (`capture`, `refund`, ...); an
+ * unknown id answers `{"<id>": "No action status found"}`. [reference__check_action_status_api_with_payu_id]
+ */
+export const PayUActionEntrySchema = z.looseObject({
+  action: z.string().nullish(),
+  amt: OptionalTextSchema,
+  token: OptionalTextSchema,
+  status: z.string().nullish(),
+  request_id: OptionalTextSchema,
+});
+export type PayUActionEntry = z.output<typeof PayUActionEntrySchema>;
+
+export const PayUActionStatusResponseSchema = PayUEnvelopeSchema.extend({
+  transaction_details: z.record(z.string(), z.union([z.string(), z.record(z.string(), PayUActionEntrySchema)])).nullish(),
+});
+export type PayUActionStatusResponse = z.output<typeof PayUActionStatusResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // Mandate commands [§7]

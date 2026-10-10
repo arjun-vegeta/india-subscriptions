@@ -3,6 +3,7 @@ import {
   CONSENT_HASH_PIPES_AFTER_UDF5,
   DEFAULT_CONSENT_HASH_LAYOUT,
   HASH_SEPARATOR,
+  PAYMENT_HASH_PIPES_AFTER_UDF5,
   type ConsentHashLayout,
 } from './constants.js';
 
@@ -76,6 +77,44 @@ export function consentRequestHash(
   ]);
   const gap = HASH_SEPARATOR.repeat(CONSENT_HASH_PIPES_AFTER_UDF5[layout]);
   return sha512(`${head}${gap}${input.siDetails}${HASH_SEPARATOR}${input.salt}`);
+}
+
+export interface PaymentRequestHashInput {
+  key: string;
+  salt: string;
+  txnid: string;
+  /** Exactly as posted, e.g. "10.00". */
+  amount: string;
+  productinfo: string;
+  firstname: string;
+  email: string;
+  udf1?: string;
+  udf2?: string;
+  udf3?: string;
+  udf4?: string;
+  udf5?: string;
+}
+
+/**
+ * The request hash of a hosted checkout payment:
+ * `sha512(key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5||||||SALT)`: five udf positions, then six pipes.
+ * [docs__hashing-request-and-response]
+ */
+export function paymentRequestHash(input: PaymentRequestHashInput): string {
+  const head = join([
+    input.key,
+    input.txnid,
+    input.amount,
+    input.productinfo,
+    input.firstname,
+    input.email,
+    input.udf1 ?? '',
+    input.udf2 ?? '',
+    input.udf3 ?? '',
+    input.udf4 ?? '',
+    input.udf5 ?? '',
+  ]);
+  return sha512(`${head}${HASH_SEPARATOR.repeat(PAYMENT_HASH_PIPES_AFTER_UDF5)}${input.salt}`);
 }
 
 export interface ReverseHashInput {

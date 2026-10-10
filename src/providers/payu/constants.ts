@@ -5,6 +5,7 @@ import {
   EventType,
   IntervalUnit,
   PaymentMethod,
+  PaymentStatus,
   SubscriptionStatus,
 } from '../../constants.js';
 
@@ -295,6 +296,8 @@ export const PayUCommand = {
   UpiMandateRevoke: 'upi_mandate_revoke',
   UpiMandateModify: 'upi_mandate_modify',
   RefundTransaction: 'cancel_refund_transaction',
+  /** The refund state of a payment, by PayU payment id. [reference__check_action_status_api_with_payu_id] */
+  CheckActionStatus: 'check_action_status',
 } as const;
 export type PayUCommand = (typeof PayUCommand)[keyof typeof PayUCommand];
 
@@ -352,6 +355,9 @@ export const PAYU_PRE_DEBIT_NOT_REQUIRED = 'not_required';
 
 /** `providerStatus` of a consent that has been prepared but not yet posted by the customer. */
 export const PAYU_CONSENT_CREATED = 'consent_created';
+
+/** `providerStatus` of a one-time payment that has been prepared but not yet posted by the customer. */
+export const PAYU_PAYMENT_CREATED = 'payment_created';
 
 // ---------------------------------------------------------------------------
 // Mandate status -> SubscriptionStatus [§8.2]
@@ -657,3 +663,163 @@ export const UNSIGNED_WEBHOOK_KINDS: readonly PayUWebhookKind[] = [PayUWebhookKi
 /** PayU timestamps ("addedon", "dateTime") are "IST, YYYY-MM-DD HH:MM:SS". [reference__authorization] */
 export const IST_TIMESTAMP_PATTERN = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})$/;
 export const IST_OFFSET_SUFFIX = '+05:30';
+
+// ---------------------------------------------------------------------------
+// One-time payments (hosted checkout, `_payment` without `si`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Names of the fields posted to `_payment` for a one-time payment. No `si`, `si_details`, `free_trial` or `api_version`: those
+ * belong to the recurring consent. [docs__prebuilt-checkout-page-integration]
+ */
+export const PayUPaymentField = {
+  Key: 'key',
+  Txnid: 'txnid',
+  Amount: 'amount',
+  Productinfo: 'productinfo',
+  Firstname: 'firstname',
+  Email: 'email',
+  Phone: 'phone',
+  Surl: 'surl',
+  Furl: 'furl',
+  Udf1: 'udf1',
+  Udf5: 'udf5',
+  EnforcePaymethod: 'enforce_paymethod',
+  Hash: 'hash',
+} as const;
+export type PayUPaymentField = (typeof PayUPaymentField)[keyof typeof PayUPaymentField];
+
+/** Pipes between `udf5` and the salt in the request hash of a hosted checkout payment. [docs__hashing-request-and-response] */
+export const PAYMENT_HASH_PIPES_AFTER_UDF5 = 6;
+
+/** Prefix of a generated one-time payment txnid: `pay_` + 20 hex characters = 24 characters. */
+export const GENERATED_PAYMENT_TXNID_PREFIX = 'pay';
+
+/** `productinfo` is mandatory; used when the payment has no description. */
+export const PAYU_DEFAULT_PRODUCTINFO = 'Payment';
+
+/** "`Character limit`: 50" for `surl` and `furl`. [reference__addl_info-payment-apis] */
+export const RETURN_URL_MAX_LENGTH = 50;
+
+/** "`Character limit`: 255" for `udf1` to `udf5`. [reference__addl_info-payment-apis] */
+export const UDF_MAX_LENGTH = 255;
+
+/**
+ * Value of `udf5` on every payment this adapter creates. `udf5` is part of the response hash, so the marker is covered by the
+ * signature that is verified on the return URL and on the payment webhook. A payment webhook that carries it is a one-time payment;
+ * PayU gives no other field that separates a failed one-time payment from a failed consent.
+ */
+export const PAYU_ONE_TIME_MARKER = 'india-subscriptions-payment';
+
+/**
+ * Prefix of the refund token (`var2`) of a one-time payment refund. The refund callback echoes the token, which is how a refund
+ * webhook is recognised as one about a one-time payment. PayU limits the token to 23 characters.
+ */
+export const PAYMENT_REFUND_TOKEN_PREFIX = 'pay_';
+
+/** Separator between the values of `enforce_paymethod`: "use the delimiter as pipe (|)". [docs__payu-payment-page-customization] */
+export const ENFORCE_PAYMETHOD_SEPARATOR = '|';
+
+/**
+ * `enforce_paymethod` value of each payment method PayU hosted checkout takes. The docs also name the parameter `enforced_payment`
+ * on the integration page; the customization page, which describes it with a value table and samples, names it
+ * `enforce_paymethod`. [docs__payu-payment-page-customization] [docs__prebuilt-checkout-page-integration]
+ */
+export const ENFORCE_PAYMETHOD_BY_METHOD: Partial<Record<PaymentMethod, readonly string[]>> = {
+  [PaymentMethod.Card]: ['creditcard', 'debitcard'],
+  [PaymentMethod.Upi]: ['upi', 'upicc'],
+  [PaymentMethod.NetBanking]: ['netbanking'],
+  [PaymentMethod.Wallet]: ['cashcard'],
+};
+
+/** The methods a one-time payment can be restricted to, and what `capabilities.oneTimePaymentMethods` lists. */
+export const PAYU_ONE_TIME_METHODS: readonly PaymentMethod[] = [
+  PaymentMethod.Card,
+  PaymentMethod.Upi,
+  PaymentMethod.NetBanking,
+  PaymentMethod.Wallet,
+];
+
+/** `mode` values beyond the mandate ones. [reference__payment_payu_hosted_checkout] [docs__payment-mode-codes] */
+export const PayUOneTimeMode = {
+  NetBanking: 'NB',
+  Wallet: 'CASH',
+} as const;
+
+/**
+ * The payment method for a `mode` of a one-time payment. A mode not listed (EMI, CLEMI, BNPL, NEFTRTGS, QR, SBQR, LR, SI) has no
+ * unified method: the payment carries no `paymentMethod`.
+ */
+export const ONE_TIME_METHOD_BY_MODE: Record<string, PaymentMethod> = {
+  [PayUPaymentMode.CreditCard]: PaymentMethod.Card,
+  [PayUPaymentMode.DebitCard]: PaymentMethod.Card,
+  [PayUPaymentMode.Upi]: PaymentMethod.Upi,
+  [PayUOneTimeMode.NetBanking]: PaymentMethod.NetBanking,
+  [PayUOneTimeMode.Wallet]: PaymentMethod.Wallet,
+};
+
+/** `PG_TYPE` fallback when `mode` is missing. */
+export const ONE_TIME_METHOD_BY_PG_TYPE: Record<string, PaymentMethod> = {
+  [PayUPgType.CreditCard]: PaymentMethod.Card,
+  [PayUPgType.DebitCard]: PaymentMethod.Card,
+  [PayUPgType.Upi]: PaymentMethod.Upi,
+  'NB-PG': PaymentMethod.NetBanking,
+  'CASH-PG': PaymentMethod.Wallet,
+};
+
+/**
+ * PayU transaction state -> PaymentStatus. Keys are compared as for charges. [docs__payment-state-explanations]
+ *
+ * - `initiated` (the customer reached PayU's page) is `created`: nothing has been paid.
+ * - `auth` is authorised at the bank and not captured at PayU: `pending`, not `succeeded`, until PayU captures it.
+ * - `bounced`, `dropped`, `failed` and `autoRefund` are PayU's "Failure" rows; `userCancelled` is a cancellation.
+ */
+export const PAYMENT_STATUS_BY_STATE: Record<PayUTransactionState, PaymentStatus> = {
+  [PayUTransactionState.Captured]: PaymentStatus.Succeeded,
+  [PayUTransactionState.Success]: PaymentStatus.Succeeded,
+  [PayUTransactionState.Auth]: PaymentStatus.Pending,
+  [PayUTransactionState.Pending]: PaymentStatus.Pending,
+  [PayUTransactionState.InProgress]: PaymentStatus.Pending,
+  [PayUTransactionState.Initiated]: PaymentStatus.Created,
+  [PayUTransactionState.Failed]: PaymentStatus.Failed,
+  [PayUTransactionState.Failure]: PaymentStatus.Failed,
+  [PayUTransactionState.Bounced]: PaymentStatus.Failed,
+  [PayUTransactionState.Dropped]: PaymentStatus.Failed,
+  [PayUTransactionState.AutoRefund]: PaymentStatus.Failed,
+  [PayUTransactionState.UserCancelled]: PaymentStatus.Cancelled,
+  [PayUTransactionState.Cancelled]: PaymentStatus.Cancelled,
+};
+
+/** A state this adapter does not know is `pending`: the caller keeps asking `getPayment` and never reads it as paid or failed. */
+export const UNKNOWN_PAYMENT_STATUS: PaymentStatus = PaymentStatus.Pending;
+
+/** `var2` of `check_action_status` when `var1` is a PayU payment id. */
+export const PAYU_ACTION_STATUS_BY_PAYU_ID = 'payuid';
+/** `action` of a refund entry in `check_action_status`. */
+export const PAYU_REFUND_ENTRY_ACTION = 'refund';
+/** `transaction_details` value PayU prints when it holds no action for the payment id. */
+export const PAYU_NO_ACTION_STATUS = 'No action status found';
+
+/** Refund states of `check_action_status` and whether the refund counts towards `Payment.refundedAmount`. */
+export const PayURefundActionState = {
+  Queued: 'queued',
+  Success: 'success',
+  Failure: 'failure',
+  InProgress: 'in progress',
+  Requested: 'requested',
+  OverdraftHit: 'od hit',
+} as const;
+export type PayURefundActionState = (typeof PayURefundActionState)[keyof typeof PayURefundActionState];
+
+/**
+ * An accepted refund (queued, in progress, requested, done, or held for overdraft) reduces what can still be refunded; a failed
+ * one deducts nothing ("No funds are deducted for such refunds"). A state not listed is not counted.
+ */
+export const REFUND_ACTION_COUNTS: Record<PayURefundActionState, boolean> = {
+  [PayURefundActionState.Queued]: true,
+  [PayURefundActionState.Success]: true,
+  [PayURefundActionState.Failure]: false,
+  [PayURefundActionState.InProgress]: true,
+  [PayURefundActionState.Requested]: true,
+  [PayURefundActionState.OverdraftHit]: true,
+};
