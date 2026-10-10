@@ -1106,8 +1106,8 @@ describe('config and capabilities', () => {
       signedWebhooks: true,
       idempotencyKeys: false,
       paymentMethods: [PaymentMethod.Upi, PaymentMethod.Card, PaymentMethod.ENach],
-      oneTimePayments: false,
-      oneTimePaymentMethods: [],
+      oneTimePayments: true,
+      oneTimePaymentMethods: ['upi', 'card', 'netbanking', 'wallet'],
     });
   });
 });

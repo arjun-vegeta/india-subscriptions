@@ -7,17 +7,19 @@ import {
   EventType,
   IntervalUnit,
   PaymentMethod,
+  PaymentStatus,
   Provider,
   RefundStatus,
   SchedulingMode,
   SubscriptionStatus,
 } from '../../constants.js';
-import { invalid } from '../../errors.js';
+import { SubscriptionError, invalid } from '../../errors.js';
 import { paiseToRupeeString, rupeesToPaise } from '../../money.js';
 import type {
   BillingInterval,
   Charge,
   Customer,
+  Payment,
   Refund,
   Subscription,
   SubscriptionEvent,
@@ -25,9 +27,12 @@ import type {
 import { addDays, cycleStart, fromIstDateString, parseIso, toDate, toIso, toIstDateString, toIstIso } from '../../time.js';
 import {
   FALLBACK_CHARGE_STATUS,
+  FALLBACK_PAYMENT_STATUS,
   FALLBACK_SUBSCRIPTION_STATUS,
   IST_OFFSET_SUFFIX,
   PAYMENT_EVENT_MAP,
+  PAYMENT_EVENT_MAP_ONE_TIME,
+  PAYMENT_METHOD_FOR_ONE_TIME_MODE,
   PAYMENT_MODE_MAP,
   PAYTM_BANK_MANDATE_MODES,
   PAYTM_CARD_MAX_GRACE_DAYS,
@@ -45,6 +50,8 @@ import {
   PAYTM_INTERVAL_FOR_FREQUENCY,
   PAYTM_MIN_CYCLE_DAYS,
   PAYTM_MOBILE_DIGITS,
+  PAYTM_PAYMENT_ORDER_PREFIX,
+  PAYTM_PAYMENT_STATUS_MAP,
   PAYTM_PIPE,
   PAYTM_PROVIDER_STATUS_UNKNOWN,
   PAYTM_SLASH_DATETIME_PATTERN,
@@ -102,6 +109,8 @@ export function resultView(info: PaytmResultInfo | null | undefined): ResultView
 export interface ApiResultSpec {
   /** The code of a successful answer. */
   successCode: string;
+  /** Other codes that are a success too (Initiate Transaction's "Success Idempotent"). */
+  alsoSuccessCodes?: readonly string[];
   errors: ErrorTable;
   /** A failure whose code is not listed in `errors`. */
   unlisted: ErrorCode;
@@ -123,7 +132,8 @@ export function classifyResult(view: ResultView, spec: ApiResultSpec): BodyFailu
     return { code: spec.noVerdict, message: 'Paytm answered without a result' };
   }
   const failedStatus = view.status !== undefined && PAYTM_FAILURE_STATUSES.includes(view.status.toUpperCase());
-  if (view.code === spec.successCode && !failedStatus) return undefined;
+  const successful = view.code === spec.successCode || (view.code !== undefined && spec.alsoSuccessCodes?.includes(view.code) === true);
+  if (successful && !failedStatus) return undefined;
   const message = view.message ?? 'no message';
   if (spec.unknownStatus !== undefined && view.status === spec.unknownStatus) {
     return { code: ErrorCode.OutcomeUnknown, ...(view.code !== undefined ? { providerCode: view.code } : {}), message };
@@ -520,6 +530,8 @@ export function mapRefund(input: {
   refId: string;
   chargeId: string;
   subscriptionId?: string;
+  /** Set for the refund of a one-time payment: `chargeId` and `paymentId` are then the same order id. */
+  paymentId?: string;
   amount: number;
   status: RefundStatus;
   providerStatus: string;
@@ -531,6 +543,7 @@ export function mapRefund(input: {
     id: input.refundId,
     reference: input.refId,
     chargeId: input.chargeId,
+    ...(input.paymentId !== undefined ? { paymentId: input.paymentId } : {}),
     ...(input.subscriptionId !== undefined ? { subscriptionId: input.subscriptionId } : {}),
     status: input.status,
     providerStatus: input.providerStatus,
@@ -538,6 +551,92 @@ export function mapRefund(input: {
     currency: Currency.INR,
     ...(input.createdAt !== undefined ? { createdAt: input.createdAt } : {}),
     raw: input.raw,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// One-time payments
+// ---------------------------------------------------------------------------
+
+/** The order id a one-time payment is created under: `pay_` and then the caller's reference or a generated token. */
+export function paymentOrderId(reference: string): string {
+  return `${PAYTM_PAYMENT_ORDER_PREFIX}${reference}`;
+}
+
+/** True for an order id of a one-time payment (see `PAYTM_PAYMENT_ORDER_PREFIX`). */
+export function isPaymentOrderId(orderId: string): boolean {
+  return orderId.startsWith(PAYTM_PAYMENT_ORDER_PREFIX) && orderId.length > PAYTM_PAYMENT_ORDER_PREFIX.length;
+}
+
+/** The part of a payment's order id after the prefix: the caller's `reference` (or the generated token). */
+export function paymentReference(orderId: string): string {
+  return orderId.slice(PAYTM_PAYMENT_ORDER_PREFIX.length);
+}
+
+/** `{ paymentId }` for an event or refund about a one-time payment, nothing for anything else. */
+function paymentIdOf(orderId: string): { paymentId?: string } {
+  return isPaymentOrderId(orderId) ? { paymentId: orderId } : {};
+}
+
+export function mapOneTimePaymentMethod(mode: string | null | undefined): PaymentMethod | undefined {
+  if (!mode) return undefined;
+  return PAYMENT_METHOD_FOR_ONE_TIME_MODE[mode.toUpperCase()];
+}
+
+export function mapPaymentStatus(status: string | null | undefined): PaymentStatus {
+  if (!status) return FALLBACK_PAYMENT_STATUS;
+  return PAYTM_PAYMENT_STATUS_MAP[status.toUpperCase()] ?? FALLBACK_PAYMENT_STATUS;
+}
+
+/** True when the payment's money was received, whether or not some of it has been refunded since. */
+export function isPaidStatus(status: PaymentStatus): boolean {
+  return status === PaymentStatus.Succeeded || status === PaymentStatus.Refunded || status === PaymentStatus.PartiallyRefunded;
+}
+
+/**
+ * The payment Transaction Status describes. `TXN_SUCCESS` with a refund amount is `refunded` / `partially_refunded`. A payment
+ * needs an amount: `amountFallback` (the callback's `TXNAMOUNT`) stands in when the answer has none, and without either the
+ * answer is unusable.
+ */
+export function mapTransactionPayment(
+  body: PaytmTxnStatusBody,
+  context: { orderId: string; amountFallback?: string | null },
+): Payment {
+  const view = resultView(body.resultInfo);
+  const providerStatus = view.status ?? PAYTM_PROVIDER_STATUS_UNKNOWN;
+  let status = mapPaymentStatus(view.status);
+  const amount = paise(body.txnAmount) ?? paise(context.amountFallback);
+  if (amount === undefined) {
+    throw new SubscriptionError(
+      ErrorCode.UnexpectedResponse,
+      `${Provider.Paytm} returned the status of order ${context.orderId} without its txnAmount`,
+      { provider: Provider.Paytm, raw: body },
+    );
+  }
+  const refunded = paise(body.refundAmt) ?? 0;
+  if (status === PaymentStatus.Succeeded && refunded > 0) {
+    status = amount > 0 && refunded >= amount ? PaymentStatus.Refunded : PaymentStatus.PartiallyRefunded;
+  }
+  const paidAt = isPaidStatus(status) ? isoOf(parseIstDateTime(body.txnDate)) : undefined;
+  const method = mapOneTimePaymentMethod(body.paymentMode);
+  return {
+    provider: Provider.Paytm,
+    id: context.orderId,
+    reference: paymentReference(context.orderId),
+    status,
+    providerStatus,
+    amount,
+    currency: Currency.INR,
+    ...(refunded > 0 ? { refundedAmount: refunded } : {}),
+    ...(method ? { paymentMethod: method } : {}),
+    ...(paidAt ? { paidAt } : {}),
+    ...(status === PaymentStatus.Failed
+      ? {
+          ...(view.code !== undefined ? { failureCode: view.code } : {}),
+          ...(view.message !== undefined ? { failureReason: view.message } : {}),
+        }
+      : {}),
+    raw: body,
   };
 }
 
@@ -638,6 +737,54 @@ export function mapPaymentWebhook(form: PaytmPaymentWebhook, raw: unknown): Subs
   };
 }
 
+/**
+ * Payment Status webhook of a ONE-TIME payment (its order id starts with the payment prefix): `payment.succeeded` /
+ * `payment.failed` with the payment built from the signed fields. A status that is not final is an `unknown` event that still
+ * carries the payment.
+ */
+export function mapOneTimePaymentWebhook(form: PaytmPaymentWebhook, raw: unknown): SubscriptionEvent {
+  const providerStatus = form.STATUS;
+  const status = mapPaymentStatus(providerStatus);
+  const amount = paise(form.TXNAMOUNT);
+  if (amount === undefined) {
+    throw new SubscriptionError(
+      ErrorCode.UnexpectedResponse,
+      `${Provider.Paytm} sent a payment webhook for order ${form.ORDERID} without its TXNAMOUNT`,
+      { provider: Provider.Paytm, raw },
+    );
+  }
+  const method = mapOneTimePaymentMethod(form.PAYMENTMODE);
+  const occurredAt = isoOf(parseIstDateTime(form.TXNDATE));
+  const payment: Payment = {
+    provider: Provider.Paytm,
+    id: form.ORDERID,
+    reference: paymentReference(form.ORDERID),
+    status,
+    providerStatus,
+    amount,
+    currency: Currency.INR,
+    ...(method ? { paymentMethod: method } : {}),
+    ...(isPaidStatus(status) && occurredAt ? { paidAt: occurredAt } : {}),
+    ...(status === PaymentStatus.Failed
+      ? {
+          ...(form.RESPCODE ? { failureCode: form.RESPCODE } : {}),
+          ...(form.RESPMSG ? { failureReason: form.RESPMSG } : {}),
+        }
+      : {}),
+    raw,
+  };
+  return {
+    id: eventId(PaytmEventName.Payment, form.ORDERID, providerStatus, form.TXNID),
+    provider: Provider.Paytm,
+    type: PAYMENT_EVENT_MAP_ONE_TIME[providerStatus.toUpperCase()] ?? EventType.Unknown,
+    providerEventType: `${PaytmEventName.Payment}${PAYTM_EVENT_ID_SEPARATOR}${providerStatus}`,
+    ...(occurredAt ? { occurredAt } : {}),
+    paymentId: form.ORDERID,
+    payment,
+    raw,
+  };
+}
+
 /** Pre-Notify callback: the customer was (or was not) told. It names no subscription and no amount, so it carries neither. */
 export function mapPreNotifyWebhook(form: PaytmPreNotifyWebhook, raw: unknown): SubscriptionEvent {
   const delivered = form.NOTIFICATIONSTATUS.toUpperCase() === PaytmNotificationStatus.Success;
@@ -661,10 +808,12 @@ export function mapRefundArnWebhook(form: PaytmRefundArnWebhook, raw: unknown): 
     type: EventType.Unknown,
     providerEventType: PaytmEventName.RefundArn,
     ...(occurredAt ? { occurredAt } : {}),
+    ...paymentIdOf(form.ORDERID),
     refund: mapRefund({
       refundId: form.REFUNDID ?? form.REFID,
       refId: form.REFID,
       chargeId: form.ORDERID,
+      ...paymentIdOf(form.ORDERID),
       amount: paise(form.REFUNDAMOUNT) ?? 0,
       status: RefundStatus.Succeeded,
       providerStatus: PaytmEventName.RefundArn,
@@ -703,10 +852,12 @@ export function mapRefundWebhook(body: PaytmRefundWebhookBody, raw: unknown): Su
     type,
     providerEventType: body.status ? `${name}${PAYTM_EVENT_ID_SEPARATOR}${body.status}` : name,
     ...(occurredAt ? { occurredAt } : {}),
+    ...paymentIdOf(body.orderId),
     refund: mapRefund({
       refundId: body.refundId ?? body.refId,
       refId: body.refId,
       chargeId: body.orderId,
+      ...paymentIdOf(body.orderId),
       amount: paise(body.refundAmount) ?? 0,
       status: refundStatus,
       providerStatus: body.status ?? name,

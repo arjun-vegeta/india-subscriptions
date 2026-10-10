@@ -10,6 +10,7 @@ import {
   PAYTM_ORDER_ID_MAX_LENGTH,
   PAYTM_ORDER_ID_PATTERN,
   PAYTM_REFERENCE_ID_MAX_LENGTH,
+  PAYTM_REQUEST_TYPE_PAYMENT,
   PAYTM_REQUEST_TYPE_SUBSCRIPTION,
   PAYTM_TXN_TYPE_REFUND,
   PaytmAmountType,
@@ -73,7 +74,7 @@ export const PaytmConfigSchema = z.object({
     .min(1)
     .max(PAYTM_DEBIT_REASON_MAX_LENGTH, { error: `debitReason is at most ${PAYTM_DEBIT_REASON_MAX_LENGTH} characters` })
     .default(PAYTM_DEFAULT_DEBIT_REASON),
-  /** Overrides the subscription-service host (`secure(stage).paytmpayments.com`): create, renew, pre-notify, status, cancel, pause. */
+  /** Overrides the host `secure(stage).paytmpayments.com`: Initiate Transaction, subscription create, renew, pre-notify, status, cancel, pause. */
   subscriptionBaseUrl: optionalUrl('subscriptionBaseUrl'),
   /** Overrides the host of the Transaction Status API (`securegw(-stage).paytmpayments.in`). */
   transactionStatusBaseUrl: optionalUrl('transactionStatusBaseUrl'),
@@ -175,6 +176,23 @@ export const PaytmInitiateRequestSchema = z
     { error: 'VARIABLE needs subscriptionMaxAmount and FIX needs renewalAmount' },
   );
 export type PaytmInitiateRequest = z.output<typeof PaytmInitiateRequestSchema>;
+
+/**
+ * Initiate Transaction for a one-time payment [init-txn]: only what this adapter sends. `extendInfo.comments` carries the
+ * payment's description.
+ */
+export const PaytmInitiatePaymentRequestSchema = z.object({
+  requestType: z.literal(PAYTM_REQUEST_TYPE_PAYMENT),
+  mid: z.string().min(1),
+  websiteName: z.string().min(1),
+  orderId: OrderIdSchema,
+  callbackUrl: z.url().optional(),
+  txnAmount: TxnAmountSchema,
+  userInfo: UserInfoSchema,
+  enablePaymentMode: z.array(PaymentModeFilterSchema).min(1).optional(),
+  extendInfo: z.object({ comments: z.string().min(1) }).optional(),
+});
+export type PaytmInitiatePaymentRequest = z.output<typeof PaytmInitiatePaymentRequestSchema>;
 
 export const PaytmInitiateBodySchema = z.looseObject({
   resultInfo: PaytmResultInfoSchema.nullish(),

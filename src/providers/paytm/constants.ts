@@ -5,14 +5,17 @@ import {
   EventType,
   IntervalUnit,
   PaymentMethod,
+  PaymentStatus,
   SubscriptionStatus,
 } from '../../constants.js';
 
 /**
- * Paytm Payments (Paytm PG) subscriptions: every string that is sent to or received from Paytm is named here; JSON and
+ * Paytm Payments (Paytm PG) subscriptions and one-time payments: every string that is sent to or received from Paytm is named here; JSON and
  * form field names live in `schemas.ts`. Source tags are the fact sheet's `[tag]` for the doc pages (`[init-sub]`,
  * `[renew]`, `[prenotify]`, `[fetch-status]`, `[cancel]`, `[pause]`, `[txn-status]`, `[refund]`, `[wh-*]`, ...),
- * `[chk-src]` is the official `paytmchecksum@1.5.1` source (read, never executed) and `[§n]` points into the fact sheet.
+ * `[chk-src]` is the official `paytmchecksum@1.5.1` source (read, never executed) and `[§n]` points into the fact sheet. The one-time
+ * payment pages are tagged `[init-txn]` (Initiate Transaction), `[spp]` (Show Payment Page), `[txn-status]`, `[refund]`,
+ * `[wh-payment]`, `[wh-accept-refund]`, `[wh-success-refund]` and `[js-verify]` (the JS Checkout "Verify Payment Status" page).
  *
  * Paytm collects in two ways. With `autoRenewal: true` it debits by itself on each due date (fixed amounts only); with
  * `autoRenewal: false` the merchant calls the Renew API for every cycle, after a Pre-Notify for the modes that need one.
@@ -29,7 +32,7 @@ import {
  * Transaction Status API while its own reference page prints the `.in` host). Each family has a config override.
  */
 export const PaytmHostFamily = {
-  /** Subscription-service APIs and the show-payment-page redirect. */
+  /** Subscription-service APIs, Initiate Transaction (one-time payments) and the show-payment-page redirect: all three print `secure(stage).paytmpayments.com`. */
   Subscription: 'subscription',
   /** Transaction Status API v3. [txn-status] */
   TransactionStatus: 'transaction_status',
@@ -53,8 +56,10 @@ export const PAYTM_BASE_URLS: Record<PaytmHostFamily, Record<Environment, string
   },
 };
 
-/** Endpoint paths. [init-sub] [renew] [prenotify] [fetch-status] [cancel] [pause] [txn-status] [refund] [spp] */
+/** Endpoint paths. [init-sub] [init-txn] [renew] [prenotify] [fetch-status] [cancel] [pause] [txn-status] [refund] [spp] */
 export const PaytmPath = {
+  /** Initiate Transaction: the order of a one-time payment. [init-txn] */
+  InitiateTransaction: '/theia/api/v1/initiateTransaction',
   CreateSubscription: '/subscription/create',
   RenewSubscription: '/subscription/renew',
   PreNotify: '/subscription/preNotify',
@@ -102,6 +107,9 @@ export type PaytmChannelId = (typeof PaytmChannelId)[keyof typeof PaytmChannelId
 /** `body.requestType` of Initiate Subscription. [init-sub] */
 export const PAYTM_REQUEST_TYPE_SUBSCRIPTION = 'NATIVE_SUBSCRIPTION';
 
+/** `body.requestType` of Initiate Transaction: "'Payment' for 'One time Payment' for all checkout flows". [init-txn] */
+export const PAYTM_REQUEST_TYPE_PAYMENT = 'Payment';
+
 /** `body.txnType` of the Refund API. [refund] */
 export const PAYTM_TXN_TYPE_REFUND = 'REFUND';
 
@@ -140,23 +148,34 @@ export const PaytmPaymentModeName = {
   DebitCard: 'DEBIT_CARD',
   BankMandate: 'BANK_MANDATE',
   PaytmDigitalCredit: 'PAYTM_DIGITAL_CREDIT',
+  /** One-time payments only. [init-txn] */
+  NetBanking: 'NET_BANKING',
 } as const;
 export type PaytmPaymentModeName = (typeof PaytmPaymentModeName)[keyof typeof PaytmPaymentModeName];
 
-/** The Paytm payment modes each unified payment method is offered as. [init-sub enablePaymentMode] */
+/** The Paytm payment modes each unified payment method is offered as. [init-sub enablePaymentMode] [init-txn enablePaymentMode] */
 export const PAYTM_MODES_FOR_METHOD: Record<PaymentMethod, readonly PaytmPaymentModeName[]> = {
   [PaymentMethod.Upi]: [PaytmPaymentModeName.Upi],
   [PaymentMethod.Card]: [PaytmPaymentModeName.CreditCard, PaytmPaymentModeName.DebitCard],
   [PaymentMethod.ENach]: [PaytmPaymentModeName.BankMandate],
   /** Paper mandates are a separate form-download/upload integration this adapter does not implement. */
   [PaymentMethod.PhysicalNach]: [],
-  /** Net banking and wallets are one-time payment methods; a subscription request for them is refused before this table is read. */
-  [PaymentMethod.NetBanking]: [],
-  [PaymentMethod.Wallet]: [],
+  /** One-time payments only: a subscription request for net banking or a wallet is refused before this table is read. */
+  [PaymentMethod.NetBanking]: [PaytmPaymentModeName.NetBanking],
+  /** `BALANCE` is "For Paytm Wallet". [init-txn] */
+  [PaymentMethod.Wallet]: [PaytmPaymentModeName.Balance],
 };
 
 /** The payment methods this adapter can authorise a mandate with. Paytm Wallet (`PPI`) has no unified value. [§11] */
 export const PAYTM_PAYMENT_METHODS: readonly PaymentMethod[] = [PaymentMethod.Upi, PaymentMethod.Card, PaymentMethod.ENach];
+
+/** The payment methods a one-time payment can be limited to: Initiate Transaction's `enablePaymentMode` names all four. [init-txn] */
+export const PAYTM_ONE_TIME_PAYMENT_METHODS: readonly PaymentMethod[] = [
+  PaymentMethod.Upi,
+  PaymentMethod.Card,
+  PaymentMethod.NetBanking,
+  PaymentMethod.Wallet,
+];
 
 // ---------------------------------------------------------------------------
 // Frequency [§3.2, §7.1]
@@ -381,6 +400,7 @@ export const PaytmPaymentMode = {
   Balance: 'BALANCE',
   Ppbl: 'PPBL',
   NetBanking: 'NB',
+  NetBankingLong: 'NET_BANKING',
   PostpaidLong: 'PAYTM_DIGITAL_CREDIT',
 } as const;
 export type PaytmPaymentMode = (typeof PaytmPaymentMode)[keyof typeof PaytmPaymentMode];
@@ -398,6 +418,24 @@ export const PAYMENT_MODE_MAP: Record<string, PaymentMethod> = {
   [PaytmPaymentMode.DebitCardLong]: PaymentMethod.Card,
   [PaytmPaymentMode.BankMandate]: PaymentMethod.ENach,
   [PaytmPaymentMode.BankMandateCompact]: PaymentMethod.ENach,
+};
+
+/**
+ * Paytm payment mode -> unified method for a ONE-TIME payment. `PPI` is "Paytm wallet" [spp] and `BALANCE` "For Paytm Wallet"
+ * [init-txn]. Paytm Payments Bank (`PPBL`), postpaid (`PAYTMCC`, "Paytm Postpaid", `PAYTM_DIGITAL_CREDIT`), EMI and bank
+ * transfer have no unified value: the payment method is then absent rather than guessed.
+ */
+export const PAYMENT_METHOD_FOR_ONE_TIME_MODE: Record<string, PaymentMethod> = {
+  [PaytmPaymentMode.Upi]: PaymentMethod.Upi,
+  [PaytmPaymentMode.UpiIntent]: PaymentMethod.Upi,
+  [PaytmPaymentMode.CreditCard]: PaymentMethod.Card,
+  [PaytmPaymentMode.CreditCardLong]: PaymentMethod.Card,
+  [PaytmPaymentMode.DebitCard]: PaymentMethod.Card,
+  [PaytmPaymentMode.DebitCardLong]: PaymentMethod.Card,
+  [PaytmPaymentMode.NetBanking]: PaymentMethod.NetBanking,
+  [PaytmPaymentMode.NetBankingLong]: PaymentMethod.NetBanking,
+  [PaytmPaymentMode.Wallet]: PaymentMethod.Wallet,
+  [PaytmPaymentMode.Balance]: PaymentMethod.Wallet,
 };
 
 /** The modes that are a bank mandate: no pre-debit notification is sent for them and Paytm refunds none of their debits. [sub] [refund-mgmt] */
@@ -451,6 +489,8 @@ export const PaytmSuccessCode = {
   Cancel: '200',
   /** Transaction Status success. */
   Transaction: '01',
+  /** Initiate Transaction: "Success Idempotent", the same order requested again. [init-txn] */
+  InitiateIdempotent: '0002',
 } as const;
 
 /** The result codes the adapter acts on by name. */
@@ -485,6 +525,26 @@ export const INITIATE_ERRORS: ErrorTable = {
   '4001': ErrorCode.Validation,
   '4004': ErrorCode.Validation,
   '4006': ErrorCode.Validation,
+};
+
+/**
+ * Initiate Transaction (one-time payments): the page's own code list. `resultStatus: U` ("System error") is `OUTCOME_UNKNOWN`
+ * whatever the code; a code that is not listed is a plain provider error. [init-txn]
+ */
+export const INITIATE_PAYMENT_ERRORS: ErrorTable = {
+  '196': ErrorCode.Validation,
+  '1006': ErrorCode.ProviderError,
+  '1007': ErrorCode.Validation,
+  '1008': ErrorCode.Validation,
+  '1011': ErrorCode.Validation,
+  '1012': ErrorCode.Validation,
+  '2004': ErrorCode.Validation,
+  '2005': ErrorCode.Auth,
+  '2007': ErrorCode.Validation,
+  '2013': ErrorCode.Validation,
+  '2014': ErrorCode.Validation,
+  // "Repeat Request Inconsistent": this order id was already used for a different request.
+  '2023': ErrorCode.Conflict,
 };
 
 /**
@@ -633,6 +693,12 @@ export const REFUND_ERRORS: ErrorTable = {
 /** `providerStatus` of a subscription that was just created: "it instantly moves to the INIT state". [sub] */
 export const PAYTM_STATUS_CREATED = PaytmSubscriptionStatus.Init;
 
+/**
+ * `providerStatus` of a payment that was just created. Initiate Transaction answers with a token and no order status: Paytm's
+ * Transaction Status has nothing to report until the customer attempts a payment. [init-txn]
+ */
+export const PAYTM_PAYMENT_STATUS_INITIATED = 'INITIATED';
+
 /** `providerStatus` of a pre-debit notification that was not needed (bank mandates) and so never sent. */
 export const PAYTM_PRE_NOTIFY_NOT_REQUIRED = 'NOT_REQUIRED';
 /** `providerStatus` of a pre-debit notification Paytm said it already holds. */
@@ -643,6 +709,41 @@ export const PaytmNotificationStatus = {
   Success: 'SUCCESS',
   Failure: 'FAILURE',
 } as const;
+
+// ---------------------------------------------------------------------------
+// One-time payments
+// ---------------------------------------------------------------------------
+
+/**
+ * The order id of every one-time payment starts with this. Paytm's Payment Status webhook of a one-time payment and the
+ * "Payment S2S callback" of a subscription debit are the same notification (same fields, same checksum, no subscription id in
+ * either), so the order id is what tells them apart: an order id that starts with this prefix is a one-time payment, any other
+ * is read as a subscription debit. `createSubscription` refuses a reference that starts with it.
+ */
+export const PAYTM_GENERATED_PAYMENT_ID_PREFIX = 'pay';
+export const PAYTM_PAYMENT_ORDER_PREFIX = `${PAYTM_GENERATED_PAYMENT_ID_PREFIX}${PAYTM_ID_PART_SEPARATOR}`;
+
+/**
+ * Transaction Status / callback / webhook `STATUS` of a one-time payment -> unified status. `NO_RECORD_FOUND` is not here: it
+ * is an error (`NOT_FOUND`), because a payment cannot be built from an answer that holds no amount. [txn-status] [spp] [wh-payment]
+ */
+export const PAYTM_PAYMENT_STATUS_MAP: Record<string, PaymentStatus> = {
+  [PaytmTxnStatus.Success]: PaymentStatus.Succeeded,
+  [PaytmTxnStatus.Failure]: PaymentStatus.Failed,
+  [PaytmTxnStatus.Pending]: PaymentStatus.Pending,
+};
+
+/**
+ * A status Paytm adds tomorrow is "not final": reporting it as failed could make a merchant release goods or retry while the
+ * payment is live, and reporting it as succeeded would give goods away.
+ */
+export const FALLBACK_PAYMENT_STATUS: PaymentStatus = PaymentStatus.Pending;
+
+/** Payment Status webhook of a one-time payment: unified event per Paytm status; any other status is `unknown`. [wh-payment] */
+export const PAYMENT_EVENT_MAP_ONE_TIME: Record<string, EventType> = {
+  [PaytmTxnStatus.Success]: EventType.PaymentSucceeded,
+  [PaytmTxnStatus.Failure]: EventType.PaymentFailed,
+};
 
 // ---------------------------------------------------------------------------
 // Webhooks and callbacks [§10]

@@ -11,6 +11,7 @@ import {
   HeaderName,
   HttpMethod,
   PaymentMethod,
+  PaymentStatus,
   Provider,
   ProviderKind,
   RefundStatus,
@@ -23,10 +24,12 @@ import { BaseProvider, type GatewayErrorInfo, type ProviderOptions } from '../..
 import {
   CancelSubscriptionOptionsSchema,
   CreateChargeInputSchema,
+  CreatePaymentInputSchema,
   CreateSubscriptionInputSchema,
   NotifyChargeInputSchema,
   PauseSubscriptionOptionsSchema,
   RefundInputSchema,
+  RefundPaymentInputSchema,
   ResumeSubscriptionOptionsSchema,
   UpdateSubscriptionInputSchema,
   WebhookRequestSchema,
@@ -37,13 +40,17 @@ import {
   type CheckoutResult,
   type CheckoutVerification,
   type CreateChargeInput,
+  type CreatePaymentInput,
   type CreatePlanInput,
   type CreateSubscriptionInput,
   type NotifyChargeInput,
   type PauseSubscriptionOptions,
+  type Payment,
+  type PaymentVerification,
   type Plan,
   type Refund,
   type RefundInput,
+  type RefundPaymentInput,
   type ResumeSubscriptionOptions,
   type Subscription,
   type SubscriptionEvent,
@@ -55,6 +62,7 @@ import { assertChecksum, generateChecksum, generateSalt, jsonMemberText, paramsP
 import {
   CANCEL_ERRORS,
   INITIATE_ERRORS,
+  INITIATE_PAYMENT_ERRORS,
   JSON_BODY_START,
   MODIFY_ERRORS,
   PAYTM_BASE_URLS,
@@ -69,11 +77,16 @@ import {
   PAYTM_INVOICE_NUMBER_PATTERN,
   PAYTM_MERCHANT_EXPIRY_BUFFER_DAYS,
   PAYTM_MODES_FOR_METHOD,
+  PAYTM_GENERATED_PAYMENT_ID_PREFIX,
+  PAYTM_ONE_TIME_PAYMENT_METHODS,
   PAYTM_ORDER_ID_MAX_LENGTH,
   PAYTM_ORDER_ID_PATTERN,
   PAYTM_PAYMENT_METHODS,
+  PAYTM_PAYMENT_ORDER_PREFIX,
+  PAYTM_PAYMENT_STATUS_INITIATED,
   PAYTM_PRE_NOTIFY_ALREADY_SENT,
   PAYTM_PRE_NOTIFY_NOT_REQUIRED,
+  PAYTM_REQUEST_TYPE_PAYMENT,
   PAYTM_REQUEST_TYPE_SUBSCRIPTION,
   PAYTM_RETRY_GRACE_DAYS,
   PAYTM_AUTO_RETRY_GRACE_DAYS,
@@ -111,7 +124,10 @@ import {
   isBankMandateMode,
   isUpiSafeStartDate,
   istDaysBetween,
+  isPaidStatus,
+  isPaymentOrderId,
   mapCallbackCharge,
+  mapOneTimePaymentWebhook,
   mapPaymentWebhook,
   mapPreNotifyWebhook,
   mapRefund,
@@ -121,8 +137,11 @@ import {
   mapStatusSubscription,
   mapSubscriptionWebhook,
   mapTransactionCharge,
+  mapTransactionPayment,
   maxGraceDays,
   paise,
+  paymentOrderId,
+  paymentReference,
   parseIstDateTime,
   resultView,
   rupees,
@@ -140,6 +159,7 @@ import {
   PaytmConfigSchema,
   PaytmErrorEnvelopeSchema,
   PaytmFormSchema,
+  PaytmInitiatePaymentRequestSchema,
   PaytmInitiateRequestSchema,
   PaytmInitiateResponseSchema,
   PaytmJsonEnvelopeSchema,
@@ -162,6 +182,7 @@ import {
   type ParsedPaytmConfig,
   type PaytmConfig,
   type PaytmForm,
+  type PaytmInitiatePaymentRequest,
   type PaytmInitiateRequest,
   type PaytmStatusBody,
   type PaytmTxnStatusBody,
@@ -209,6 +230,14 @@ function checkOrderId(value: string, what: string): string {
 const INITIATE_SPEC: ApiResultSpec = {
   successCode: PaytmSuccessCode.Initiate,
   errors: INITIATE_ERRORS,
+  unlisted: ErrorCode.ProviderError,
+  noVerdict: ErrorCode.OutcomeUnknown,
+  unknownStatus: PaytmResultStatus.Unknown,
+};
+const INITIATE_PAYMENT_SPEC: ApiResultSpec = {
+  successCode: PaytmSuccessCode.Initiate,
+  alsoSuccessCodes: [PaytmSuccessCode.InitiateIdempotent],
+  errors: INITIATE_PAYMENT_ERRORS,
   unlisted: ErrorCode.ProviderError,
   noVerdict: ErrorCode.OutcomeUnknown,
   unknownStatus: PaytmResultStatus.Unknown,
@@ -289,6 +318,15 @@ interface ApiCall<S extends z.ZodType> {
  *
  * `authorizeBy`, `upfrontLabel`, `metadata`, `idempotencyKey` and `quantity > 1` have no Paytm equivalent (the order id is
  * the natural idempotency key: Paytm refuses a repeated one).
+ *
+ * ## One-time payments
+ *
+ * `createPayment` calls Initiate Transaction and returns the same form post to the payment page as a subscription. A payment's
+ * id is its Paytm order id, `pay_` and then the caller's `reference` (or a generated token), and it is the id every later call
+ * takes (Transaction Status and Refund are keyed by order id). The prefix is also how a webhook is told apart: Paytm's Payment
+ * Status webhook of a one-time payment and the payment callback of a subscription debit carry the same fields and no
+ * subscription id, so an order id that starts with `pay_` is a one-time payment and any other is a subscription debit.
+ * `expiresAt` and `metadata` have no place in Initiate Transaction and are refused; `description` goes in `extendInfo.comments`.
  */
 export class PaytmProvider extends BaseProvider {
   readonly name = Provider.Paytm;
@@ -313,8 +351,8 @@ export class PaytmProvider extends BaseProvider {
     signedWebhooks: true,
     idempotencyKeys: false,
     paymentMethods: [...PAYTM_PAYMENT_METHODS],
-    oneTimePayments: false,
-    oneTimePaymentMethods: [],
+    oneTimePayments: true,
+    oneTimePaymentMethods: [...PAYTM_ONE_TIME_PAYMENT_METHODS],
   };
 
   // Real private fields: invisible to JSON.stringify, console.log and spreads, so the merchant key cannot leak.
@@ -507,6 +545,7 @@ export class PaytmProvider extends BaseProvider {
       input.reference ?? this.#generateId(PAYTM_GENERATED_ORDER_ID_PREFIX, PAYTM_GENERATED_ORDER_ID_RANDOM_BYTES),
       'reference',
     );
+    this.refusePaymentPrefix(orderId, 'reference');
     const { userInfo } = buildUserInfo(input.customer, orderId);
     const totalCycles = input.totalCycles ?? plan.maxCycles;
 
@@ -651,17 +690,22 @@ export class PaytmProvider extends BaseProvider {
       startAt: toIso(firstDebit),
       ...(isTrial ? { trialEndsAt: toIso(firstDebit) } : {}),
       mandateEndsAt: input.mandateEndsAt ?? toIso(toDate(`${expiryDate}T00:00:00+05:30`)),
-      checkout: {
-        kind: CheckoutKind.FormPost,
-        url: withQuery(`${this.#checkoutUrl}${PaytmPath.ShowPaymentPage}`, {
-          [PaytmQuery.Mid]: this.#mid,
-          [PaytmQuery.OrderId]: orderId,
-        }),
-        fields: { mid: this.#mid, orderId, txnToken },
-      },
+      checkout: this.paymentPage(orderId, txnToken),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
       raw: answer,
     };
+  }
+
+  /** The form post to Paytm's payment page: only `mid`, `orderId` and the one-time `txnToken`, never the merchant key. [spp] */
+  private paymentPage(orderId: string, txnToken: string) {
+    return {
+      kind: CheckoutKind.FormPost,
+      url: withQuery(`${this.#checkoutUrl}${PaytmPath.ShowPaymentPage}`, {
+        [PaytmQuery.Mid]: this.#mid,
+        [PaytmQuery.OrderId]: orderId,
+      }),
+      fields: { mid: this.#mid, orderId, txnToken },
+    } as const;
   }
 
   /** Fetch Subscription Status (`/subscription/checkStatus`) by Paytm's subscription id. */
@@ -906,6 +950,7 @@ export class PaytmProvider extends BaseProvider {
   override async createCharge(rawInput: CreateChargeInput): Promise<Charge> {
     const input = parseInput(CreateChargeInputSchema, rawInput, 'charge input', this.name);
     const orderId = checkOrderId(input.chargeId, 'chargeId');
+    this.refusePaymentPrefix(orderId, 'chargeId');
     const now = this.now();
     const scheduled = input.scheduledAt !== undefined ? toDate(input.scheduledAt, 'scheduledAt') : undefined;
     // `debitDate` is for a debit on a LATER day: "Not required to process current date debit".
@@ -951,10 +996,10 @@ export class PaytmProvider extends BaseProvider {
    * has no trace of the order. Its other `TXN_FAILURE` codes that are not failed debits (wrong MID, "Server Down") are errors,
    * never a failed charge, because the scheduler would debit again under a new id.
    */
-  private async transactionBody(orderId: string): Promise<PaytmTxnStatusBody> {
+  private async transactionBody(orderId: string, idName = 'chargeId'): Promise<PaytmTxnStatusBody> {
     const body = parseInput(
       PaytmTxnStatusRequestSchema,
-      { mid: this.#mid, orderId: checkOrderId(requireText(orderId, 'chargeId'), 'chargeId') },
+      { mid: this.#mid, orderId: checkOrderId(requireText(orderId, idName), idName) },
       'Paytm transaction status request',
       this.name,
     );
@@ -1011,17 +1056,34 @@ export class PaytmProvider extends BaseProvider {
    */
   override async refundCharge(rawInput: RefundInput): Promise<Refund> {
     const input = parseInput(RefundInputSchema, rawInput, 'refund input', this.name);
-    const transaction = await this.transactionBody(input.chargeId);
+    return this.refundOrder(input.chargeId, 'chargeId', {
+      refundId: input.refundId,
+      ...(input.amount !== undefined ? { amount: input.amount } : {}),
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      ...(input.subscriptionId !== undefined ? { subscriptionId: input.subscriptionId } : {}),
+    });
+  }
+
+  /**
+   * The Refund API for one order, shared by debits and one-time payments. The transaction is read first (only a successful one
+   * can be refunded); `paymentId` is set for a one-time payment, which makes `chargeId` and `paymentId` the same order id.
+   */
+  private async refundOrder(
+    orderId: string,
+    idName: string,
+    params: { refundId: string; amount?: number; reason?: string; subscriptionId?: string; paymentId?: string },
+  ): Promise<Refund> {
+    const transaction = await this.transactionBody(orderId, idName);
     const transactionView = resultView(transaction.resultInfo);
     if (transactionView.status?.toUpperCase() !== PaytmTxnStatus.Success) {
       throw invalid(
-        `${input.chargeId} cannot be refunded: Paytm reports it as ${transactionView.status ?? 'unknown'}, and only a successful transaction can be refunded`,
+        `${orderId} cannot be refunded: Paytm reports it as ${transactionView.status ?? 'unknown'}, and only a successful transaction can be refunded`,
         this.name,
       );
     }
     let mode = transaction.paymentMode;
-    if (!isBankMandateMode(mode) && input.subscriptionId !== undefined) {
-      const subscription = await this.statusBody(input.subscriptionId);
+    if (!isBankMandateMode(mode) && params.subscriptionId !== undefined) {
+      const subscription = await this.statusBody(params.subscriptionId);
       mode = subscription.subsPaymentInstDetails?.paymentMode ?? subscription.payMode ?? mode;
     }
     if (isBankMandateMode(mode)) {
@@ -1033,13 +1095,13 @@ export class PaytmProvider extends BaseProvider {
     }
     const txnId = transaction.txnId;
     if (!txnId) {
-      throw new SubscriptionError(ErrorCode.UnexpectedResponse, `${this.name} returned the transaction ${input.chargeId} without its txnId`, {
+      throw new SubscriptionError(ErrorCode.UnexpectedResponse, `${this.name} returned the transaction ${orderId} without its txnId`, {
         provider: this.name,
         raw: transaction,
       });
     }
     const charged = paise(transaction.txnAmount);
-    const amount = input.amount ?? charged;
+    const amount = params.amount ?? charged;
     if (amount === undefined) {
       throw invalid('amount is required: Paytm needs the refund amount and it could not be read from the transaction', this.name);
     }
@@ -1052,11 +1114,11 @@ export class PaytmProvider extends BaseProvider {
       {
         mid: this.#mid,
         txnType: PAYTM_TXN_TYPE_REFUND,
-        orderId: input.chargeId,
+        orderId,
         txnId,
-        refId: input.refundId,
+        refId: params.refundId,
         refundAmount: rupees(amount),
-        ...(input.reason !== undefined ? { comments: input.reason } : {}),
+        ...(params.reason !== undefined ? { comments: params.reason } : {}),
       },
       'Paytm refund request',
       this.name,
@@ -1084,15 +1146,191 @@ export class PaytmProvider extends BaseProvider {
       );
     }
     return mapRefund({
-      refundId: answer.refundId ?? input.refundId,
-      refId: input.refundId,
-      chargeId: input.chargeId,
-      ...(input.subscriptionId !== undefined ? { subscriptionId: input.subscriptionId } : {}),
+      refundId: answer.refundId ?? params.refundId,
+      refId: params.refundId,
+      chargeId: orderId,
+      ...(params.subscriptionId !== undefined ? { subscriptionId: params.subscriptionId } : {}),
+      ...(params.paymentId !== undefined ? { paymentId: params.paymentId } : {}),
       amount: paise(answer.refundAmount) ?? amount,
       status: verdict === PaytmTxnStatus.Success ? RefundStatus.Succeeded : RefundStatus.Pending,
       providerStatus: view.status ?? PaytmTxnStatus.Pending,
       ...(parseIstDateTime(answer.txnTimestamp) ? { createdAt: toIso(parseIstDateTime(answer.txnTimestamp) as Date) } : {}),
       raw: answer,
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // One-time payments
+  // -------------------------------------------------------------------------
+
+  /** Order ids of one-time payments start with `pay_`; a subscription's order id and a debit's order id may not, so webhooks stay unambiguous. */
+  private refusePaymentPrefix(orderId: string, what: string): void {
+    if (isPaymentOrderId(orderId)) {
+      throw invalid(
+        `${what} "${orderId.slice(0, 40)}" cannot start with "${PAYTM_PAYMENT_ORDER_PREFIX}": the adapter reserves that prefix for the order ids of one-time payments, which is how Paytm's payment webhooks of the two are told apart`,
+        this.name,
+      );
+    }
+  }
+
+  /** A fresh order id for a payment without a reference. The id generator builds `pay_<token>` itself; one that does not is prefixed here. */
+  private generatedPaymentOrderId(): string {
+    const generated = this.#generateId(PAYTM_GENERATED_PAYMENT_ID_PREFIX, PAYTM_GENERATED_ORDER_ID_RANDOM_BYTES);
+    return isPaymentOrderId(generated) ? generated : paymentOrderId(generated);
+  }
+
+  /** `paymentId` as the order id it is, or `VALIDATION` when it is not an id that `createPayment` returns. */
+  private paymentOrderIdOf(paymentId: string, idName: string): string {
+    const id = requireText(paymentId, idName);
+    if (!isPaymentOrderId(id)) {
+      throw invalid(
+        `${idName} "${id.slice(0, 40)}" is not a one-time payment id: the ids ${this.name} payments return start with "${PAYTM_PAYMENT_ORDER_PREFIX}"`,
+        this.name,
+      );
+    }
+    return checkOrderId(id, idName);
+  }
+
+  /**
+   * Initiate Transaction (`/theia/api/v1/initiateTransaction`, request type `Payment`), then the form post to Paytm's payment
+   * page. `Payment.id` is the order id: `pay_` and then `reference`, or `pay_` and a generated token. The token is valid for 15
+   * minutes. A repeated order id with the same request is Paytm's "Success Idempotent"; with a different one, `CONFLICT`.
+   *
+   * Refused rather than dropped: `expiresAt` (the request has no expiry), `metadata` (no key-value place, and no webhook or
+   * status field returns one), and payment methods other than UPI, cards, net banking and wallet.
+   */
+  override async createPayment(rawInput: CreatePaymentInput): Promise<Payment> {
+    const input = parseInput(CreatePaymentInputSchema, rawInput, 'payment input', this.name);
+    if (input.expiresAt !== undefined) {
+      throw unsupported(
+        this.name,
+        'expiresAt',
+        "Paytm's Initiate Transaction takes no order expiry (its transaction token is valid for 15 minutes); drop expiresAt and stop offering the order yourself",
+      );
+    }
+    if (input.metadata !== undefined) {
+      throw unsupported(
+        this.name,
+        'metadata',
+        "Paytm's Initiate Transaction has no key-value field, and no callback, webhook or status answer returns one; keep the metadata with the payment id on your side",
+      );
+    }
+    const methods = input.paymentMethods;
+    const unusable = methods?.filter((method) => !PAYTM_ONE_TIME_PAYMENT_METHODS.includes(method));
+    if (unusable !== undefined && unusable.length > 0) {
+      throw invalid(
+        `Paytm one-time payments can be limited to ${PAYTM_ONE_TIME_PAYMENT_METHODS.join(', ')}; ${unusable.join(', ')} cannot be requested`,
+        this.name,
+      );
+    }
+
+    const orderId = input.reference !== undefined ? paymentOrderId(input.reference) : this.generatedPaymentOrderId();
+    const reference = paymentReference(orderId);
+    if (orderId.length > PAYTM_ORDER_ID_MAX_LENGTH || !PAYTM_ORDER_ID_PATTERN.test(orderId)) {
+      throw invalid(
+        `reference "${reference.slice(0, 40)}" cannot be used: Paytm's order id is "${PAYTM_PAYMENT_ORDER_PREFIX}" and then the reference, at most ${PAYTM_ORDER_ID_MAX_LENGTH} characters of letters, digits and "@", ".", "_", "-"`,
+        this.name,
+      );
+    }
+    const { userInfo } = buildUserInfo(input.customer, orderId);
+    const callbackUrl = input.returnUrl ?? this.#config.callbackUrl;
+    const body: PaytmInitiatePaymentRequest = parseInput(
+      PaytmInitiatePaymentRequestSchema,
+      {
+        requestType: PAYTM_REQUEST_TYPE_PAYMENT,
+        mid: this.#mid,
+        websiteName: this.#config.website,
+        orderId,
+        ...(callbackUrl !== undefined ? { callbackUrl } : {}),
+        txnAmount: { value: rupees(input.amount), currency: PAYTM_CURRENCY },
+        userInfo,
+        ...(methods !== undefined
+          ? { enablePaymentMode: [...new Set(methods.flatMap((method) => PAYTM_MODES_FOR_METHOD[method]))].map((mode) => ({ mode })) }
+          : {}),
+        ...(input.description !== undefined ? { extendInfo: { comments: input.description } } : {}),
+      },
+      'Paytm payment request',
+      this.name,
+    );
+
+    const answer = await this.call({
+      path: PaytmPath.InitiateTransaction,
+      family: PaytmHostFamily.Subscription,
+      dialect: PaytmHeadDialect.Theia,
+      query: { [PaytmQuery.Mid]: this.#mid, [PaytmQuery.OrderId]: orderId },
+      body,
+      schema: PaytmInitiateResponseSchema,
+      what: 'payment creation',
+      idempotent: false,
+    });
+    this.failOnResult(resultView(answer.resultInfo), INITIATE_PAYMENT_SPEC, 'payment creation', answer);
+    const { txnToken } = answer;
+    if (!txnToken) {
+      throw new SubscriptionError(
+        ErrorCode.UnexpectedResponse,
+        `${this.name} reported success for payment creation without a txnToken; the order may exist: look it up by its order id ${orderId} before creating another`,
+        { provider: this.name, raw: answer },
+      );
+    }
+    return {
+      provider: this.name,
+      id: orderId,
+      reference,
+      status: PaymentStatus.Created,
+      providerStatus: PAYTM_PAYMENT_STATUS_INITIATED,
+      amount: input.amount,
+      currency: Currency.INR,
+      customer: {
+        id: userInfo.custId,
+        ...(input.customer.name !== undefined ? { name: input.customer.name } : {}),
+        ...(input.customer.email !== undefined ? { email: input.customer.email } : {}),
+        ...(input.customer.phone !== undefined ? { phone: input.customer.phone } : {}),
+      },
+      createdAt: toIso(this.now()),
+      checkout: this.paymentPage(orderId, txnToken),
+      raw: answer,
+    };
+  }
+
+  /** Transaction Status for the order. `NO_RECORD_FOUND` is `NOT_FOUND`: Paytm's page does not say whether an order nobody has tried to pay has a record. */
+  override async getPayment(paymentId: string): Promise<Payment> {
+    const orderId = this.paymentOrderIdOf(paymentId, 'paymentId');
+    return mapTransactionPayment(await this.transactionBody(orderId, 'paymentId'), { orderId });
+  }
+
+  /**
+   * `result` is the key-value post Paytm sends to `callbackUrl`. Its `CHECKSUMHASH` is verified over all the other fields
+   * (`SIGNATURE_INVALID` otherwise). A callback "can be intermediate or final", and Paytm "strongly recommends" fetching the
+   * final status with Transaction Status before confirming the order, so that is done: the returned payment, and `paid`, come
+   * from Transaction Status, never from the callback's own `STATUS`. Comparing `payment.amount` with your order is up to you.
+   */
+  override async verifyPayment(result: CheckoutResult): Promise<PaymentVerification> {
+    const form = this.toForm(result, 'checkout result');
+    this.verifyForm(form, 'checkout result');
+    const callback = parseInput(PaytmCallbackSchema, form, 'Paytm checkout result', this.name);
+    const orderId = this.paymentOrderIdOf(callback.ORDERID, 'ORDERID');
+    const transaction = await this.transactionBody(orderId, 'ORDERID');
+    const payment = mapTransactionPayment(transaction, { orderId, amountFallback: callback.TXNAMOUNT });
+    return {
+      provider: this.name,
+      paymentId: orderId,
+      reference: paymentReference(orderId),
+      paid: isPaidStatus(payment.status),
+      status: payment.status,
+      payment,
+      raw: { callback: form, transaction },
+    };
+  }
+
+  /** Refund API for the payment's order id: `chargeId` and `paymentId` of the refund are both that id. */
+  override async refundPayment(rawInput: RefundPaymentInput): Promise<Refund> {
+    const input = parseInput(RefundPaymentInputSchema, rawInput, 'refund input', this.name);
+    const orderId = this.paymentOrderIdOf(input.paymentId, 'paymentId');
+    return this.refundOrder(orderId, 'paymentId', {
+      refundId: input.refundId,
+      paymentId: orderId,
+      ...(input.amount !== undefined ? { amount: input.amount } : {}),
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
     });
   }
 
@@ -1217,7 +1455,9 @@ export class PaytmProvider extends BaseProvider {
     const subscription = PaytmSubscriptionWebhookSchema.safeParse(form);
     if (subscription.success) return mapSubscriptionWebhook(subscription.data, form);
     const payment = PaytmPaymentWebhookSchema.safeParse(form);
-    if (payment.success) return mapPaymentWebhook(payment.data, form);
+    if (payment.success) {
+      return isPaymentOrderId(payment.data.ORDERID) ? mapOneTimePaymentWebhook(payment.data, form) : mapPaymentWebhook(payment.data, form);
+    }
     throw new SubscriptionError(ErrorCode.UnexpectedResponse, `${this.name} sent a webhook this adapter does not recognise`, {
       provider: this.name,
       raw: form,
