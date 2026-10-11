@@ -216,7 +216,7 @@ export const RAZORPAY_EXPECTED_SUBSCRIPTION_ID_KEY = 'expected_subscription_id';
  * Optional extra key a caller may add to the checkout result passed to
  * `verifyPayment`: the order id read from the caller's own storage. The docs
  * say to sign with the stored id, "Do not use the razorpay_order_id returned
- * by Checkout" (fact sheet, section 5).
+ * by Checkout" (Standard Checkout integration steps, "Verify Payment Signature").
  */
 export const RAZORPAY_EXPECTED_ORDER_ID_KEY = 'expected_order_id';
 
