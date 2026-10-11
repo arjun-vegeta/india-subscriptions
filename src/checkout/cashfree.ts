@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { z as zod } from 'zod';
-import { CheckoutKind, Environment, ErrorCode, Provider } from '../constants.js';
+import { CheckoutKind, Environment, ErrorCode, ProductKind, Provider } from '../constants.js';
 import { parseInput, SubscriptionError } from '../errors.js';
 import { CashfreeCheckoutSchema } from '../schemas.js';
 import {
@@ -29,6 +29,17 @@ export const CASHFREE_MODE: Record<Environment, CashfreeMode> = {
   [Environment.Live]: CashfreeMode.Production,
 };
 
+/**
+ * Cashfree.js `checkout` for a one-time payment. [web guide: `cashfree.checkout({ paymentSessionId, redirectTarget })`]
+ * These names live here, not in `constants.ts`, because the subscription helper's constants are shared.
+ */
+const OneTimeCheckout = {
+  /** The method called on the Cashfree object. */
+  Method: 'checkout',
+  /** Key of the payment session id in the options. */
+  PaymentSessionId: 'paymentSessionId',
+} as const;
+
 /** What `subscriptionsCheckout(...)` resolves with: on failure `result.error.message`. [cashfree.md §7.1] */
 const CheckoutResultShape = zod.looseObject({ error: CheckoutErrorSchema.nullish() }).nullish();
 
@@ -39,7 +50,10 @@ function unavailable(message: string): SubscriptionError {
 /**
  * `cashfree_checkout`: loads cashfree.js (once), initialises it with the mode
  * for `instruction.environment`, and calls
- * `subscriptionsCheckout({ subsSessionId, redirectTarget })`.
+ * `subscriptionsCheckout({ subsSessionId, redirectTarget })`. When the
+ * instruction has `productKind: one_time`, it calls
+ * `checkout({ paymentSessionId, redirectTarget })` instead, with the payment
+ * session id.
  *
  * A result carrying `error` becomes `failed`. Otherwise the hosted checkout
  * has taken over and the customer comes back to your `return_url`: the outcome
@@ -67,19 +81,21 @@ export async function openCashfreeCheckout(
   const sdk: unknown = Reflect.apply(factory, undefined, [
     { [CashfreeInitOption.Mode]: CASHFREE_MODE[parsed.environment] },
   ]);
-  const checkout: unknown = sdk !== null && typeof sdk === 'object' ? Reflect.get(sdk, GatewayMethod.CashfreeSubscriptionsCheckout) : undefined;
+  const oneTime = parsed.productKind === ProductKind.OneTime;
+  const method = oneTime ? OneTimeCheckout.Method : GatewayMethod.CashfreeSubscriptionsCheckout;
+  const checkout: unknown = sdk !== null && typeof sdk === 'object' ? Reflect.get(sdk, method) : undefined;
   if (typeof checkout !== 'function') {
-    throw unavailable('The Cashfree SDK has no subscriptionsCheckout method');
+    throw unavailable(`The Cashfree SDK has no ${method} method`);
   }
+
+  const redirectTarget = display.redirectTarget ?? DEFAULT_CASHFREE_REDIRECT_TARGET;
+  const checkoutOptions = oneTime
+    ? { [OneTimeCheckout.PaymentSessionId]: parsed.sessionId, [CashfreeCheckoutOption.RedirectTarget]: redirectTarget }
+    : { [CashfreeCheckoutOption.SubsSessionId]: parsed.sessionId, [CashfreeCheckoutOption.RedirectTarget]: redirectTarget };
 
   let raw: unknown;
   try {
-    raw = await Reflect.apply(checkout, sdk, [
-      {
-        [CashfreeCheckoutOption.SubsSessionId]: parsed.sessionId,
-        [CashfreeCheckoutOption.RedirectTarget]: display.redirectTarget ?? DEFAULT_CASHFREE_REDIRECT_TARGET,
-      },
-    ]);
+    raw = await Reflect.apply(checkout, sdk, [checkoutOptions]);
   } catch (error) {
     const message = error instanceof Error ? error.message : undefined;
     return { status: CheckoutStatus.Failed, error: message === undefined ? {} : { message } };
