@@ -18,11 +18,13 @@ import { basicAuth, withQuery, type HttpResponse } from '../../http.js';
 import { BaseProvider, type GatewayErrorInfo, type ProviderOptions } from '../../provider.js';
 import {
   CancelSubscriptionOptionsSchema,
+  CreatePaymentInputSchema,
   CreatePlanInputSchema,
   CreateSubscriptionInputSchema,
   ListChargesOptionsSchema,
   PauseSubscriptionOptionsSchema,
   RefundInputSchema,
+  RefundPaymentInputSchema,
   ResumeSubscriptionOptionsSchema,
   UpdateSubscriptionInputSchema,
   WebhookRequestSchema,
@@ -31,13 +33,17 @@ import {
   type Charge,
   type CheckoutResult,
   type CheckoutVerification,
+  type CreatePaymentInput,
   type CreatePlanInput,
   type CreateSubscriptionInput,
   type ListChargesOptions,
   type PauseSubscriptionOptions,
+  type Payment,
+  type PaymentVerification,
   type Plan,
   type Refund,
   type RefundInput,
+  type RefundPaymentInput,
   type ResumeSubscriptionOptions,
   type Subscription,
   type SubscriptionEvent,
@@ -48,10 +54,13 @@ import { resolveFirstChargeAt, toDate, toUnixSeconds } from '../../time.js';
 import {
   RAZORPAY_BASE_URL,
   RAZORPAY_DEFAULT_UPFRONT_LABEL,
+  RAZORPAY_DUPLICATE_ORDER_PATTERN,
   RAZORPAY_ERROR_DESCRIPTION_RULES,
+  RAZORPAY_EXPECTED_ORDER_ID_KEY,
   RAZORPAY_EXPECTED_SUBSCRIPTION_ID_KEY,
   RAZORPAY_MAX_INVOICE_PAGES,
   RAZORPAY_PAGE_SIZE,
+  RAZORPAY_REFUND_IDEMPOTENCY_PATTERN,
   RazorpayEndpoint,
   RazorpayHeader,
   RazorpayIdPrefix,
@@ -64,12 +73,18 @@ import {
 import {
   buildCheckout,
   buildNotes,
+  buildOrderCheckout,
+  buildOrderRequest,
   buildPlanRequest,
   cyclesInYears,
   describeErrorBody,
+  isSettledAttempt,
   isTerminal,
   mapInvoiceToCharge,
   mapInvoicesToCharges,
+  mapCreatedPayment,
+  mapOrderPayment,
+  mapPaymentRefund,
   mapPaymentToCharge,
   mapPlan,
   mapRefund,
@@ -83,13 +98,18 @@ import {
   RazorpayCancelRequestSchema,
   RazorpayCheckoutResponseSchema,
   RazorpayConfigSchema,
+  RazorpayCreateOrderRequestSchema,
   RazorpayCreatePlanRequestSchema,
   RazorpayCreateSubscriptionRequestSchema,
   RazorpayErrorBodySchema,
   RazorpayInvoiceCollectionSchema,
   RazorpayInvoiceEntitySchema,
   RazorpayInvoiceQuerySchema,
+  RazorpayOrderCheckoutResponseSchema,
+  RazorpayOrderCollectionSchema,
+  RazorpayOrderEntitySchema,
   RazorpayPauseRequestSchema,
+  RazorpayPaymentCollectionSchema,
   RazorpayPaymentEntitySchema,
   RazorpayPlanEntitySchema,
   RazorpayRefundEntitySchema,
@@ -102,6 +122,8 @@ import {
   type RazorpayConfig,
   type RazorpayCreateSubscriptionRequest,
   type RazorpayInvoiceEntity,
+  type RazorpayOrderEntity,
+  type RazorpayPaymentEntity,
   type RazorpayPlanEntity,
   type RazorpaySubscriptionEntity,
   type RazorpayUpdateRequest,
@@ -124,6 +146,18 @@ function parseConfig(config: unknown): ParsedRazorpayConfig {
 function requireId(value: unknown, what: string): string {
   if (typeof value !== 'string' || value.trim() === '') throw invalid(`${what} is required`, Provider.Razorpay);
   return value;
+}
+
+/** A one-time payment is identified by its order id: see `buildOrderRequest`. */
+function requireOrderId(value: unknown): string {
+  const id = requireId(value, 'paymentId');
+  if (!id.startsWith(RazorpayIdPrefix.Order)) {
+    throw invalid(
+      `${Provider.Razorpay} one-time payments are identified by their order id (${RazorpayIdPrefix.Order}...): pass the id createPayment returned`,
+      Provider.Razorpay,
+    );
+  }
+  return id;
 }
 
 /**
@@ -164,8 +198,9 @@ export class RazorpayProvider extends BaseProvider {
     idempotencyKeys: false,
     // "Razorpay Subscriptions supports Cards, UPI Autopay and Emandate."
     paymentMethods: [PaymentMethod.Card, PaymentMethod.Upi, PaymentMethod.ENach],
-    oneTimePayments: false,
-    oneTimePaymentMethods: [],
+    oneTimePayments: true,
+    // Standard Checkout also takes EMI and pay-later, which have no entry in PaymentMethod.
+    oneTimePaymentMethods: [PaymentMethod.Card, PaymentMethod.Upi, PaymentMethod.NetBanking, PaymentMethod.Wallet],
   };
 
   // ES private fields: invisible to JSON.stringify, console.log and spreads, so the secrets cannot leak.
@@ -190,20 +225,27 @@ export class RazorpayProvider extends BaseProvider {
     path: string,
     schema: S,
     what: string,
-    options: { body?: unknown; query?: Record<string, string | number | undefined> } = {},
+    options: {
+      body?: unknown;
+      query?: Record<string, string | number | undefined>;
+      headers?: Record<string, string>;
+      /** True for a write that carries a Razorpay idempotency key. Reads are always repeatable. */
+      idempotent?: boolean;
+    } = {},
   ): Promise<z.output<S>> {
     const url = withQuery(`${this.#baseUrl}${path}`, options.query ?? {});
     const headers: Record<string, string> = {
       [HeaderName.Authorization]: this.#authorization,
       [HeaderName.Accept]: ContentType.Json,
+      ...options.headers,
     };
     let body: string | undefined;
     if (options.body !== undefined) {
       headers[HeaderName.ContentType] = ContentType.Json;
       body = JSON.stringify(options.body);
     }
-    // Only reads are safe to repeat: Razorpay has no idempotency key for writes.
-    return this.send({ method, url, headers, body, idempotent: method === HttpMethod.Get }, schema, what);
+    // Only reads are safe to repeat, and writes that carry an idempotency key (order receipt, refund header).
+    return this.send({ method, url, headers, body, idempotent: method === HttpMethod.Get || options.idempotent === true }, schema, what);
   }
 
   protected describeError(response: HttpResponse): GatewayErrorInfo {
@@ -573,6 +615,146 @@ export class RazorpayProvider extends BaseProvider {
   }
 
   // -------------------------------------------------------------------------
+  // One-time payments (Orders API)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Creates an order and returns it as a `Payment` whose `id` is the order id,
+   * with a Standard Checkout instruction for it. `idempotencyKey` is sent as the
+   * order `receipt`, which Razorpay treats as an idempotency key: a repeat of the
+   * call is answered "Duplicate request", and this adapter then reads the
+   * existing order back by its receipt and returns that one (when the amount is
+   * the same), so a retry after a lost response never creates a second order.
+   * Without a key a lost response is `OUTCOME_UNKNOWN`.
+   */
+  override async createPayment(rawInput: CreatePaymentInput): Promise<Payment> {
+    const input = parseInput(CreatePaymentInputSchema, rawInput, 'payment input', this.name);
+    const request = parseInput(RazorpayCreateOrderRequestSchema, buildOrderRequest(input), 'Razorpay order request', this.name);
+    const keyed = request.receipt !== undefined;
+    let order: RazorpayOrderEntity;
+    try {
+      order = await this.call(HttpMethod.Post, RazorpayEndpoint.orders, RazorpayOrderEntitySchema, 'order', {
+        body: request,
+        idempotent: keyed,
+      });
+    } catch (error) {
+      const replayed = keyed && isDuplicateOrderError(error) ? await this.findOrderByReceipt(request.receipt, request.amount) : undefined;
+      if (!replayed) throw error;
+      order = replayed;
+    }
+    const checkout = buildOrderCheckout({
+      keyId: this.#config.keyId,
+      orderId: order.id,
+      amount: order.amount,
+      callbackUrl: input.returnUrl,
+      customer: input.customer,
+    });
+    const { name, email, phone } = input.customer;
+    return mapCreatedPayment(order, { checkout, customer: { name, email, phone } });
+  }
+
+  /** The order that carries `receipt`, when it is for `amount`; a different amount is a different request. */
+  private async findOrderByReceipt(receipt: string | undefined, amount: number): Promise<RazorpayOrderEntity | undefined> {
+    if (receipt === undefined) return undefined;
+    const found = await this.call(HttpMethod.Get, RazorpayEndpoint.orders, RazorpayOrderCollectionSchema, 'order list', {
+      query: { receipt },
+    });
+    const existing = found.items.find((order) => order.receipt === receipt);
+    if (!existing) return undefined;
+    if (existing.amount !== amount) {
+      throw new SubscriptionError(
+        ErrorCode.Conflict,
+        `${this.name} already holds an order for this idempotencyKey with a different amount; use a new key for a different payment`,
+        { provider: this.name },
+      );
+    }
+    return existing;
+  }
+
+  /** Reads the order and every payment attempt made against it. The result is the source of truth. */
+  override async getPayment(paymentId: string): Promise<Payment> {
+    const orderId = requireOrderId(paymentId);
+    const order = await this.call(HttpMethod.Get, RazorpayEndpoint.order(orderId), RazorpayOrderEntitySchema, 'order');
+    return mapOrderPayment(order, await this.fetchOrderPayments(orderId));
+  }
+
+  private async fetchOrderPayments(orderId: string): Promise<RazorpayPaymentEntity[]> {
+    const collection = await this.call(
+      HttpMethod.Get,
+      RazorpayEndpoint.orderPayments(orderId),
+      RazorpayPaymentCollectionSchema,
+      'order payments',
+    );
+    return collection.items;
+  }
+
+  /**
+   * The signature covers the order id and the payment id Checkout returned:
+   * `hex(HMAC_SHA256(keySecret, razorpay_order_id + "|" + razorpay_payment_id))`.
+   * The docs say to sign with the order id from your own storage; pass it as
+   * `expected_order_id` in the result object and it is used instead, or pass
+   * `expectedPaymentId` to `subs.payments.verify`, which compares it with the
+   * `paymentId` returned here (the order id). The result does not say whether
+   * the payment has been captured: `getPayment` or a webhook does.
+   */
+  override async verifyPayment(result: CheckoutResult): Promise<PaymentVerification> {
+    const fields = parseInput(RazorpayOrderCheckoutResponseSchema, result, 'checkout result', this.name);
+    const expectedId = result[RAZORPAY_EXPECTED_ORDER_ID_KEY];
+    if (expectedId !== undefined && (typeof expectedId !== 'string' || expectedId === '')) {
+      throw invalid(`${RAZORPAY_EXPECTED_ORDER_ID_KEY} must be a non-empty string`, this.name);
+    }
+    const orderId = expectedId ?? fields.razorpay_order_id;
+    const expected = sha256Hmac(this.#config.keySecret, `${orderId}|${fields.razorpay_payment_id}`);
+    assertSignature(expected, fields.razorpay_signature, this.name, 'checkout');
+    return { provider: this.name, paymentId: orderId, paid: true, raw: result };
+  }
+
+  /**
+   * Refunds the order's captured payment (`POST /v1/payments/{id}/refund`).
+   * `paymentId` is the order id; the payment id is read from the order's
+   * payments. `refundId` is sent as the refund `receipt` and as the
+   * `X-Refund-Idempotency` header, so it must meet the header's rule (10 or more
+   * letters, digits, hyphens or underscores) and a repeat of the same refund
+   * returns the first one.
+   */
+  override async refundPayment(rawInput: RefundPaymentInput): Promise<Refund> {
+    const input = parseInput(RefundPaymentInputSchema, rawInput, 'refund input', this.name);
+    const orderId = requireOrderId(input.paymentId);
+    if (!RAZORPAY_REFUND_IDEMPOTENCY_PATTERN.test(input.refundId)) {
+      throw invalid(
+        'refundId is sent as the X-Refund-Idempotency header, which Razorpay limits to letters, digits, hyphens and ' +
+          'underscores, at least 10 characters',
+        this.name,
+      );
+    }
+    const paid = (await this.fetchOrderPayments(orderId)).find(isSettledAttempt);
+    if (!paid) {
+      throw new SubscriptionError(ErrorCode.Conflict, `${this.name} order ${orderId} has no captured payment to refund`, {
+        provider: this.name,
+      });
+    }
+    const request = parseInput(
+      RazorpayRefundRequestSchema,
+      {
+        amount: input.amount,
+        receipt: input.refundId,
+        notes: buildNotes(undefined, {
+          [RazorpayNoteKey.RefundReference]: input.refundId,
+          [RazorpayNoteKey.RefundReason]: input.reason,
+        }),
+      },
+      'Razorpay refund request',
+      this.name,
+    );
+    const entity = await this.call(HttpMethod.Post, RazorpayEndpoint.refundPayment(paid.id), RazorpayRefundEntitySchema, 'refund', {
+      body: request,
+      headers: { [RazorpayHeader.RefundIdempotency]: input.refundId },
+      idempotent: true,
+    });
+    return mapPaymentRefund(entity, { paymentId: orderId, amount: input.amount, reference: input.refundId });
+  }
+
+  // -------------------------------------------------------------------------
   // Checkout verification and webhooks
   // -------------------------------------------------------------------------
 
@@ -631,6 +813,10 @@ export class RazorpayProvider extends BaseProvider {
     const body = parseResponse(RazorpayWebhookBodySchema, json, 'webhook body', this.name);
     return [mapWebhookEvent(body, getHeader(headers, RazorpayHeader.EventId))];
   }
+}
+
+function isDuplicateOrderError(error: unknown): boolean {
+  return error instanceof SubscriptionError && error.code === ErrorCode.Conflict && RAZORPAY_DUPLICATE_ORDER_PATTERN.test(error.message);
 }
 
 /** Factory: validates the config and returns a ready provider. */

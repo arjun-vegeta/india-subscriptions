@@ -11,6 +11,7 @@ import {
   EventType,
   IntervalUnit,
   PaymentMethod,
+  PaymentStatus,
   Provider,
   RefundStatus,
   SchedulingMode,
@@ -24,7 +25,9 @@ import type {
   CheckoutInstruction,
   Customer,
   Metadata,
+  ParsedCreatePaymentInput,
   ParsedCreatePlanInput,
+  Payment,
   Plan,
   Refund,
   Subscription,
@@ -34,33 +37,43 @@ import { CustomerSchema } from '../../schemas.js';
 import { assertInterval, cycleStart, unixToIso } from '../../time.js';
 import {
   RAZORPAY_MAX_NOTES,
+  RAZORPAY_MAX_RECEIPT_CHARS,
   RAZORPAY_MIN_DAILY_INTERVAL,
   RAZORPAY_NOT_APPLICABLE,
+  RAZORPAY_RECEIPT_PATTERN,
   RAZORPAY_RESERVED_NOTE_KEYS,
   RazorpayLineItemType,
   RazorpayNoteKey,
+  RazorpayOrderStatus,
+  RazorpayOneTimeMethodName,
   RazorpayPaymentMethodName,
   RazorpayPaymentRefundStatus,
   RazorpayPaymentStatus,
+  RazorpayPaymentWebhookEvent,
   RazorpayPlanPeriod,
   RazorpayInvoiceStatus,
   RazorpayRefundStatus,
+  RazorpayRefundWebhookEvent,
   RazorpaySubscriptionStatus,
   RazorpayWebhookEvent,
 } from './constants.js';
 import {
+  RazorpayOrderEntitySchema,
   RazorpayPaymentEntitySchema,
+  RazorpayRefundEntitySchema,
   RazorpaySubscriptionEntitySchema,
+  type RazorpayCreateOrderRequest,
   type RazorpayCreatePlanRequest,
   type RazorpayErrorBodySchema,
   type RazorpayInvoiceEntity,
+  type RazorpayOrderEntity,
   type RazorpayPaymentEntity,
   type RazorpayPlanEntity,
   type RazorpayRefundEntity,
   type RazorpaySubscriptionEntity,
   type RazorpayWebhookBody,
 } from './schemas.js';
-import type { z } from 'zod';
+import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
 // Lookup tables (Record<GatewayStatus, UnifiedStatus> with a documented fallback)
@@ -129,6 +142,58 @@ export const PAYMENT_METHOD_MAP: Record<RazorpayPaymentMethodName, PaymentMethod
   [RazorpayPaymentMethodName.Nach]: PaymentMethod.PhysicalNach,
 };
 
+/**
+ * Payment `method` of a one-time payment (Payments entity: `card`, `netbanking`,
+ * `wallet`, `emi`, `upi`). A method with no entry (`emi`, `cod`, anything
+ * Razorpay adds) leaves `paymentMethod` unset; the gateway's own value stays in `raw`.
+ */
+export const ONE_TIME_PAYMENT_METHOD_MAP: Record<RazorpayOneTimeMethodName, PaymentMethod> = {
+  [RazorpayOneTimeMethodName.Card]: PaymentMethod.Card,
+  [RazorpayOneTimeMethodName.Upi]: PaymentMethod.Upi,
+  [RazorpayOneTimeMethodName.Netbanking]: PaymentMethod.NetBanking,
+  [RazorpayOneTimeMethodName.Wallet]: PaymentMethod.Wallet,
+};
+
+/**
+ * Payment `status` for a one-time payment. `created` is the customer having
+ * submitted the payment ("not processed at this stage") and `authorized` is
+ * money approved but not yet captured, so both read as pending. Only `captured`
+ * is success.
+ */
+export const ONE_TIME_PAYMENT_STATUS_MAP: Record<RazorpayPaymentStatus, PaymentStatus> = {
+  [RazorpayPaymentStatus.Created]: PaymentStatus.Pending,
+  [RazorpayPaymentStatus.Authorized]: PaymentStatus.Pending,
+  [RazorpayPaymentStatus.Captured]: PaymentStatus.Succeeded,
+  [RazorpayPaymentStatus.Refunded]: PaymentStatus.Refunded,
+  [RazorpayPaymentStatus.Failed]: PaymentStatus.Failed,
+};
+
+/**
+ * Order `status`, used when no payment attempt decides the outcome. `attempted`
+ * is a payment tried and not yet captured.
+ */
+export const ORDER_STATUS_MAP: Record<RazorpayOrderStatus, PaymentStatus> = {
+  [RazorpayOrderStatus.Created]: PaymentStatus.Created,
+  [RazorpayOrderStatus.Attempted]: PaymentStatus.Pending,
+  [RazorpayOrderStatus.Paid]: PaymentStatus.Succeeded,
+};
+
+/** For both payments and orders: a status Razorpay adds tomorrow is never reported as success. */
+export const UNKNOWN_ONE_TIME_PAYMENT_STATUS = PaymentStatus.Pending;
+
+/** Payment webhook events that mean the payment succeeded or failed (`payment.authorized` is not either). */
+export const PAYMENT_WEBHOOK_EVENT_MAP: Record<RazorpayPaymentWebhookEvent, EventType> = {
+  [RazorpayPaymentWebhookEvent.Captured]: EventType.PaymentSucceeded,
+  [RazorpayPaymentWebhookEvent.OrderPaid]: EventType.PaymentSucceeded,
+  [RazorpayPaymentWebhookEvent.Failed]: EventType.PaymentFailed,
+};
+
+/** Refund webhook events about a one-time payment. `refund.created` and `refund.speed_changed` stay `unknown`. */
+export const REFUND_WEBHOOK_EVENT_MAP: Record<RazorpayRefundWebhookEvent, EventType> = {
+  [RazorpayRefundWebhookEvent.Processed]: EventType.RefundSucceeded,
+  [RazorpayRefundWebhookEvent.Failed]: EventType.RefundFailed,
+};
+
 /** Webhook event name to normalised event. Anything else is `EventType.Unknown`. */
 export const WEBHOOK_EVENT_MAP: Record<RazorpayWebhookEvent, EventType> = {
   [RazorpayWebhookEvent.Authenticated]: EventType.SubscriptionAuthorized,
@@ -150,6 +215,10 @@ function lookup<V>(table: Record<string, V>, key: string | null | undefined): V 
 
 export function mapSubscriptionStatus(status: string): SubscriptionStatus {
   return lookup(SUBSCRIPTION_STATUS_MAP, status) ?? UNKNOWN_SUBSCRIPTION_STATUS;
+}
+
+export function mapOneTimePaymentMethod(method: string | null | undefined): PaymentMethod | undefined {
+  return method ? lookup(ONE_TIME_PAYMENT_METHOD_MAP, method.toLowerCase()) : undefined;
 }
 
 export function mapPaymentMethod(method: string | null | undefined): PaymentMethod | undefined {
@@ -417,13 +486,8 @@ export interface SubscriptionMapOptions {
   checkout?: CheckoutInstruction;
 }
 
-function mapCustomer(entity: RazorpaySubscriptionEntity): Customer | undefined {
-  const candidate = {
-    id: nonEmpty(entity.customer_id),
-    email: nonEmpty(entity.customer_email),
-    phone: nonEmpty(entity.customer_contact),
-  };
-  // Keep only the parts that satisfy the neutral schema; a malformed contact is dropped, not forwarded.
+/** Keeps only the parts that satisfy the neutral schema; a malformed contact is dropped, not forwarded. */
+function validCustomer(candidate: { id?: string; email?: string; phone?: string }): Customer | undefined {
   const parts: Customer = {};
   for (const key of ['id', 'email', 'phone'] as const) {
     const value = candidate[key];
@@ -432,6 +496,14 @@ function mapCustomer(entity: RazorpaySubscriptionEntity): Customer | undefined {
     if (check.success) parts[key] = value;
   }
   return Object.keys(parts).length > 0 ? parts : undefined;
+}
+
+function mapCustomer(entity: RazorpaySubscriptionEntity): Customer | undefined {
+  return validCustomer({
+    id: nonEmpty(entity.customer_id),
+    email: nonEmpty(entity.customer_email),
+    phone: nonEmpty(entity.customer_contact),
+  });
 }
 
 export function mapSubscription(entity: RazorpaySubscriptionEntity, options: SubscriptionMapOptions = {}): Subscription {
@@ -652,6 +724,204 @@ export function mapRefund(
 }
 
 // ---------------------------------------------------------------------------
+// One-time payments (Orders API)
+// ---------------------------------------------------------------------------
+
+/**
+ * `Payment.id` is the Razorpay order id. A payment id (`pay_...`) only exists
+ * once the customer has paid, but `createPayment` has to return an id that
+ * `getPayment` and `refundPayment` accept from then on, and that webhooks
+ * about the payment carry: the order is the only Razorpay object that exists
+ * at all three moments. The payment ids of the attempts stay in `raw`.
+ *
+ * Razorpay has a place for: the amount (`amount`), your idempotency key
+ * (`receipt`, which Razorpay treats as an idempotency key), and `notes` for
+ * the reference, the description and the metadata. It has none for a payment
+ * method restriction or an expiry on the order, so those are refused.
+ */
+export function buildOrderRequest(input: ParsedCreatePaymentInput): RazorpayCreateOrderRequest {
+  if (input.paymentMethods !== undefined) {
+    throw unsupported(
+      Provider.Razorpay,
+      'restricting payment methods on a payment',
+      'the Orders API has no such parameter; choose the methods in the Dashboard (Payment Configuration) or in the Checkout options',
+    );
+  }
+  if (input.expiresAt !== undefined) {
+    throw unsupported(Provider.Razorpay, 'an expiry time on a payment', 'an order has no expiry parameter');
+  }
+  const key = input.idempotencyKey;
+  if (key !== undefined && (key.length > RAZORPAY_MAX_RECEIPT_CHARS || !RAZORPAY_RECEIPT_PATTERN.test(key))) {
+    throw invalid(
+      `idempotencyKey is sent as the order receipt, which Razorpay limits to ${RAZORPAY_MAX_RECEIPT_CHARS} printable ASCII characters`,
+      Provider.Razorpay,
+    );
+  }
+  const notes = buildNotes(input.metadata, {
+    [RazorpayNoteKey.PaymentReference]: input.reference,
+    [RazorpayNoteKey.PaymentDescription]: input.description,
+  });
+  return { amount: input.amount, currency: Currency.INR, receipt: key, notes };
+}
+
+/** Checkout instruction for Standard Checkout with an order (`order_id` option). */
+export function buildOrderCheckout(params: {
+  keyId: string;
+  orderId: string;
+  amount: number;
+  callbackUrl?: string;
+  customer?: Customer;
+}): CheckoutInstruction {
+  return {
+    kind: CheckoutKind.RazorpayCheckout,
+    keyId: params.keyId,
+    orderId: params.orderId,
+    amount: params.amount,
+    callbackUrl: params.callbackUrl,
+    prefill: prefillFrom(params.customer),
+  };
+}
+
+function prefillFrom(customer: Customer | undefined): Customer | undefined {
+  const prefill: Customer = {};
+  if (customer?.name) prefill.name = customer.name;
+  if (customer?.email) prefill.email = customer.email;
+  if (customer?.phone) prefill.phone = customer.phone;
+  return Object.keys(prefill).length > 0 ? prefill : undefined;
+}
+
+const SETTLED_STATUSES: readonly PaymentStatus[] = [
+  PaymentStatus.Succeeded,
+  PaymentStatus.Refunded,
+  PaymentStatus.PartiallyRefunded,
+];
+
+/** The status of one payment attempt, with the refund state of a captured payment folded in. */
+export function mapAttemptStatus(payment: RazorpayPaymentEntity): PaymentStatus {
+  const status = lookup(ONE_TIME_PAYMENT_STATUS_MAP, payment.status) ?? UNKNOWN_ONE_TIME_PAYMENT_STATUS;
+  if (payment.status !== RazorpayPaymentStatus.Captured) return status;
+  const refunded = payment.amount_refunded ?? 0;
+  if (payment.refund_status === RazorpayPaymentRefundStatus.Full || (refunded > 0 && refunded >= payment.amount)) {
+    return PaymentStatus.Refunded;
+  }
+  if (payment.refund_status === RazorpayPaymentRefundStatus.Partial || refunded > 0) return PaymentStatus.PartiallyRefunded;
+  return status;
+}
+
+/** True for a payment that took the customer's money: captured, or captured and since refunded. */
+export function isSettledAttempt(payment: RazorpayPaymentEntity): boolean {
+  return payment.status === RazorpayPaymentStatus.Captured || payment.status === RazorpayPaymentStatus.Refunded;
+}
+
+/**
+ * The attempt that decides an order's outcome: the one that took the money;
+ * else an authorised one; else the most recent. A failed attempt does not close
+ * an order, so a later attempt can still change the result.
+ */
+export function pickAttempt(attempts: readonly RazorpayPaymentEntity[]): RazorpayPaymentEntity | undefined {
+  const settled = attempts.find(isSettledAttempt);
+  if (settled) return settled;
+  const authorized = attempts.find((attempt) => attempt.status === RazorpayPaymentStatus.Authorized);
+  if (authorized) return authorized;
+  // Array.prototype.sort is stable, so attempts with the same timestamp keep the order Razorpay listed them in.
+  return [...attempts].sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0)).at(-1);
+}
+
+interface PaymentParts {
+  orderId: string;
+  order?: RazorpayOrderEntity;
+  attempts: readonly RazorpayPaymentEntity[];
+  checkout?: CheckoutInstruction;
+  customer?: Customer;
+}
+
+function composePayment(parts: PaymentParts): Payment {
+  const { orderId, order, attempts } = parts;
+  const attempt = pickAttempt(attempts);
+  const orderStatus = order ? (lookup(ORDER_STATUS_MAP, order.status) ?? UNKNOWN_ONE_TIME_PAYMENT_STATUS) : undefined;
+
+  let status: PaymentStatus;
+  let providerStatus: string;
+  if (attempt) {
+    status = mapAttemptStatus(attempt);
+    providerStatus = attempt.status;
+  } else if (order && orderStatus) {
+    status = orderStatus;
+    providerStatus = order.status;
+  } else {
+    throw new SubscriptionError(ErrorCode.UnexpectedResponse, `${Provider.Razorpay} returned no order or payment for ${orderId}`, {
+      provider: Provider.Razorpay,
+    });
+  }
+  // The order is the record of whether it was paid: a payment list read a moment earlier must not contradict it.
+  let paidByOrderOnly = false;
+  if (order && orderStatus === PaymentStatus.Succeeded && !SETTLED_STATUSES.includes(status)) {
+    status = PaymentStatus.Succeeded;
+    providerStatus = order.status;
+    paidByOrderOnly = true;
+  }
+
+  const settledAttempt = attempt && isSettledAttempt(attempt) && !paidByOrderOnly ? attempt : undefined;
+  const notes = { ...readNotes(attempt?.notes), ...readNotes(order?.notes) };
+  const failed = status === PaymentStatus.Failed && attempt !== undefined;
+  const refundedAmount =
+    settledAttempt === undefined
+      ? undefined
+      : paise(
+          settledAttempt.amount_refunded ?? (settledAttempt.status === RazorpayPaymentStatus.Refunded ? settledAttempt.amount : 0),
+          'a refunded amount',
+        );
+  const amount = order?.amount ?? attempt?.amount;
+  return {
+    provider: Provider.Razorpay,
+    id: orderId,
+    reference: notes[RazorpayNoteKey.PaymentReference],
+    status,
+    providerStatus,
+    amount: paise(amount ?? 0, 'an order amount'),
+    currency: inrOrUndefined(order?.currency ?? attempt?.currency),
+    refundedAmount,
+    paymentMethod: mapOneTimePaymentMethod(attempt?.method),
+    customer: parts.customer ?? validCustomer({ email: nonEmpty(attempt?.email), phone: nonEmpty(attempt?.contact) }),
+    createdAt: unixToIso(order?.created_at ?? attempt?.created_at),
+    /** Payments are auto-captured, so creation time is the closest documented timestamp to the capture. */
+    paidAt: settledAttempt ? unixToIso(settledAttempt.created_at) : undefined,
+    failureCode: failed ? nonEmpty(attempt.error_code) : undefined,
+    failureReason: failed ? nonEmpty(attempt.error_description ?? attempt.error_reason) : undefined,
+    checkout: parts.checkout,
+    metadata: metadataFromNotes(notes),
+    raw: { order, payments: attempts },
+  };
+}
+
+/** A freshly created order: nothing has been attempted yet. */
+export function mapCreatedPayment(
+  order: RazorpayOrderEntity,
+  options: { checkout: CheckoutInstruction; customer?: Customer },
+): Payment {
+  return composePayment({ orderId: order.id, order, attempts: [], checkout: options.checkout, customer: options.customer });
+}
+
+/** `getPayment`: the order plus every payment attempt made against it. */
+export function mapOrderPayment(order: RazorpayOrderEntity, attempts: readonly RazorpayPaymentEntity[]): Payment {
+  return composePayment({ orderId: order.id, order, attempts });
+}
+
+/** A payment entity from a webhook; `order` is present on `order.paid`. */
+export function mapWebhookPayment(payment: RazorpayPaymentEntity & { order_id: string }, order?: RazorpayOrderEntity): Payment {
+  return composePayment({ orderId: payment.order_id, order, attempts: [payment] });
+}
+
+/** A refund of a one-time payment: `chargeId` and `paymentId` are both the payment's id (the order id). */
+export function mapPaymentRefund(
+  entity: RazorpayRefundEntity,
+  fallback: { paymentId: string; amount?: number; reference?: string },
+): Refund {
+  const refund = mapRefund(entity, { chargeId: fallback.paymentId, amount: fallback.amount, reference: fallback.reference });
+  return { ...refund, chargeId: fallback.paymentId, paymentId: fallback.paymentId };
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -689,16 +959,73 @@ export function webhookEventId(body: RazorpayWebhookBody, headerEventId: string 
     const id = (value as { id?: unknown }).id;
     return typeof id === 'string' ? id : undefined;
   };
-  const entityId = holder(body.payload.subscription?.entity) ?? holder(body.payload.payment?.entity) ?? '';
+  const entityId =
+    holder(body.payload.subscription?.entity) ??
+    holder(body.payload.refund?.entity) ??
+    holder(body.payload.payment?.entity) ??
+    '';
   const timestamp = body.created_at ?? body.payload.created_at ?? '';
   return `${body.event}:${entityId}:${timestamp}`;
+}
+
+/** The two fields that tell a one-time payment from a subscription debit. */
+const ONE_TIME_PAYMENT_PROBE = z.looseObject({
+  order_id: z.string().min(1),
+  invoice_id: z.union([z.null(), z.literal('')]).optional(),
+});
+
+/**
+ * The payment entity of an event when the event is about a one-time payment,
+ * otherwise undefined. The documented samples show a one-time payment as a
+ * payment with an `order_id` and no `invoice_id`, in a payload with no
+ * `subscription`; every payment inside a subscription sample has an invoice.
+ */
+function oneTimePaymentEntity(body: RazorpayWebhookBody): (RazorpayPaymentEntity & { order_id: string }) | undefined {
+  if (body.payload.subscription != null) return undefined;
+  const raw = body.payload.payment?.entity;
+  if (!ONE_TIME_PAYMENT_PROBE.safeParse(raw).success) return undefined;
+  const payment = parseResponse(RazorpayPaymentEntitySchema, raw, `${body.event} payment entity`, Provider.Razorpay);
+  return payment.order_id ? { ...payment, order_id: payment.order_id } : undefined;
+}
+
+type EventBase = Pick<SubscriptionEvent, 'id' | 'provider' | 'providerEventType' | 'occurredAt' | 'raw'>;
+
+/**
+ * Events about a one-time payment: `payment.captured`, `order.paid` and
+ * `payment.failed` become `payment.succeeded` / `payment.failed`, and
+ * `refund.processed` / `refund.failed` become `refund.succeeded` /
+ * `refund.failed`. Anything else, including every event about a subscription
+ * debit, is left to the caller (`unknown`).
+ */
+function mapOneTimeWebhookEvent(body: RazorpayWebhookBody, base: EventBase): SubscriptionEvent | undefined {
+  const paymentType = lookup(PAYMENT_WEBHOOK_EVENT_MAP, body.event);
+  const refundType = lookup(REFUND_WEBHOOK_EVENT_MAP, body.event);
+  if (paymentType === undefined && refundType === undefined) return undefined;
+
+  const paymentEntity = oneTimePaymentEntity(body);
+  if (!paymentEntity) return undefined;
+  const orderRaw = body.payload.order?.entity;
+  const order =
+    orderRaw === undefined || orderRaw === null
+      ? undefined
+      : parseResponse(RazorpayOrderEntitySchema, orderRaw, `${body.event} order entity`, Provider.Razorpay);
+  const payment = mapWebhookPayment(paymentEntity, order);
+
+  if (paymentType !== undefined) return { ...base, type: paymentType, paymentId: payment.id, payment };
+
+  const refund = mapPaymentRefund(
+    parseResponse(RazorpayRefundEntitySchema, body.payload.refund?.entity, `${body.event} refund entity`, Provider.Razorpay),
+    { paymentId: payment.id },
+  );
+  return { ...base, type: refundType ?? EventType.Unknown, paymentId: payment.id, payment, refund };
 }
 
 /**
  * Normalises one verified webhook body. Subscription events carry the
  * subscription entity and, when a payment attempt preceded the event, the
- * payment entity. Every other event is returned as `EventType.Unknown`, raw
- * untouched.
+ * payment entity. Events about a one-time payment are mapped by
+ * `mapOneTimeWebhookEvent`. Every other event is returned as
+ * `EventType.Unknown`, raw untouched.
  */
 export function mapWebhookEvent(body: RazorpayWebhookBody, headerEventId: string | undefined): SubscriptionEvent {
   const base = {
@@ -709,7 +1036,7 @@ export function mapWebhookEvent(body: RazorpayWebhookBody, headerEventId: string
     raw: body,
   };
   const type = lookup(WEBHOOK_EVENT_MAP, body.event);
-  if (type === undefined) return { ...base, type: EventType.Unknown };
+  if (type === undefined) return mapOneTimeWebhookEvent(body, base) ?? { ...base, type: EventType.Unknown };
 
   const subscriptionEntity = parseResponse(
     RazorpaySubscriptionEntitySchema,

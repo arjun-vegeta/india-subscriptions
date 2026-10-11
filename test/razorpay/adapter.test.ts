@@ -738,8 +738,8 @@ describe('capabilities', () => {
       signedWebhooks: true,
       idempotencyKeys: false,
       paymentMethods: [PaymentMethod.Card, PaymentMethod.Upi, PaymentMethod.ENach],
-      oneTimePayments: false,
-      oneTimePaymentMethods: [],
+      oneTimePayments: true,
+      oneTimePaymentMethods: ['card', 'upi', 'netbanking', 'wallet'],
     });
   });
 });

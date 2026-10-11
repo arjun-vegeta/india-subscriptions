@@ -3,8 +3,11 @@ import {
   RAZORPAY_DEFAULT_DURATION_YEARS,
   RAZORPAY_MAX_AMOUNT_PAISE,
   RAZORPAY_MAX_DURATION_YEARS,
+  RAZORPAY_MAX_NOTE_VALUE_CHARS,
   RAZORPAY_MAX_NOTES,
+  RAZORPAY_MAX_RECEIPT_CHARS,
   RAZORPAY_MIN_AMOUNT_PAISE,
+  RAZORPAY_RECEIPT_PATTERN,
   RazorpayPauseAt,
   RazorpayPlanPeriod,
   RazorpayResumeAt,
@@ -123,6 +126,30 @@ export const RazorpayUpdateRequestSchema = z.object({
 });
 export type RazorpayUpdateRequest = z.infer<typeof RazorpayUpdateRequestSchema>;
 
+/**
+ * `POST /v1/orders`. `amount` has the documented INR 1.00 floor and no upper
+ * bound (the limit is an account setting); `receipt` is at most 40 ASCII
+ * characters and must be unique, notes hold 15 pairs of at most 256 characters.
+ */
+export const RazorpayCreateOrderRequestSchema = z.object({
+  amount: z
+    .number()
+    .int()
+    .min(RAZORPAY_MIN_AMOUNT_PAISE, { error: 'amount must be at least 100 paise (INR 1.00)' }),
+  currency: z.string().min(1),
+  receipt: z
+    .string()
+    .min(1)
+    .max(RAZORPAY_MAX_RECEIPT_CHARS, { error: `receipt must be at most ${RAZORPAY_MAX_RECEIPT_CHARS} characters` })
+    .regex(RAZORPAY_RECEIPT_PATTERN, { error: 'receipt must use printable ASCII characters only' })
+    .optional(),
+  notes: RequestNotesSchema.refine(
+    (notes) => Object.values(notes).every((value) => value.length <= RAZORPAY_MAX_NOTE_VALUE_CHARS),
+    { error: `each note value may hold at most ${RAZORPAY_MAX_NOTE_VALUE_CHARS} characters` },
+  ).optional(),
+});
+export type RazorpayCreateOrderRequest = z.infer<typeof RazorpayCreateOrderRequestSchema>;
+
 export const RazorpayRefundRequestSchema = z.object({
   amount: z.number().int().min(1).optional(),
   receipt: z.string().min(1).optional(),
@@ -148,6 +175,14 @@ export const RazorpayCheckoutResponseSchema = z.object({
   razorpay_signature: z.string().min(1, { error: 'razorpay_signature is required' }),
 });
 export type RazorpayCheckoutResponse = z.infer<typeof RazorpayCheckoutResponseSchema>;
+
+/** What Standard Checkout returns for an order: the three fields the signature covers. */
+export const RazorpayOrderCheckoutResponseSchema = z.object({
+  razorpay_payment_id: z.string().min(1, { error: 'razorpay_payment_id is required' }),
+  razorpay_order_id: z.string().min(1, { error: 'razorpay_order_id is required' }),
+  razorpay_signature: z.string().min(1, { error: 'razorpay_signature is required' }),
+});
+export type RazorpayOrderCheckoutResponse = z.infer<typeof RazorpayOrderCheckoutResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // Responses
@@ -271,12 +306,49 @@ export const RazorpayPaymentEntitySchema = z.looseObject({
   /** `"1"` in webhook samples, boolean in the SDK types. */
   captured: z.union([z.boolean(), z.string(), z.number()]).nullish(),
   description: z.string().nullish(),
+  /** Only used to fill `Payment.customer` and `Payment.metadata`: a surprising shape must not fail a whole event. */
+  email: z.string().nullish().catch(undefined),
+  contact: z.string().nullish().catch(undefined),
+  notes: NotesSchema.nullish().catch(undefined),
   error_code: z.string().nullish(),
   error_description: z.string().nullish(),
   error_reason: z.string().nullish(),
   created_at: z.number().nullish(),
 });
 export type RazorpayPaymentEntity = z.infer<typeof RazorpayPaymentEntitySchema>;
+
+/** `GET /v1/orders/{id}` and the `order` entity of `order.paid`. */
+export const RazorpayOrderEntitySchema = z.looseObject({
+  id: z.string(),
+  entity: z.string().nullish(),
+  amount: z.number(),
+  amount_paid: z.number().nullish(),
+  amount_due: z.number().nullish(),
+  currency: z.string().nullish(),
+  receipt: z.string().nullish(),
+  status: z.string(),
+  attempts: z.number().nullish(),
+  notes: NotesSchema.nullish(),
+  offer_id: z.string().nullish(),
+  created_at: z.number().nullish(),
+});
+export type RazorpayOrderEntity = z.infer<typeof RazorpayOrderEntitySchema>;
+
+/** `GET /v1/orders?receipt=...`: the orders whose receipt matches. */
+export const RazorpayOrderCollectionSchema = z.looseObject({
+  entity: z.string().nullish(),
+  count: z.number().nullish(),
+  items: z.array(RazorpayOrderEntitySchema),
+});
+export type RazorpayOrderCollection = z.infer<typeof RazorpayOrderCollectionSchema>;
+
+/** `GET /v1/orders/{id}/payments`: every attempt made against the order. */
+export const RazorpayPaymentCollectionSchema = z.looseObject({
+  entity: z.string().nullish(),
+  count: z.number().nullish(),
+  items: z.array(RazorpayPaymentEntitySchema),
+});
+export type RazorpayPaymentCollection = z.infer<typeof RazorpayPaymentCollectionSchema>;
 
 export const RazorpayRefundEntitySchema = z.looseObject({
   id: z.string(),
@@ -324,6 +396,8 @@ export const RazorpayWebhookBodySchema = z.looseObject({
   payload: z.looseObject({
     subscription: WebhookEntityHolderSchema.nullish(),
     payment: WebhookEntityHolderSchema.nullish(),
+    order: WebhookEntityHolderSchema.nullish(),
+    refund: WebhookEntityHolderSchema.nullish(),
     created_at: z.number().nullish(),
   }),
   created_at: z.number().nullish(),

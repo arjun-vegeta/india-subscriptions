@@ -23,6 +23,11 @@ export const RazorpayEndpoint = {
   invoices: '/v1/invoices',
   invoice: (invoiceId: string) => `/v1/invoices/${enc(invoiceId)}`,
   payment: (paymentId: string) => `/v1/payments/${enc(paymentId)}`,
+  /** One-time payments: `POST` creates an order, `GET` reads it. */
+  orders: '/v1/orders',
+  order: (orderId: string) => `/v1/orders/${enc(orderId)}`,
+  /** Every attempt (authorised, captured or failed payment) made against an order. */
+  orderPayments: (orderId: string) => `/v1/orders/${enc(orderId)}/payments`,
   /** SDK `payments.refund` (fact sheet section 10); the refund API is not in the docs set. */
   refundPayment: (paymentId: string) => `/v1/payments/${enc(paymentId)}/refund`,
 } as const;
@@ -31,6 +36,8 @@ export const RazorpayEndpoint = {
 export const RazorpayHeader = {
   Signature: 'x-razorpay-signature',
   EventId: 'x-razorpay-event-id',
+  /** Makes a refund request safe to repeat (Refunds API, "Idempotency"). */
+  RefundIdempotency: 'X-Refund-Idempotency',
 } as const;
 
 /** Subscription `status`. `paused` is missing from every documented enum but is real (fact sheet 12.1 #1). */
@@ -104,6 +111,14 @@ export const RazorpayPaymentRefundStatus = {
 } as const;
 export type RazorpayPaymentRefundStatus = (typeof RazorpayPaymentRefundStatus)[keyof typeof RazorpayPaymentRefundStatus];
 
+/** Order `status` (Orders entity): `paid` stays `paid` even after the payment is refunded. */
+export const RazorpayOrderStatus = {
+  Created: 'created',
+  Attempted: 'attempted',
+  Paid: 'paid',
+} as const;
+export type RazorpayOrderStatus = (typeof RazorpayOrderStatus)[keyof typeof RazorpayOrderStatus];
+
 /** Refund `status` (SDK refunds.d.ts). */
 export const RazorpayRefundStatus = {
   Pending: 'pending',
@@ -124,6 +139,15 @@ export const RazorpayPaymentMethodName = {
 } as const;
 export type RazorpayPaymentMethodName = (typeof RazorpayPaymentMethodName)[keyof typeof RazorpayPaymentMethodName];
 
+/** Payments entity `method` values a one-time payment is mapped from (the others are `emi`, and `cod` in one webhook sample). */
+export const RazorpayOneTimeMethodName = {
+  Card: 'card',
+  Upi: 'upi',
+  Netbanking: 'netbanking',
+  Wallet: 'wallet',
+} as const;
+export type RazorpayOneTimeMethodName = (typeof RazorpayOneTimeMethodName)[keyof typeof RazorpayOneTimeMethodName];
+
 /** Subscription webhook events (fact sheet 9.1). There is no `subscription.created` or `subscription.expired`. */
 export const RazorpayWebhookEvent = {
   Authenticated: 'subscription.authenticated',
@@ -138,6 +162,22 @@ export const RazorpayWebhookEvent = {
   Resumed: 'subscription.resumed',
 } as const;
 export type RazorpayWebhookEvent = (typeof RazorpayWebhookEvent)[keyof typeof RazorpayWebhookEvent];
+
+/** Payment webhook events of the Payments and Orders webhook pages. */
+export const RazorpayPaymentWebhookEvent = {
+  Captured: 'payment.captured',
+  Failed: 'payment.failed',
+  /** Carries the order and its captured payment. */
+  OrderPaid: 'order.paid',
+} as const;
+export type RazorpayPaymentWebhookEvent = (typeof RazorpayPaymentWebhookEvent)[keyof typeof RazorpayPaymentWebhookEvent];
+
+/** Refund webhook events of the Refunds webhook page. `refund.created` and `refund.speed_changed` are not normalised. */
+export const RazorpayRefundWebhookEvent = {
+  Processed: 'refund.processed',
+  Failed: 'refund.failed',
+} as const;
+export type RazorpayRefundWebhookEvent = (typeof RazorpayRefundWebhookEvent)[keyof typeof RazorpayRefundWebhookEvent];
 
 /**
  * Razorpay has no merchant reference, merchant plan id or per-plan cycle cap,
@@ -154,6 +194,10 @@ export const RazorpayNoteKey = {
   /** `RefundInput.refundId`, also sent as the refund `receipt`. */
   RefundReference: 'india_subscriptions_refund_id',
   RefundReason: 'india_subscriptions_refund_reason',
+  /** `CreatePaymentInput.reference`, read back into `Payment.reference`. */
+  PaymentReference: 'india_subscriptions_payment_reference',
+  /** `CreatePaymentInput.description`: orders have no description field. */
+  PaymentDescription: 'india_subscriptions_payment_description',
 } as const;
 export type RazorpayNoteKey = (typeof RazorpayNoteKey)[keyof typeof RazorpayNoteKey];
 
@@ -168,10 +212,19 @@ export const RAZORPAY_RESERVED_NOTE_KEYS: readonly string[] = Object.values(Razo
  */
 export const RAZORPAY_EXPECTED_SUBSCRIPTION_ID_KEY = 'expected_subscription_id';
 
+/**
+ * Optional extra key a caller may add to the checkout result passed to
+ * `verifyPayment`: the order id read from the caller's own storage. The docs
+ * say to sign with the stored id, "Do not use the razorpay_order_id returned
+ * by Checkout" (fact sheet, section 5).
+ */
+export const RAZORPAY_EXPECTED_ORDER_ID_KEY = 'expected_order_id';
+
 /** Id prefixes (fact sheet 1.7). */
 export const RazorpayIdPrefix = {
   Payment: 'pay_',
   Invoice: 'inv_',
+  Order: 'order_',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -191,6 +244,15 @@ export const RAZORPAY_PAGE_SIZE = 100;
 /** Safety stop when paging invoices; a subscription cannot plausibly have more pages than this. */
 export const RAZORPAY_MAX_INVOICE_PAGES = 50;
 
+/** Orders: `receipt` "can have a maximum length of 40 characters". */
+export const RAZORPAY_MAX_RECEIPT_CHARS = 40;
+/** Orders and refunds: notes hold "256 characters (maximum) each". */
+export const RAZORPAY_MAX_NOTE_VALUE_CHARS = 256;
+/** `receipt` must be ASCII ("Use only ASCII characters in `receipt`"); printable characters only. */
+export const RAZORPAY_RECEIPT_PATTERN = /^[\x20-\x7E]+$/;
+/** Refund idempotency key: "at least 10 characters long ... alphabets, numbers, hyphens and underscores only". */
+export const RAZORPAY_REFUND_IDEMPOTENCY_PATTERN = /^[A-Za-z0-9_-]{10,}$/;
+
 /**
  * Default length of a "bill until cancelled" subscription. The docs
  * contradict each other on the maximum duration (12.1 #7): 100 years (API
@@ -209,6 +271,13 @@ export const RAZORPAY_DEFAULT_UPFRONT_LABEL = 'Upfront amount';
 export const RAZORPAY_NOT_APPLICABLE = 'NA';
 
 /**
+ * "Duplicate request. This request has already been processed." (Orders API):
+ * an order with the same `receipt` exists, and `receipt` "is treated as an
+ * idempotency key".
+ */
+export const RAZORPAY_DUPLICATE_ORDER_PATTERN = /duplicate request\. this request has already been processed/i;
+
+/**
  * Razorpay answers most failures with HTTP 400 and `BAD_REQUEST_ERROR`, so the
  * generic status mapping would call a missing id or a bad key a validation
  * error. The only machine-readable signal is the description text (fact sheet
@@ -219,5 +288,8 @@ export const RAZORPAY_NOT_APPLICABLE = 'NA';
 export const RAZORPAY_ERROR_DESCRIPTION_RULES: readonly { readonly pattern: RegExp; readonly code: ErrorCode }[] = [
   { pattern: /api key.*invalid|key\/secret.*invalid|authentication failed/i, code: ErrorCode.Auth },
   { pattern: /another subscription operation is in progress/i, code: ErrorCode.Conflict },
+  { pattern: /another (order|payment) operation is in progress/i, code: ErrorCode.Conflict },
+  { pattern: RAZORPAY_DUPLICATE_ORDER_PATTERN, code: ErrorCode.Conflict },
+  { pattern: /duplicate receipt found for this refund request/i, code: ErrorCode.Conflict },
   { pattern: /could not be found|id provided does not exist|is not a valid id/i, code: ErrorCode.NotFound },
 ];
