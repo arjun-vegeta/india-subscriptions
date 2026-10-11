@@ -862,7 +862,8 @@ function composePayment(parts: PaymentParts): Payment {
   }
 
   const settledAttempt = attempt && isSettledAttempt(attempt) && !paidByOrderOnly ? attempt : undefined;
-  const notes = { ...readNotes(attempt?.notes), ...readNotes(order?.notes) };
+  // The order's notes are the ones this library wrote; a webhook without the order falls back to the payment's.
+  const notes = readNotes(order ? order.notes : attempt?.notes);
   const failed = status === PaymentStatus.Failed && attempt !== undefined;
   const refundedAmount =
     settledAttempt === undefined
