@@ -5,6 +5,7 @@ import {
   EventType,
   IntervalUnit,
   PaymentMethod,
+  PaymentStatus,
   RefundStatus,
   SchedulingMode,
   SubscriptionStatus,
@@ -66,6 +67,14 @@ export const CashfreePath = {
   payment: (subscriptionId: string, paymentId: string) =>
     `/subscriptions/${enc(subscriptionId)}/payments/${enc(paymentId)}`,
   refunds: (subscriptionId: string) => `/subscriptions/${enc(subscriptionId)}/refunds`,
+  /** Create an order [orders-create]. */
+  Orders: '/orders',
+  /** Get an order [orders-get]. */
+  order: (orderId: string) => `/orders/${enc(orderId)}`,
+  /** Payment attempts of an order [payments-for-order]. */
+  orderPayments: (orderId: string) => `/orders/${enc(orderId)}/payments`,
+  /** Create a refund (POST) or list the refunds (GET) of an order [refund-create] [refunds-list]. */
+  orderRefunds: (orderId: string) => `/orders/${enc(orderId)}/refunds`,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -391,3 +400,241 @@ export const CASHFREE_IDEMPOTENCY_ERROR_TYPE = 'idempotency_error';
 
 /** Length of the body hash used as an event id for event types that carry no entity id. */
 export const EVENT_ID_HASH_LENGTH = 32;
+
+// ---------------------------------------------------------------------------
+// One-time payments: orders, payment attempts, refunds
+// Source tags are the one-time fact sheet's: [orders-create], [orders-get],
+// [payments-for-order], [refund-create], [refunds-list], [web], [webhooks-payments],
+// [webhooks-refunds], [lifecycle], [idem].
+// ---------------------------------------------------------------------------
+
+/** `Payment.id` is the Cashfree `order_id`: every order, payment-list and refund endpoint is keyed on it. */
+export const GENERATED_ORDER_ID_PREFIX = 'order_';
+/** Customer id derived from the phone number when the caller supplies none; Cashfree requires a `customer_id`. */
+export const DERIVED_CUSTOMER_ID_PREFIX = 'cust_';
+
+/** `order_id`: 3-45 characters, "alphanumeric characters, underscores (_), and hyphens (-)" [orders-create]. */
+export const ORDER_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+export const ORDER_ID_MIN_LENGTH = 3;
+export const ORDER_ID_MAX_LENGTH = 45;
+
+/** `customer_id`: "alphanumeric", 3-50 [orders-create]; the samples also use `_` and `-`. */
+export const CUSTOMER_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+export const CUSTOMER_ID_MIN_LENGTH = 3;
+export const CUSTOMER_ID_MAX_LENGTH = 50;
+
+/** `customer_name` 3-100 and `customer_email` 3-100 [orders-create]. */
+export const CUSTOMER_NAME_MIN_LENGTH = 3;
+export const CUSTOMER_NAME_MAX_LENGTH = 100;
+export const CUSTOMER_EMAIL_MIN_LENGTH = 3;
+export const CUSTOMER_EMAIL_MAX_LENGTH = 100;
+
+/** `order_note` 3-200 [orders-create]. */
+export const ORDER_NOTE_MIN_LENGTH = 3;
+export const ORDER_NOTE_MAX_LENGTH = 200;
+
+/** `order_tags`: "A maximum of 10 tags can be added" (the schema says 15; the stricter text is used), values 1-255. */
+export const MAX_ORDER_TAGS = 10;
+export const ORDER_TAG_VALUE_MIN_LENGTH = 1;
+export const ORDER_TAG_VALUE_MAX_LENGTH = 255;
+
+/** `order_amount` has `minimum: 1` (one rupee) [orders-create]. */
+export const MIN_ORDER_PAISE = 100;
+
+/** `return_url`: "Maximum URL length: 250 characters" [orders-create]. */
+export const RETURN_URL_MAX_LENGTH = 250;
+/**
+ * The query parameter that carries the order id back to the merchant. Cashfree documents no parameters of its own on the
+ * return URL and says to "add context of the order in your return URL"; every sample uses `?order_id=` [web].
+ */
+export const RETURN_URL_ORDER_ID_PARAM = 'order_id';
+
+/** `refund_id`: 3-40 alphanumeric; the samples contain `_` and `-` [refund-create]. */
+export const REFUND_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+export const REFUND_ID_MIN_LENGTH = 3;
+export const REFUND_ID_MAX_LENGTH = 40;
+/** `refund_note` 3-100 [refund-create]. */
+export const REFUND_NOTE_MIN_LENGTH = 3;
+export const REFUND_NOTE_MAX_LENGTH = 100;
+
+/** `order_status` [orders-create] [lifecycle]. */
+export const CashfreeOrderStatus = {
+  Active: 'ACTIVE',
+  Paid: 'PAID',
+  Expired: 'EXPIRED',
+  Terminated: 'TERMINATED',
+  TerminationRequested: 'TERMINATION_REQUESTED',
+} as const;
+export type CashfreeOrderStatus = (typeof CashfreeOrderStatus)[keyof typeof CashfreeOrderStatus];
+
+/**
+ * The order decides the payment's status, not any one attempt: a customer may retry a failed attempt until the order ends
+ * [idem]. ACTIVE is `created` (the adapter reads it as `pending` when an attempt is in flight, and `getPayment` keeps its
+ * failed attempts in `raw`). EXPIRED means nothing was paid in time and no attempt can start [lifecycle]. TERMINATED is
+ * "Once terminated, customers can no longer pay for this order" and is `cancelled`. TERMINATION_REQUESTED can still turn
+ * into a success [lifecycle], so it is `pending`.
+ */
+export const ORDER_STATUS_MAP: Record<CashfreeOrderStatus, PaymentStatus> = {
+  [CashfreeOrderStatus.Active]: PaymentStatus.Created,
+  [CashfreeOrderStatus.Paid]: PaymentStatus.Succeeded,
+  [CashfreeOrderStatus.Expired]: PaymentStatus.Failed,
+  [CashfreeOrderStatus.Terminated]: PaymentStatus.Cancelled,
+  [CashfreeOrderStatus.TerminationRequested]: PaymentStatus.Pending,
+};
+
+/**
+ * An `order_status` Cashfree adds tomorrow maps to `Pending`: money may or may not have moved, so it must neither unlock
+ * anything (`Succeeded`) nor end the payment (`Failed`). Callers re-fetch it. The verbatim value stays in `providerStatus`.
+ */
+export const UNKNOWN_ORDER_STATUS_FALLBACK: PaymentStatus = PaymentStatus.Pending;
+
+/** `payment_status` of one payment attempt [payments-for-order] [lifecycle]. */
+export const CashfreeAttemptStatus = {
+  Success: 'SUCCESS',
+  NotAttempted: 'NOT_ATTEMPTED',
+  Failed: 'FAILED',
+  UserDropped: 'USER_DROPPED',
+  Void: 'VOID',
+  Cancelled: 'CANCELLED',
+  Pending: 'PENDING',
+  Flagged: 'FLAGGED',
+} as const;
+export type CashfreeAttemptStatus = (typeof CashfreeAttemptStatus)[keyof typeof CashfreeAttemptStatus];
+
+/**
+ * An attempt's status as a payment status (used for webhook events, which describe one attempt). NOT_ATTEMPTED is the
+ * "initial state for a payment attempt": nothing has moved yet. PENDING and FLAGGED are in flight ("Do not fulfil orders
+ * in this state"; FLAGGED waits for the merchant to approve or reject). CANCELLED is a reversal of a late success, VOID a
+ * capture that was explicitly not taken, USER_DROPPED an abandoned attempt: none of them holds money.
+ */
+export const ATTEMPT_STATUS_MAP: Record<CashfreeAttemptStatus, PaymentStatus> = {
+  [CashfreeAttemptStatus.Success]: PaymentStatus.Succeeded,
+  [CashfreeAttemptStatus.NotAttempted]: PaymentStatus.Created,
+  [CashfreeAttemptStatus.Failed]: PaymentStatus.Failed,
+  [CashfreeAttemptStatus.UserDropped]: PaymentStatus.Cancelled,
+  [CashfreeAttemptStatus.Void]: PaymentStatus.Cancelled,
+  [CashfreeAttemptStatus.Cancelled]: PaymentStatus.Cancelled,
+  [CashfreeAttemptStatus.Pending]: PaymentStatus.Pending,
+  [CashfreeAttemptStatus.Flagged]: PaymentStatus.Pending,
+};
+
+/** An unrecognised attempt status is treated as in flight; see `UNKNOWN_ORDER_STATUS_FALLBACK`. */
+export const UNKNOWN_ATTEMPT_STATUS_FALLBACK: PaymentStatus = PaymentStatus.Pending;
+
+/** `payment_group` values and the unified method they belong to [payments-for-order]. Groups with no unified method are left out. */
+export const PAYMENT_GROUP_TO_METHOD: Record<string, PaymentMethod> = {
+  upi: PaymentMethod.Upi,
+  upi_credit_card: PaymentMethod.Upi,
+  upi_ppi: PaymentMethod.Upi,
+  upi_ppi_offline: PaymentMethod.Upi,
+  credit_card: PaymentMethod.Card,
+  debit_card: PaymentMethod.Card,
+  prepaid_card: PaymentMethod.Card,
+  credit_card_emi: PaymentMethod.Card,
+  debit_card_emi: PaymentMethod.Card,
+  net_banking: PaymentMethod.NetBanking,
+  wallet: PaymentMethod.Wallet,
+};
+
+/** Keys of the `payment_method` object [payments-for-order] and the unified method each implies when `payment_group` is absent. */
+export const PAYMENT_METHOD_KEY_TO_METHOD: Record<string, PaymentMethod> = {
+  upi: PaymentMethod.Upi,
+  card: PaymentMethod.Card,
+  emi: PaymentMethod.Card,
+  netbanking: PaymentMethod.NetBanking,
+};
+
+/** `order_meta.payment_methods_filters.methods.action`: "It accepts value of ALLOW" [orders-create]. */
+export const CashfreeFilterAction = {
+  Allow: 'ALLOW',
+} as const;
+export type CashfreeFilterAction = (typeof CashfreeFilterAction)[keyof typeof CashfreeFilterAction];
+
+/** The filter values the documentation lists under their own names [orders-create]. */
+export const CashfreeFilterMethod = {
+  Upi: 'upi',
+  CreditCard: 'credit_card',
+  DebitCard: 'debit_card',
+  PrepaidCard: 'prepaid_card',
+  NetBanking: 'netbanking',
+  Wallet: 'wallet',
+} as const;
+export type CashfreeFilterMethod = (typeof CashfreeFilterMethod)[keyof typeof CashfreeFilterMethod];
+
+/** What a one-time payment can be restricted to. A card is every kind of card the checkout offers. */
+export const ORDER_PAYMENT_METHODS = [
+  PaymentMethod.Upi,
+  PaymentMethod.Card,
+  PaymentMethod.NetBanking,
+  PaymentMethod.Wallet,
+] as const;
+export type OrderPaymentMethod = (typeof ORDER_PAYMENT_METHODS)[number];
+
+export const PAYMENT_METHOD_TO_FILTER_VALUES: Record<OrderPaymentMethod, CashfreeFilterMethod[]> = {
+  [PaymentMethod.Upi]: [CashfreeFilterMethod.Upi],
+  [PaymentMethod.Card]: [CashfreeFilterMethod.CreditCard, CashfreeFilterMethod.DebitCard, CashfreeFilterMethod.PrepaidCard],
+  [PaymentMethod.NetBanking]: [CashfreeFilterMethod.NetBanking],
+  [PaymentMethod.Wallet]: [CashfreeFilterMethod.Wallet],
+};
+
+/** `refund_status` of an order refund [refund-create]. */
+export const CashfreeOrderRefundStatus = {
+  Success: 'SUCCESS',
+  Pending: 'PENDING',
+  PendingApproval: 'PENDING_APPROVAL',
+  Cancelled: 'CANCELLED',
+  OnHold: 'ONHOLD',
+  Rejected: 'REJECTED',
+} as const;
+export type CashfreeOrderRefundStatus = (typeof CashfreeOrderRefundStatus)[keyof typeof CashfreeOrderRefundStatus];
+
+export const ORDER_REFUND_STATUS_MAP: Record<CashfreeOrderRefundStatus, RefundStatus> = {
+  [CashfreeOrderRefundStatus.Success]: RefundStatus.Succeeded,
+  [CashfreeOrderRefundStatus.Pending]: RefundStatus.Pending,
+  [CashfreeOrderRefundStatus.PendingApproval]: RefundStatus.Pending,
+  [CashfreeOrderRefundStatus.OnHold]: RefundStatus.Pending,
+  [CashfreeOrderRefundStatus.Cancelled]: RefundStatus.Failed,
+  [CashfreeOrderRefundStatus.Rejected]: RefundStatus.Failed,
+};
+
+/** An unrecognised refund status is unresolved, not failed: the money may still move. */
+export const UNKNOWN_ORDER_REFUND_STATUS_FALLBACK: RefundStatus = RefundStatus.Pending;
+
+/**
+ * Webhook event for a refund's status. A cancelled refund is "unable to successfully refund to customer even after
+ * multiple attempts" [webhooks-refunds]. A status that is still moving is not an outcome, so it stays `unknown`.
+ */
+export const ORDER_REFUND_EVENT_MAP: Record<CashfreeOrderRefundStatus, EventType> = {
+  [CashfreeOrderRefundStatus.Success]: EventType.RefundSucceeded,
+  [CashfreeOrderRefundStatus.Cancelled]: EventType.RefundFailed,
+  [CashfreeOrderRefundStatus.Rejected]: EventType.RefundFailed,
+  [CashfreeOrderRefundStatus.Pending]: EventType.Unknown,
+  [CashfreeOrderRefundStatus.PendingApproval]: EventType.Unknown,
+  [CashfreeOrderRefundStatus.OnHold]: EventType.Unknown,
+};
+
+/**
+ * `type` of the payment-gateway webhooks [webhooks-payments] [webhooks-refunds]. Every subscription webhook type starts
+ * with `SUBSCRIPTION_`, so the two families never share a name.
+ */
+export const CashfreeOrderWebhookEvent = {
+  PaymentSuccess: 'PAYMENT_SUCCESS_WEBHOOK',
+  PaymentFailed: 'PAYMENT_FAILED_WEBHOOK',
+  PaymentUserDropped: 'PAYMENT_USER_DROPPED_WEBHOOK',
+  PaymentCharges: 'PAYMENT_CHARGES_WEBHOOK',
+  RefundStatus: 'REFUND_STATUS_WEBHOOK',
+  AutoRefundStatus: 'AUTO_REFUND_STATUS_WEBHOOK',
+} as const;
+export type CashfreeOrderWebhookEvent = (typeof CashfreeOrderWebhookEvent)[keyof typeof CashfreeOrderWebhookEvent];
+
+/**
+ * A failed or abandoned attempt is `payment.failed`: the order stays payable until it ends [idem], so the event reports
+ * the attempt and `getPayment` is the source of truth for the order. The charges webhook only reports fees, and the
+ * auto-refund webhook refunds an extra payment, not the order's own payment, so those stay `unknown`.
+ */
+export const ORDER_PAYMENT_EVENT_MAP: Record<string, EventType> = {
+  [CashfreeOrderWebhookEvent.PaymentSuccess]: EventType.PaymentSucceeded,
+  [CashfreeOrderWebhookEvent.PaymentFailed]: EventType.PaymentFailed,
+  [CashfreeOrderWebhookEvent.PaymentUserDropped]: EventType.PaymentFailed,
+  [CashfreeOrderWebhookEvent.PaymentCharges]: EventType.Unknown,
+};

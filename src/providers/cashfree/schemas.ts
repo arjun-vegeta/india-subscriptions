@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Environment } from '../../constants.js';
+import { Currency, Environment } from '../../constants.js';
 import { rupeesToPaise } from '../../money.js';
 import {
   API_VERSION_PATTERN,
@@ -13,6 +13,8 @@ import {
   MAX_SUBSCRIPTION_TAGS,
   PLAN_ID_PATTERN,
   PLAN_NAME_MAX_LENGTH,
+  CashfreeFilterAction,
+  RETURN_URL_ORDER_ID_PARAM,
   RETURN_URL_SUBSCRIPTION_ID_PARAM,
   SUBSCRIPTION_ID_MAX_LENGTH,
   SUBSCRIPTION_ID_PATTERN,
@@ -412,3 +414,151 @@ export const CashfreeLooseEventDataSchema = z.looseObject({
     })
     .nullish(),
 });
+
+// ---------------------------------------------------------------------------
+// One-time payments: requests
+// ---------------------------------------------------------------------------
+
+/** `POST /orders` [orders-create CreateOrderRequest]. */
+export const CashfreeCreateOrderRequestSchema = z.object({
+  order_id: z.string().min(1),
+  order_amount: z.number().positive(),
+  order_currency: z.literal(Currency.INR),
+  customer_details: z.object({
+    customer_id: z.string().min(1),
+    customer_phone: z.string().min(1),
+    customer_email: z.string().min(1).optional(),
+    customer_name: z.string().min(1).optional(),
+  }),
+  order_meta: z
+    .object({
+      return_url: z.url().optional(),
+      payment_methods_filters: z
+        .object({
+          methods: z.object({
+            action: z.literal(CashfreeFilterAction.Allow),
+            values: z.array(z.string().min(1)).min(1),
+          }),
+        })
+        .optional(),
+    })
+    .optional(),
+  order_expiry_time: z.string().min(1).optional(),
+  order_note: z.string().min(1).optional(),
+  order_tags: z.record(z.string(), z.string()).optional(),
+});
+export type CashfreeCreateOrderRequest = z.infer<typeof CashfreeCreateOrderRequestSchema>;
+
+/** `POST /orders/{order_id}/refunds` [refund-create OrderCreateRefundRequest]. */
+export const CashfreeOrderRefundRequestSchema = z.object({
+  refund_amount: z.number().positive(),
+  refund_id: z.string().min(1),
+  refund_note: z.string().min(1).optional(),
+});
+export type CashfreeOrderRefundRequest = z.infer<typeof CashfreeOrderRefundRequestSchema>;
+
+/**
+ * What reaches the return URL: only the `order_id` this adapter put there is read, and only to look the order up.
+ * Cashfree documents no signature on the return URL, so nothing else in it is trusted.
+ */
+export const CashfreeOrderReturnParamsSchema = z.looseObject({
+  [RETURN_URL_ORDER_ID_PARAM]: z.string().min(1),
+});
+
+// ---------------------------------------------------------------------------
+// One-time payments: responses
+// ---------------------------------------------------------------------------
+
+const OrderCustomerSchema = z.looseObject({
+  customer_id: z.string().nullish(),
+  customer_name: z.string().nullish(),
+  customer_email: z.string().nullish(),
+  customer_phone: z.string().nullish(),
+});
+
+/** `OrderEntity` [orders-create] [orders-get]: create and get order. */
+export const CashfreeOrderSchema = z.looseObject({
+  order_id: z.string().min(1),
+  order_status: z.string(),
+  order_amount: AmountSchema,
+  cf_order_id: IdSchema.nullish(),
+  order_currency: z.string().nullish(),
+  order_expiry_time: z.string().nullish(),
+  order_note: z.string().nullish(),
+  created_at: z.string().nullish(),
+  payment_session_id: z.string().nullish(),
+  customer_details: OrderCustomerSchema.nullish(),
+  order_tags: LooseRecordSchema.nullish(),
+});
+export type CashfreeOrder = z.infer<typeof CashfreeOrderSchema>;
+
+const OrderErrorDetailsSchema = z.looseObject({
+  error_code: z.string().nullish(),
+  error_description: z.string().nullish(),
+  error_reason: z.string().nullish(),
+  error_source: z.string().nullish(),
+});
+
+/**
+ * One payment attempt: `PaymentEntity` [payments-for-order] and `data.payment` of the payment webhooks. The `card` sample
+ * on the documentation page nests `payment_status` inside `payment_method`, so the status is optional here and a missing
+ * one reads as in flight.
+ */
+export const CashfreeOrderPaymentSchema = z.looseObject({
+  cf_payment_id: IdSchema.nullish(),
+  order_id: z.string().nullish(),
+  payment_status: z.string().nullish(),
+  payment_amount: AmountSchema.nullish(),
+  payment_currency: z.string().nullish(),
+  payment_time: z.string().nullish(),
+  payment_completion_time: z.string().nullish(),
+  payment_message: z.string().nullish(),
+  payment_group: z.string().nullish(),
+  payment_method: LooseRecordSchema.nullish(),
+  error_details: OrderErrorDetailsSchema.nullish(),
+});
+export type CashfreeOrderPayment = z.infer<typeof CashfreeOrderPaymentSchema>;
+export const CashfreeOrderPaymentListSchema = z.array(CashfreeOrderPaymentSchema);
+
+/** `RefundEntity` [refund-create] [refunds-list]; also `data.refund` of `REFUND_STATUS_WEBHOOK`. */
+export const CashfreeOrderRefundSchema = z.looseObject({
+  refund_id: z.string().min(1),
+  refund_status: z.string(),
+  order_id: z.string().nullish(),
+  cf_payment_id: IdSchema.nullish(),
+  cf_refund_id: IdSchema.nullish(),
+  refund_amount: AmountSchema.nullish(),
+  refund_currency: z.string().nullish(),
+  refund_note: z.string().nullish(),
+  refund_type: z.string().nullish(),
+  created_at: z.string().nullish(),
+  processed_at: z.string().nullish(),
+  status_description: z.string().nullish(),
+});
+export type CashfreeOrderRefund = z.infer<typeof CashfreeOrderRefundSchema>;
+export const CashfreeOrderRefundListSchema = z.array(CashfreeOrderRefundSchema);
+
+// ---------------------------------------------------------------------------
+// One-time payments: webhooks
+// ---------------------------------------------------------------------------
+
+/** `data` of `PAYMENT_SUCCESS_WEBHOOK`, `PAYMENT_FAILED_WEBHOOK`, `PAYMENT_USER_DROPPED_WEBHOOK`, `PAYMENT_CHARGES_WEBHOOK`. */
+export const CashfreeOrderPaymentWebhookDataSchema = z.looseObject({
+  order: z.looseObject({
+    order_id: z.string().min(1),
+    order_amount: AmountSchema,
+    order_currency: z.string().nullish(),
+    order_note: z.string().nullish(),
+    order_tags: LooseRecordSchema.nullish(),
+  }),
+  payment: CashfreeOrderPaymentSchema.extend({ cf_payment_id: IdSchema.nullish(), payment_status: z.string() }),
+  customer_details: OrderCustomerSchema.nullish(),
+  error_details: OrderErrorDetailsSchema.nullish(),
+});
+export type CashfreeOrderPaymentWebhookData = z.infer<typeof CashfreeOrderPaymentWebhookDataSchema>;
+
+/** `data` of `REFUND_STATUS_WEBHOOK`. */
+export const CashfreeOrderRefundWebhookDataSchema = z.looseObject({
+  refund: CashfreeOrderRefundSchema.extend({ order_id: z.string().min(1) }),
+});
+export type CashfreeOrderRefundWebhookData = z.infer<typeof CashfreeOrderRefundWebhookDataSchema>;

@@ -4,30 +4,35 @@ import {
   CancelMode,
   ChangeTiming,
   ContentType,
+  Currency,
   DigestEncoding,
   ErrorCode,
+  HashAlgorithm,
   HeaderName,
   HttpMethod,
   PaymentMethod,
+  PaymentStatus,
   Provider,
   ProviderKind,
   SchedulingMode,
   SubscriptionStatus,
   type Environment,
 } from '../../constants.js';
-import { assertSignature, getHeader, sha256Hmac } from '../../crypto.js';
+import { assertSignature, getHeader, hash, sha256Hmac } from '../../crypto.js';
 import { SubscriptionError, invalid, isSubscriptionError, parseInput, parseResponse, unsupported } from '../../errors.js';
 import type { HttpResponse } from '../../http.js';
-import { paiseToRupeeNumber } from '../../money.js';
+import { paiseToRupeeNumber, rupeesToPaise } from '../../money.js';
 import { BaseProvider, type GatewayErrorInfo, type ProviderOptions } from '../../provider.js';
 import {
   CancelSubscriptionOptionsSchema,
   CreateChargeInputSchema,
+  CreatePaymentInputSchema,
   CreatePlanInputSchema,
   CreateSubscriptionInputSchema,
   ListChargesOptionsSchema,
   PauseSubscriptionOptionsSchema,
   RefundInputSchema,
+  RefundPaymentInputSchema,
   ResumeSubscriptionOptionsSchema,
   UpdateSubscriptionInputSchema,
   WebhookRequestSchema,
@@ -37,15 +42,21 @@ import {
   type CheckoutResult,
   type CheckoutVerification,
   type CreateChargeInput,
+  type CreatePaymentInput,
   type CreatePlanInput,
   type CreateSubscriptionInput,
   type ListChargesOptions,
+  type ParsedCreatePaymentInput,
   type ParsedCreatePlanInput,
   type ParsedCreateSubscriptionInput,
+  type ParsedRefundPaymentInput,
   type PauseSubscriptionOptions,
+  type Payment,
+  type PaymentVerification,
   type Plan,
   type Refund,
   type RefundInput,
+  type RefundPaymentInput,
   type ResumeSubscriptionOptions,
   type Subscription,
   type SubscriptionEvent,
@@ -63,20 +74,48 @@ import {
 import {
   CASHFREE_BASE_URLS,
   CASHFREE_IDEMPOTENCY_ERROR_TYPE,
+  CashfreeFilterAction,
   CashfreeHeader,
   CashfreeNotificationChannel,
   CashfreePath,
   CashfreePaymentType,
+  CUSTOMER_EMAIL_MAX_LENGTH,
+  CUSTOMER_EMAIL_MIN_LENGTH,
+  CUSTOMER_ID_MAX_LENGTH,
+  CUSTOMER_ID_MIN_LENGTH,
+  CUSTOMER_ID_PATTERN,
+  CUSTOMER_NAME_MAX_LENGTH,
+  CUSTOMER_NAME_MIN_LENGTH,
+  DERIVED_CUSTOMER_ID_PREFIX,
+  GENERATED_ORDER_ID_PREFIX,
   GENERATED_PLAN_ID_PREFIX,
   GENERATED_SUBSCRIPTION_ID_PREFIX,
   IDEMPOTENCY_KEY_PATTERN,
   INTERVAL_UNIT_TO_CASHFREE,
   ManageAction,
+  MAX_ORDER_TAGS,
   MERCHANT_CHARGE_LEAD_HOURS,
   MERCHANT_CHARGE_MAX_AHEAD_HOURS,
+  MIN_ORDER_PAISE,
   MIN_VERIFICATION_PAISE,
+  ORDER_ID_MAX_LENGTH,
+  ORDER_ID_MIN_LENGTH,
+  ORDER_ID_PATTERN,
+  ORDER_NOTE_MAX_LENGTH,
+  ORDER_NOTE_MIN_LENGTH,
+  ORDER_PAYMENT_METHODS,
+  ORDER_TAG_VALUE_MAX_LENGTH,
+  ORDER_TAG_VALUE_MIN_LENGTH,
+  PAYMENT_METHOD_TO_FILTER_VALUES,
   PAYMENT_METHOD_TO_REQUEST_METHOD,
   PLAN_NAME_MAX_LENGTH,
+  REFUND_ID_MAX_LENGTH,
+  REFUND_ID_MIN_LENGTH,
+  REFUND_ID_PATTERN,
+  REFUND_NOTE_MAX_LENGTH,
+  REFUND_NOTE_MIN_LENGTH,
+  RETURN_URL_MAX_LENGTH,
+  RETURN_URL_ORDER_ID_PARAM,
   RETURN_URL_SUBSCRIPTION_ID_PARAM,
   SAME_DAY_CUTOFF_IST_HOUR,
   SCHEDULING_TO_PLAN_TYPE,
@@ -85,24 +124,38 @@ import {
   ZERO_AUTHORIZATION_METHODS,
   ZERO_AUTHORIZATION_PAISE,
   type CashfreeRequestMethod,
+  type OrderPaymentMethod,
 } from './constants.js';
 import {
   checkoutOf,
+  committedRefundPaise,
+  mapAttemptStatus,
   mapCharge,
+  mapOrderPayment,
+  mapOrderRefund,
+  mapOrderStatus,
   mapPlan,
   mapRefund,
   mapSubscription,
   normaliseWebhook,
+  orderCheckoutOf,
   parseCashfreeTime,
   schedulingOfPlanType,
 } from './mapper.js';
 import {
   CashfreeChargeRequestSchema,
   CashfreeConfigSchema,
+  CashfreeCreateOrderRequestSchema,
   CashfreeCreatePlanRequestSchema,
   CashfreeCreateSubscriptionRequestSchema,
   CashfreeErrorBodySchema,
   CashfreeManageSubscriptionRequestSchema,
+  CashfreeOrderPaymentListSchema,
+  CashfreeOrderRefundListSchema,
+  CashfreeOrderRefundRequestSchema,
+  CashfreeOrderRefundSchema,
+  CashfreeOrderReturnParamsSchema,
+  CashfreeOrderSchema,
   CashfreePaymentListSchema,
   CashfreePaymentSchema,
   CashfreePlanSchema,
@@ -112,8 +165,12 @@ import {
   CashfreeSubscriptionSchema,
   CashfreeWebhookEnvelopeSchema,
   type CashfreeConfig,
+  type CashfreeCreateOrderRequest,
   type CashfreeCreatePlanRequest,
   type CashfreeCreateSubscriptionRequest,
+  type CashfreeOrder,
+  type CashfreeOrderPayment,
+  type CashfreeOrderRefund,
   type CashfreeSubscription,
   type ParsedCashfreeConfig,
 } from './schemas.js';
@@ -149,9 +206,9 @@ function generateId(prefix: string): string {
   return `${prefix}${randomBytes(16).toString('hex')}`;
 }
 
-function formatPhone(phone: string | undefined): string {
+function formatPhone(phone: string | undefined, subject = 'a subscription'): string {
   if (phone === undefined) {
-    throw invalid('customer.phone is required: Cashfree rejects a subscription without customer_phone', Provider.Cashfree);
+    throw invalid(`customer.phone is required: Cashfree rejects ${subject} without customer_phone`, Provider.Cashfree);
   }
   const digits = phone.startsWith('+') ? phone.slice(1) : phone;
   if (TEN_DIGITS.test(digits)) return digits;
@@ -161,6 +218,13 @@ function formatPhone(phone: string | undefined): string {
     'customer.phone must be a 10-digit Indian mobile number (optionally with +91): Cashfree validates customer_phone as one',
     Provider.Cashfree,
   );
+}
+
+/** A UUID that is a pure function of its seed, so a retried refund presents the same `x-idempotency-key`. */
+function uuidFromSeed(seed: string): string {
+  const hex = hash(HashAlgorithm.Sha256, seed, DigestEncoding.Hex);
+  const variant = (8 + (Number.parseInt(hex.charAt(16), 16) & 3)).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 function requireId(value: string, field: string): string {
@@ -182,6 +246,8 @@ export class CashfreeProvider extends BaseProvider {
    * - `quantity` has no Cashfree equivalent; `cancelAtPeriodEnd` is not offered.
    * - Physical NACH needs a document-upload flow the hosted checkout does not
    *   cover, so it is not listed.
+   * - One-time payments are Cashfree orders; the methods are the ones a
+   *   `payment_methods_filters` value is documented for (see `constants.ts`).
    */
   readonly capabilities: Capabilities = {
     provider: Provider.Cashfree,
@@ -205,8 +271,8 @@ export class CashfreeProvider extends BaseProvider {
     signedWebhooks: true,
     idempotencyKeys: true,
     paymentMethods: [...SUPPORTED_PAYMENT_METHODS],
-    oneTimePayments: false,
-    oneTimePaymentMethods: [],
+    oneTimePayments: true,
+    oneTimePaymentMethods: [...ORDER_PAYMENT_METHODS],
   };
 
   // Real private fields: they stay out of JSON.stringify, console.log and util.inspect.
@@ -273,12 +339,7 @@ export class CashfreeProvider extends BaseProvider {
   async createSubscription(input: CreateSubscriptionInput): Promise<Subscription> {
     const parsed = parseInput(CreateSubscriptionInputSchema, input, 'subscription', this.name);
     this.rejectUnsupportedSubscriptionInput(parsed);
-    if (parsed.idempotencyKey !== undefined && !IDEMPOTENCY_KEY_PATTERN.test(parsed.idempotencyKey)) {
-      throw invalid(
-        'idempotencyKey must be a UUID for Cashfree (its x-idempotency-key header has format UUID), e.g. 47bf8872-46fe-11ee-be56-0242ac120002',
-        this.name,
-      );
-    }
+    this.assertIdempotencyKey(parsed.idempotencyKey);
 
     const now = this.now();
     const { firstChargeAt } = resolveFirstChargeAt(parsed, now);
@@ -614,6 +675,114 @@ export class CashfreeProvider extends BaseProvider {
   }
 
   // -------------------------------------------------------------------------
+  // One-time payments (Cashfree orders)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Creates a Cashfree order; the order is the payment. `Payment.id` and
+   * `Payment.reference` are the order id, the key every later call needs
+   * (`getPayment`, `refundPayment`, the webhooks). `checkout` carries the
+   * `payment_session_id` for Cashfree.js `checkout`.
+   *
+   * - `reference` is the `order_id` (3-45 letters, digits, `_`, `-`); without
+   *   one the adapter generates an id.
+   * - `returnUrl` gets `order_id=<order id>` added to its query, so the return
+   *   URL always says which order the customer comes back from; `verifyPayment`
+   *   reads it.
+   * - `paymentMethods` becomes `payment_methods_filters` (upi, card,
+   *   netbanking, wallet); eNACH and physical NACH are refused.
+   * - `idempotencyKey` must be a UUID (Cashfree's header has that format). Without
+   *   one, a dropped request is `OUTCOME_UNKNOWN`; the order id is unique, so
+   *   `getPayment(reference)` tells whether the order was created.
+   * - `customer.state` and `storeProduct` have no meaning for a gateway and are
+   *   not sent. A customer needs a phone; e-mail is optional for an order.
+   */
+  override async createPayment(input: CreatePaymentInput): Promise<Payment> {
+    const parsed = parseInput(CreatePaymentInputSchema, input, 'payment', this.name);
+    this.assertIdempotencyKey(parsed.idempotencyKey);
+    const request = this.orderRequestFor(parsed);
+    const order = await this.call({
+      method: HttpMethod.Post,
+      path: CashfreePath.Orders,
+      body: request,
+      schema: CashfreeOrderSchema,
+      what: 'order',
+      idempotent: parsed.idempotencyKey !== undefined,
+      idempotencyKey: parsed.idempotencyKey,
+    });
+    const checkout = orderCheckoutOf(order, this.#environment);
+    if (!checkout) {
+      throw new SubscriptionError(
+        ErrorCode.UnexpectedResponse,
+        `${this.name} created order ${order.order_id} but returned no payment_session_id`,
+        { provider: this.name, raw: order },
+      );
+    }
+    return mapOrderPayment(order, { checkout });
+  }
+
+  /** The order, its payment attempts and (once paid) its refunds. The source of truth for a payment. */
+  override async getPayment(paymentId: string): Promise<Payment> {
+    return this.loadPayment(requireId(paymentId, 'paymentId'));
+  }
+
+  /**
+   * What reaches the return URL carries no signature that Cashfree documents, so
+   * nothing in it is trusted: only the `order_id` is read, and the order is
+   * fetched from the API (with its payment attempts and refunds). `paid` is true
+   * only when Cashfree says the order is `PAID` (a partly refunded payment is
+   * still paid; a fully refunded one is not). A customer who closes the browser
+   * early never reaches the return URL: the webhook and `getPayment` cover that.
+   */
+  override async verifyPayment(result: CheckoutResult): Promise<PaymentVerification> {
+    const params = parseInput(CashfreeOrderReturnParamsSchema, result, 'Cashfree return-URL parameters', this.name);
+    const payment = await this.loadPayment(params[RETURN_URL_ORDER_ID_PARAM]);
+    return {
+      provider: this.name,
+      paymentId: payment.id,
+      reference: payment.reference,
+      paid: payment.status === PaymentStatus.Succeeded || payment.status === PaymentStatus.PartiallyRefunded,
+      status: payment.status,
+      payment,
+      raw: payment.raw,
+    };
+  }
+
+  /**
+   * `POST /orders/{order_id}/refunds`. Cashfree needs an amount, so a full refund
+   * (no `amount`) reads the successful attempt and the refunds already asked for
+   * and refunds what is left. The `x-idempotency-key` is derived from the order
+   * and refund ids, so a retry of the same refund cannot create a second one.
+   * `refundId` is 3-40 letters, digits, `_`, `-`; `reason` 3-100 characters.
+   */
+  override async refundPayment(input: RefundPaymentInput): Promise<Refund> {
+    const parsed = parseInput(RefundPaymentInputSchema, input, 'refund', this.name);
+    this.assertRefundFields(parsed);
+    const orderId = requireId(parsed.paymentId, 'paymentId');
+    const amount = parsed.amount ?? (await this.refundableAmount(orderId));
+    const request = parseInput(
+      CashfreeOrderRefundRequestSchema,
+      {
+        refund_amount: paiseToRupeeNumber(amount),
+        refund_id: parsed.refundId,
+        refund_note: parsed.reason,
+      },
+      'Cashfree refund request',
+      this.name,
+    );
+    const response = await this.call({
+      method: HttpMethod.Post,
+      path: CashfreePath.orderRefunds(orderId),
+      body: request,
+      schema: CashfreeOrderRefundSchema,
+      what: 'refund',
+      idempotent: true,
+      idempotencyKey: uuidFromSeed(`${orderId}\n${parsed.refundId}`),
+    });
+    return mapOrderRefund(response, { orderId, amountPaise: amount, createdAt: this.now() });
+  }
+
+  // -------------------------------------------------------------------------
   // Checkout and webhooks
   // -------------------------------------------------------------------------
 
@@ -645,6 +814,11 @@ export class CashfreeProvider extends BaseProvider {
    * `signature = base64(HMAC_SHA256(secret, x-webhook-timestamp + rawBody))`,
    * compared in constant time. The timestamp's format is not documented, so no
    * replay window is enforced here (the docs recommend 5 minutes).
+   *
+   * Subscription webhooks (`type` starts with `SUBSCRIPTION_`) and payment-gateway
+   * webhooks (`PAYMENT_*`, `REFUND_STATUS_WEBHOOK`) are signed the same way and
+   * are told apart by `type`; the latter become `payment.*` and `refund.*`
+   * events with `paymentId` (the order id).
    */
   parseWebhook(request: WebhookRequest): SubscriptionEvent[] {
     const webhook = parseInput(WebhookRequestSchema, request, 'webhook request', this.name);
@@ -738,6 +912,222 @@ export class CashfreeProvider extends BaseProvider {
       spec.schema,
       spec.what,
     );
+  }
+
+  private assertIdempotencyKey(key: string | undefined): void {
+    if (key !== undefined && !IDEMPOTENCY_KEY_PATTERN.test(key)) {
+      throw invalid(
+        'idempotencyKey must be a UUID for Cashfree (its x-idempotency-key header has format UUID), e.g. 47bf8872-46fe-11ee-be56-0242ac120002',
+        this.name,
+      );
+    }
+  }
+
+  /** The order, then its attempts, then (for a paid order) its refunds. */
+  private async loadPayment(orderId: string): Promise<Payment> {
+    const order = await this.call({
+      method: HttpMethod.Get,
+      path: CashfreePath.order(orderId),
+      schema: CashfreeOrderSchema,
+      what: 'order',
+      idempotent: true,
+    });
+    const attempts = await this.fetchOrderPayments(orderId);
+    const status = mapOrderStatus(order.order_status);
+    const refunds = status === PaymentStatus.Succeeded ? await this.fetchOrderRefunds(orderId) : undefined;
+    // An order that can still be paid hands over its session id, so the checkout can be reopened.
+    const checkout = status === PaymentStatus.Created ? orderCheckoutOf(order, this.#environment) : undefined;
+    return mapOrderPayment(order, { attempts, refunds, checkout, raw: { order, payments: attempts, refunds } });
+  }
+
+  private fetchOrderPayments(orderId: string): Promise<CashfreeOrderPayment[]> {
+    return this.call({
+      method: HttpMethod.Get,
+      path: CashfreePath.orderPayments(orderId),
+      schema: CashfreeOrderPaymentListSchema,
+      what: 'payment attempts',
+      idempotent: true,
+    });
+  }
+
+  private fetchOrderRefunds(orderId: string): Promise<CashfreeOrderRefund[]> {
+    return this.call({
+      method: HttpMethod.Get,
+      path: CashfreePath.orderRefunds(orderId),
+      schema: CashfreeOrderRefundListSchema,
+      what: 'refund list',
+      idempotent: true,
+    });
+  }
+
+  /** What a full refund asks for: the successful attempt's amount minus the refunds already claimed, in paise. */
+  private async refundableAmount(orderId: string): Promise<number> {
+    const attempts = await this.fetchOrderPayments(orderId);
+    const success = attempts.find((attempt) => mapAttemptStatus(attempt.payment_status) === PaymentStatus.Succeeded);
+    if (success === undefined) throw invalid(`Order ${orderId} has no successful payment to refund`, this.name);
+    const paid = rupeesToPaise(success.payment_amount);
+    if (paid === undefined || paid <= 0) {
+      throw new SubscriptionError(ErrorCode.UnexpectedResponse, `${this.name} returned a successful payment without a payment_amount`, {
+        provider: this.name,
+        raw: success,
+      });
+    }
+    const remaining = paid - committedRefundPaise(await this.fetchOrderRefunds(orderId));
+    if (remaining <= 0) throw invalid(`Order ${orderId} has already been refunded in full`, this.name);
+    return remaining;
+  }
+
+  private assertRefundFields(parsed: ParsedRefundPaymentInput): void {
+    if (
+      parsed.refundId.length < REFUND_ID_MIN_LENGTH ||
+      parsed.refundId.length > REFUND_ID_MAX_LENGTH ||
+      !REFUND_ID_PATTERN.test(parsed.refundId)
+    ) {
+      throw invalid(
+        `refundId must be ${REFUND_ID_MIN_LENGTH}-${REFUND_ID_MAX_LENGTH} characters: letters, digits, "_" and "-" (Cashfree's refund_id)`,
+        this.name,
+      );
+    }
+    if (parsed.reason !== undefined && (parsed.reason.length < REFUND_NOTE_MIN_LENGTH || parsed.reason.length > REFUND_NOTE_MAX_LENGTH)) {
+      throw invalid(`reason must be ${REFUND_NOTE_MIN_LENGTH}-${REFUND_NOTE_MAX_LENGTH} characters (Cashfree's refund_note)`, this.name);
+    }
+  }
+
+  /**
+   * Every input Cashfree has a field for goes in it; one Cashfree cannot honour
+   * (a value outside its documented length, a method that is not for orders)
+   * is refused here instead of being dropped.
+   */
+  private orderRequestFor(parsed: ParsedCreatePaymentInput): CashfreeCreateOrderRequest {
+    if (parsed.amount < MIN_ORDER_PAISE) {
+      throw invalid(`amount must be at least ${MIN_ORDER_PAISE} paise: Cashfree's order_amount has a minimum of 1 rupee`, this.name);
+    }
+    const orderId = parsed.reference ?? generateId(GENERATED_ORDER_ID_PREFIX);
+    if (orderId.length < ORDER_ID_MIN_LENGTH || orderId.length > ORDER_ID_MAX_LENGTH || !ORDER_ID_PATTERN.test(orderId)) {
+      throw invalid(
+        `reference becomes Cashfree's order_id: ${ORDER_ID_MIN_LENGTH}-${ORDER_ID_MAX_LENGTH} characters, letters, digits, "_" and "-" only`,
+        this.name,
+      );
+    }
+
+    const customer = parsed.customer;
+    const phone = formatPhone(customer.phone, 'an order');
+    const customerId = customer.id ?? `${DERIVED_CUSTOMER_ID_PREFIX}${phone}`;
+    if (
+      customerId.length < CUSTOMER_ID_MIN_LENGTH ||
+      customerId.length > CUSTOMER_ID_MAX_LENGTH ||
+      !CUSTOMER_ID_PATTERN.test(customerId)
+    ) {
+      throw invalid(
+        `customer.id becomes Cashfree's customer_id: ${CUSTOMER_ID_MIN_LENGTH}-${CUSTOMER_ID_MAX_LENGTH} characters, letters, digits, "_" and "-" only`,
+        this.name,
+      );
+    }
+    if (customer.name !== undefined && (customer.name.length < CUSTOMER_NAME_MIN_LENGTH || customer.name.length > CUSTOMER_NAME_MAX_LENGTH)) {
+      throw invalid(`customer.name must be ${CUSTOMER_NAME_MIN_LENGTH}-${CUSTOMER_NAME_MAX_LENGTH} characters for Cashfree`, this.name);
+    }
+    if (
+      customer.email !== undefined &&
+      (customer.email.length < CUSTOMER_EMAIL_MIN_LENGTH || customer.email.length > CUSTOMER_EMAIL_MAX_LENGTH)
+    ) {
+      throw invalid(`customer.email must be ${CUSTOMER_EMAIL_MIN_LENGTH}-${CUSTOMER_EMAIL_MAX_LENGTH} characters for Cashfree`, this.name);
+    }
+
+    if (
+      parsed.description !== undefined &&
+      (parsed.description.length < ORDER_NOTE_MIN_LENGTH || parsed.description.length > ORDER_NOTE_MAX_LENGTH)
+    ) {
+      throw invalid(`description becomes Cashfree's order_note: ${ORDER_NOTE_MIN_LENGTH}-${ORDER_NOTE_MAX_LENGTH} characters`, this.name);
+    }
+
+    let expiry: string | undefined;
+    if (parsed.expiresAt !== undefined) {
+      const expiresAt = toDate(parsed.expiresAt, 'expiresAt');
+      if (expiresAt.getTime() <= this.now().getTime()) throw invalid('expiresAt must be in the future', this.name);
+      expiry = toIstIso(expiresAt);
+    }
+
+    if (parsed.metadata !== undefined) {
+      const entries = Object.entries(parsed.metadata);
+      if (entries.length > MAX_ORDER_TAGS) {
+        throw invalid(`Cashfree accepts at most ${MAX_ORDER_TAGS} order tags (metadata entries), got ${entries.length}`, this.name);
+      }
+      for (const [key, value] of entries) {
+        if (value.length < ORDER_TAG_VALUE_MIN_LENGTH || value.length > ORDER_TAG_VALUE_MAX_LENGTH) {
+          throw invalid(
+            `metadata "${key}" must be ${ORDER_TAG_VALUE_MIN_LENGTH}-${ORDER_TAG_VALUE_MAX_LENGTH} characters: Cashfree's order tag values have that limit`,
+            this.name,
+          );
+        }
+      }
+    }
+
+    const filterValues = parsed.paymentMethods === undefined ? undefined : this.filterValuesFor(parsed.paymentMethods);
+    const returnUrl = parsed.returnUrl === undefined ? undefined : this.returnUrlFor(parsed.returnUrl, orderId);
+
+    return parseInput(
+      CashfreeCreateOrderRequestSchema,
+      {
+        order_id: orderId,
+        order_amount: paiseToRupeeNumber(parsed.amount),
+        order_currency: Currency.INR,
+        customer_details: {
+          customer_id: customerId,
+          customer_phone: phone,
+          customer_email: customer.email,
+          customer_name: customer.name,
+        },
+        order_meta:
+          returnUrl === undefined && filterValues === undefined
+            ? undefined
+            : {
+                return_url: returnUrl,
+                payment_methods_filters:
+                  filterValues === undefined
+                    ? undefined
+                    : { methods: { action: CashfreeFilterAction.Allow, values: filterValues } },
+              },
+        order_expiry_time: expiry,
+        order_note: parsed.description,
+        order_tags: parsed.metadata,
+      },
+      'Cashfree order request',
+      this.name,
+    );
+  }
+
+  /** The documented filter values for the requested methods, each once, in request order. */
+  private filterValuesFor(methods: PaymentMethod[]): string[] {
+    const values = new Set<string>();
+    for (const method of methods) {
+      if (!isOrderPaymentMethod(method)) {
+        throw unsupported(
+          this.name,
+          `${method} on a one-time payment`,
+          `Cashfree restricts an order to ${ORDER_PAYMENT_METHODS.join(', ')}; ${method} is a mandate method`,
+        );
+      }
+      for (const value of PAYMENT_METHOD_TO_FILTER_VALUES[method]) values.add(value);
+    }
+    return [...values];
+  }
+
+  /** Adds `order_id` to the return URL (the documented way to know the order on return) and enforces the 250-character limit. */
+  private returnUrlFor(returnUrl: string, orderId: string): string {
+    const url = new URL(returnUrl);
+    const present = url.searchParams.get(RETURN_URL_ORDER_ID_PARAM);
+    if (present !== null && present !== orderId) {
+      throw invalid(
+        `returnUrl already has an ${RETURN_URL_ORDER_ID_PARAM} parameter that is not this order's id; the adapter sets it itself so verifyPayment can find the order`,
+        this.name,
+      );
+    }
+    if (present === null) url.searchParams.set(RETURN_URL_ORDER_ID_PARAM, orderId);
+    const result = url.toString();
+    if (result.length > RETURN_URL_MAX_LENGTH) {
+      throw invalid(`returnUrl is ${result.length} characters with the order id added; Cashfree allows ${RETURN_URL_MAX_LENGTH}`, this.name);
+    }
+    return result;
   }
 
   private fetchPlan(planId: string) {
@@ -881,6 +1271,10 @@ export class CashfreeProvider extends BaseProvider {
     const hour = Number(toIstIso(now).slice(ISO_HOUR_START, ISO_HOUR_END));
     return addDays(now, hour >= SAME_DAY_CUTOFF_IST_HOUR ? 2 : 1);
   }
+}
+
+function isOrderPaymentMethod(method: PaymentMethod): method is OrderPaymentMethod {
+  return (ORDER_PAYMENT_METHODS as readonly PaymentMethod[]).includes(method);
 }
 
 function parseConfig(config: CashfreeConfig): ParsedCashfreeConfig {
