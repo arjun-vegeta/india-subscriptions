@@ -12,6 +12,8 @@ Paytm Subscriptions can collect each cycle itself, or leave every debit to you. 
 | Trials of any length | Yes | Only when the first debit is today or one cycle away on UPI |
 | Retries | The scheduler's | Paytm's (grace days and a retry count) |
 
+This page also covers [one-time payments](#one-time-payments), which use Paytm's standard payment gateway rather than its subscription service.
+
 The scheduler is the default because Paytm's own collection cannot do what most products need. Paytm's documentation says manual collection is **mandatory** for variable amounts, on-demand plans and daily frequency, and on UPI Paytm accepts a future start date only when it is **today or exactly one period away**. A trial of arbitrary length therefore cannot use Paytm's collection.
 
 ::: info Enterprise merchants
@@ -87,7 +89,7 @@ sequenceDiagram
 ### What you must supply
 
 - The plan **inline**. A plan id string throws `VALIDATION`; `plans.create` and `plans.get` throw `UNSUPPORTED`.
-- `reference` becomes Paytm's order id: at most 50 characters of letters, digits and `@ . _ -`. Without one a `sub_...` id is generated. The customer id (`custId`), when you give none, is derived from the order id.
+- `reference` becomes Paytm's order id: at most 50 characters of letters, digits and `@ . _ -`, and **not starting with `pay_`**, which is reserved for [one-time payments](#one-time-payments) (the same applies to a debit's `chargeId`). Without one a `sub_...` id is generated. The customer id (`custId`), when you give none, is derived from the order id.
 - A 10-digit Indian mobile number (with or without `+91`) for the customer, and an e-mail address.
 - No `|` character in any request value.
 - `quantity` other than 1 is not supported. `authorizeBy`, `upfrontLabel`, `metadata` and `idempotencyKey` have no Paytm equivalent and are ignored (the order id is the natural idempotency key: Paytm refuses a repeated one).
@@ -240,6 +242,161 @@ Configure the webhook URLs with Paytm: the subscription-status webhook URL is se
 <!-- generated:end -->
 
 An `ACTIVE` status whose sub-status is `RESUMED` is a resume (`subscription.resumed`). The payment webhook **cannot tell an upfront payment from a renewal**, so a `subscription.charged` event may describe either: for a merchant-scheduled subscription the scheduler matches it to its own debit by id, and an upfront payment matches none. A pre-notify callback is `subscription.charge_scheduled` when Paytm reports it delivered, otherwise `unknown`. The refund reference (ARN) notification is `unknown`; the JSON Success Refund notification is `refund.succeeded` or `refund.failed`.
+
+## One-time payments
+
+`capabilities.oneTimePayments` is `true` and `oneTimePaymentMethods` lists `upi`, `card`, `netbanking` and `wallet`. A payment goes through Paytm's Initiate Transaction API and the same form-post payment page as a subscription, so the customer sees one Paytm page whether they subscribe or pay once.
+
+| You call | Paytm API | What comes back |
+|---|---|---|
+| `payments.create` | Initiate Transaction (request type `Payment`) | A `Payment` with status `created` and a `checkout` form post |
+| `payments.verify` | Transaction Status, after the checksum of the callback | `paid`, and the `Payment` as Paytm reports it |
+| `payments.get` | Transaction Status | The `Payment` |
+| `payments.refund` | Refund | A `Refund` that is `pending` until Paytm says otherwise |
+
+```ts title="paytm-one-time-payment.ts"
+import { PaymentMethod, Provider, type Subscriptions } from 'india-subscriptions';
+
+export async function startPayment(subs: Subscriptions, orderNumber: string) {
+  const payment = await subs.payments.create(Provider.Paytm, {
+    reference: orderNumber,
+    amount: 49900,
+    description: 'Pro plan, one month',
+    customer: { id: 'CUST_001', name: 'Ashish Kumar', email: 'ashish@example.com', phone: '+919876543210' },
+    paymentMethods: [PaymentMethod.Upi, PaymentMethod.Card],
+    returnUrl: 'https://shop.example.com/paytm/return',
+  });
+  // Store payment.id: it is the id for every later call. Send payment.checkout to the browser.
+  return payment;
+}
+
+export async function onReturn(subs: Subscriptions, fields: Record<string, string>, paymentId: string) {
+  // `fields` is the form Paytm posts to your callback URL, exactly as received.
+  const verification = await subs.payments.verify(Provider.Paytm, fields, { expectedPaymentId: paymentId });
+  return verification.paid;
+}
+
+export async function refundPart(subs: Subscriptions, paymentId: string) {
+  return subs.payments.refund(Provider.Paytm, { paymentId, refundId: 'refund_2001', amount: 10000, reason: 'Customer returned one item' });
+}
+```
+
+### The payment id
+
+`Payment.id` is Paytm's **order id**, and it is `pay_` followed by your `reference` (or by a generated token when you give none). Paytm keys Transaction Status and Refund by order id, so the id `payments.create` returns is the one `payments.get`, `payments.refund` and the webhooks use, with no mapping to store. `Payment.reference` is the part after `pay_`, so `payments.verify` accepts either the id or your reference as `expectedPaymentId`.
+
+The prefix exists because of how Paytm's webhooks are built. Paytm's documentation says a subscription debit ends with the same "Payment S2S callback" as a one-time payment, and neither payload names the flow: the Payment Status fields (`ORDERID`, `TXNID`, `TXNAMOUNT`, `STATUS` and so on) carry no subscription id. The order id is therefore what tells the two apart. This leaves three rules to know:
+
+- A reference is at most 46 characters (the order id is at most 50). `createSubscription` and `createCharge` refuse a reference that starts with `pay_`, so the two cannot collide.
+- `getPayment` and `refundPayment` accept only ids that start with `pay_`; any other order id is `VALIDATION`.
+- A payment made at Paytm outside this library, under another order id, is reported by the webhook as a subscription debit.
+
+### What the payment page needs
+
+```mermaid
+sequenceDiagram
+  participant App as Your server
+  participant Browser as Customer's browser
+  participant Paytm
+  App->>Paytm: initiate transaction (signed)
+  Paytm-->>App: txn token
+  App-->>Browser: checkout instruction (form post)
+  Browser->>Paytm: customer pays on Paytm's page
+  Paytm-->>Browser: fields posted to your callback URL
+  Browser->>App: Paytm's fields
+  App->>Paytm: verify checks the checksum, then Transaction Status
+  Paytm-->>App: final status
+  Paytm-->>App: Payment Status webhook (server to server)
+```
+
+`payment.checkout` has `kind: CheckoutKind.FormPost`. Its fields are only `mid`, `orderId` and the transaction token; the merchant key is never in it. [`openCheckout`](../guides/checkout.md) builds and submits the form. Paytm's documentation says the transaction token is valid for 15 minutes, so send the customer to the page soon after creating the payment.
+
+| Input | What happens |
+|---|---|
+| `amount` | Sent as rupees with two decimals in `txnAmount` |
+| `customer` | Sent as `userInfo`. A 10-digit Indian mobile number (with or without `+91`) is required if you pass a phone. `customer.id` becomes `custId`; without one it is derived from the order id. `customer.state` is not sent. |
+| `reference` | Becomes the order id after `pay_` |
+| `paymentMethods` | Limits the page with `enablePaymentMode`: `upi` is `UPI`, `card` is `CREDIT_CARD` and `DEBIT_CARD`, `netbanking` is `NET_BANKING`, `wallet` is `BALANCE`. `enach` and `physical_nach` are `VALIDATION`. |
+| `returnUrl` | Sent as `callbackUrl`; without one the `callbackUrl` of the configuration, then the URL Paytm holds for your `website` |
+| `description` | Sent in `extendInfo.comments` |
+| `expiresAt` | **Refused with `UNSUPPORTED`.** Initiate Transaction takes no expiry. |
+| `metadata` | **Refused with `UNSUPPORTED`.** Initiate Transaction has no key-value field, and no callback, webhook or status answer returns one. Keep it next to the payment id on your side. |
+| `idempotencyKey` | Not sent. The order id is the natural key: Paytm answers a repeat of the same request for the same order id with "Success Idempotent", and a different request with "Repeat Request Inconsistent" (`CONFLICT`). Pass a `reference` to make a retry safe. |
+
+A create call that gets no answer, or an answer without a verdict, is `OUTCOME_UNKNOWN`: the order may exist. Read it with `getPayment`, or repeat the call with the same `reference`.
+
+### Verification
+
+`verifyPayment` takes the form Paytm posts to your callback URL. It does three things, in this order:
+
+1. Verifies `CHECKSUMHASH` over all the other fields, in constant time. A missing, wrong or tampered checksum is `SIGNATURE_INVALID`, and nothing is read from the result or sent to Paytm.
+2. Refuses a result whose `ORDERID` does not start with `pay_` (`VALIDATION`): that callback belongs to [`verifyCheckout`](#authorisation-and-checkout).
+3. Reads Transaction Status for the order. Paytm's documentation says the callback "can be intermediate or final" and strongly recommends fetching the final status before confirming an order, so `paid` and `payment` come from Transaction Status, never from the callback's own `STATUS`. If Transaction Status cannot be read, the call fails rather than guessing.
+
+`paid` is true for a payment that succeeded, including one that has been refunded in part or whole since. Compare `payment.amount` with the amount of your own order before you fulfil it: Paytm's documentation names no amount check, so it is yours to make.
+
+### Statuses and payment methods
+
+| Paytm status | Unified status |
+|---|---|
+| `TXN_SUCCESS` | `succeeded` |
+| `TXN_SUCCESS` with a refund amount | `partially_refunded`, or `refunded` when it equals the payment |
+| `TXN_FAILURE` | `failed`, with Paytm's `RESPCODE` as `failureCode` and `RESPMSG` as `failureReason` |
+| `PENDING` | `pending` |
+| Any other status | `pending`, and the status stays visible in `providerStatus` |
+
+An unknown status is never read as a failure or as a success: failing it could release an order or start a second attempt while the payment is live, and succeeding it would give goods away. A payment created and not yet attempted is `created`, which only `createPayment` returns.
+
+Transaction Status answers `NO_RECORD_FOUND` (code 331) and "Invalid Order ID" (334) as `NOT_FOUND`. Paytm's page does not say whether an order that nobody has tried to pay has a record, so `getPayment` straight after `createPayment` may be `NOT_FOUND`. A wrong merchant id and "Server Down" are errors, never a failed payment.
+
+| Paytm payment mode (`paymentMode`, `PAYMENTMODE`) | Unified payment method |
+|---|---|
+| `UPI`, `UPI_INTENT` | `upi` |
+| `CC`, `CREDIT_CARD`, `DC`, `DEBIT_CARD` | `card` |
+| `NB`, `NET_BANKING` | `netbanking` |
+| `PPI`, `BALANCE` | `wallet` |
+| `PPBL`, postpaid (`PAYTMCC`), `PAYTM_DIGITAL_CREDIT`, `EMI`, `BANK_TRANSFER` | none: `paymentMethod` is left out |
+
+### Refunds
+
+`payments.refund` calls the Refund API with the payment's order id as `orderId` and your `refundId` as `refId`. The transaction is read first: only a successful one can be refunded (anything else is `VALIDATION`), and an `amount` above the amount paid is refused. Omit `amount` to refund all of it. The refund is asynchronous: Paytm's answer only says the request was registered, so the `Refund` is `pending` unless Paytm says it is final, and `chargeId` and `paymentId` of the refund are both the payment id. Paytm rejects a repeated `refId`, so repeating a refund whose answer was lost cannot refund twice. Paytm's own limits come back as errors: no partial refund under Re 1, none on an order older than a year, and a refund while another is in progress.
+
+### Webhooks
+
+Configure the Payment Status webhook URL in the Paytm dashboard. Paytm posts key-value fields signed with `CHECKSUMHASH`, which the adapter verifies before reading anything. For an order id that starts with `pay_`:
+
+| Paytm notification | Unified event |
+|---|---|
+| Payment Status, `TXN_SUCCESS` | `payment.succeeded` |
+| Payment Status, `TXN_FAILURE` | `payment.failed` |
+| Payment Status, any other status | `unknown`, still carrying the `payment` |
+| Success Refund | `refund.succeeded` |
+| Accept Refund | `unknown` (the refund is registered, the customer has not been credited) |
+| Refund notification with status `FAILED` | `refund.failed` |
+| Refund ARN | `unknown` |
+
+Payment events carry `paymentId` and `payment`, built from the signed fields. Refund events carry `paymentId` and a `refund` whose `chargeId` and `paymentId` are the payment id. Event ids are built from the content, so a redelivery has the same id. The Payment ARN notification (cards only, no `STATUS`) is not read.
+
+```ts title="paytm-one-time-webhook.ts"
+import { EventType, Provider, type Subscriptions } from 'india-subscriptions';
+
+export async function onPaytmWebhook(subs: Subscriptions, rawBody: string) {
+  const events = await subs.webhooks.parse(Provider.Paytm, { rawBody, headers: {} });
+  for (const event of events) {
+    if (event.type === EventType.PaymentSucceeded) console.log('paid', event.paymentId, event.payment?.amount);
+    if (event.type === EventType.PaymentFailed) console.log('declined', event.paymentId, event.payment?.failureReason);
+  }
+}
+```
+
+The same Payment Status fields under any other order id keep their subscription meaning (`subscription.charged` and `subscription.charge_failed`, see [Webhooks](#webhooks) above). A webhook is Paytm's word that a payment finished; confirm a large or unexpected one with `payments.get` before acting on it.
+
+### Limits
+
+- No order expiry and no metadata (refused, above). The transaction token is valid for 15 minutes.
+- No payment-method choice beyond UPI, cards, net banking and the Paytm wallet. Paytm Payments Bank, postpaid, EMI and bank-transfer payments are not selectable from this library, though a customer may be offered them when you do not pass `paymentMethods`.
+- Paytm lists a Refund Status API; the library has no refund lookup, so a refund's end comes from the Success Refund webhook.
+- Paytm's pages disagree about the host of Transaction Status: its reference page prints `securegw(-stage).paytmpayments.in` and the JS Checkout page `secure(stage).paytmpayments.com`. The adapter follows the reference page; `transactionStatusBaseUrl` replaces it.
 
 ## Testing on staging
 
