@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { z as zod } from 'zod';
-import { CheckoutKind, ErrorCode, Provider } from '../constants.js';
+import { CheckoutKind, Currency, ErrorCode, Provider } from '../constants.js';
 import { parseInput, parseResponse, SubscriptionError } from '../errors.js';
 import { CheckoutResultSchema, RazorpayCheckoutSchema } from '../schemas.js';
 import {
@@ -24,12 +24,25 @@ import {
 
 export type RazorpayCheckout = z.infer<typeof RazorpayCheckoutSchema>;
 
+/**
+ * Standard Checkout options that identify a one-time payment: "`order_id`
+ * mandatory", with `amount` and `currency` alongside it (Standard Checkout
+ * integration steps, "Checkout Options").
+ */
+const RazorpayOrderOption = {
+  OrderId: 'order_id',
+  Amount: 'amount',
+  Currency: 'currency',
+} as const;
+
 const PaymentFailedEventSchema = zod.looseObject({ error: CheckoutErrorSchema.optional() });
 
 /**
- * Builds the Standard Checkout options object for a subscription.
- * [razorpay.md §6.2] No `amount`, `currency` or `order_id`: the subscription
- * carries them. With `callback_url` the docs use no `handler` ("callback_url OR
+ * Builds the Standard Checkout options object. For a subscription
+ * [razorpay.md §6.2] there is no `amount`, `currency` or `order_id`: the
+ * subscription carries them. For a one-time payment the instruction carries an
+ * `orderId`, and the options are `order_id` with the order's `amount` and
+ * `currency`. With `callback_url` the docs use no `handler` ("callback_url OR
  * handler"), so exactly one of the two is set.
  */
 export function buildRazorpayOptions(
@@ -37,10 +50,14 @@ export function buildRazorpayOptions(
   options: OpenCheckoutOptions,
   hooks: { onHandler: (response: unknown) => void; onDismiss: () => void },
 ): Record<string, unknown> {
-  const built: Record<string, unknown> = {
-    [RazorpayOption.Key]: instruction.keyId,
-    [RazorpayOption.SubscriptionId]: instruction.subscriptionId,
-  };
+  const built: Record<string, unknown> = { [RazorpayOption.Key]: instruction.keyId };
+  if (instruction.orderId !== undefined) {
+    built[RazorpayOrderOption.OrderId] = instruction.orderId;
+    if (instruction.amount !== undefined) built[RazorpayOrderOption.Amount] = instruction.amount;
+    built[RazorpayOrderOption.Currency] = Currency.INR;
+  } else {
+    built[RazorpayOption.SubscriptionId] = instruction.subscriptionId;
+  }
   if (options.name !== undefined) built[RazorpayOption.Name] = options.name;
   if (options.description !== undefined) built[RazorpayOption.Description] = options.description;
   if (options.image !== undefined) built[RazorpayOption.Image] = options.image;
@@ -78,9 +95,10 @@ function providerError(message: string, cause?: unknown): SubscriptionError {
 
 /**
  * `razorpay_checkout`: loads Standard Checkout (once), opens it for the
- * subscription and settles on the first of: the success handler (`completed`,
- * `result` is the handler response to POST to your server for
- * `verifyCheckout`), the customer closing the modal (`dismissed`) or
+ * subscription or, when the instruction carries an `orderId`, for the order,
+ * and settles on the first of: the success handler (`completed`, `result` is
+ * the handler response to POST to your server for `verifyCheckout`, or for
+ * `verifyPayment` with an order), the customer closing the modal (`dismissed`) or
  * `payment.failed` (`failed`; the modal is closed so the outcome is final).
  *
  * With `callbackUrl` on the instruction Razorpay redirects the page itself
