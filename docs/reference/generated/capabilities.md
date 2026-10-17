@@ -30,8 +30,8 @@ What each gateway adapter can do, read from the adapters themselves with dummy c
 | `signedWebhooks` | yes | yes | no | yes | yes | Webhooks carry a signature this library verifies. |
 | `idempotencyKeys` | no | yes | no | no | no | Create calls accept an idempotency key. |
 | `paymentMethods` | `card`, `upi`, `enach` | `upi`, `card`, `enach` | `card`, `upi`, `enach` | `upi` | `upi`, `card`, `enach` | The payment methods mandates can be authorised with. |
-| `oneTimePayments` | no | no | no | no | no | One-time payments are supported (`createPayment`). |
-| `oneTimePaymentMethods` |  |  |  |  |  | The payment methods one-time payments can be taken with. |
+| `oneTimePayments` | yes | yes | yes | yes | yes | One-time payments are supported (`createPayment`). |
+| `oneTimePaymentMethods` | `card`, `upi`, `netbanking`, `wallet` | `upi`, `card`, `netbanking`, `wallet` | `card`, `upi`, `netbanking`, `wallet` | `upi`, `card`, `netbanking` | `upi`, `card`, `netbanking`, `wallet` | The payment methods one-time payments can be taken with. |
 
 ## What the facade reports
 
