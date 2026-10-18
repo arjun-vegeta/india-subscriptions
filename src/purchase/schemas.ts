@@ -176,6 +176,13 @@ export const PurchaseOptionSchema = z
           'For a store it is the account token.',
       ),
     routing: RoutingDecisionSchema.optional().describe('Why this gateway was chosen. Present on gateway options.'),
+    hostedUrl: z
+      .url()
+      .optional()
+      .describe(
+        'A page that performs this option\'s checkout step, for a client that cannot run the browser helper (the Android ' +
+          'alternative path opens it in a browser tab). Present on gateway options when the service serves a hosted checkout.',
+      ),
   })
   .describe('One way the customer can pay for the session.');
 export type PurchaseOption = z.infer<typeof PurchaseOptionSchema>;
@@ -212,6 +219,10 @@ export const PurchaseSessionSchema = z
     status: SessionStatusSchema.describe('Where the session is.'),
     customerRef: z.string().describe('Your id for the customer.'),
     reference: ReferenceSchema,
+    returnUrl: z
+      .url()
+      .optional()
+      .describe('Where the customer is sent when the purchase is done: the `returnUrl` given to `start`.'),
     options: z.array(PurchaseOptionSchema).describe('How the customer can pay. A `user_choice` session has the Google Play option first and the gateway option once the customer chose the alternative.'),
     attempts: z.array(PurchaseAttemptSchema).describe('Every gateway tried while creating the gateway option, in order.'),
     externalTransactionToken: z
@@ -231,7 +242,6 @@ export type PurchaseSession = z.infer<typeof PurchaseSessionSchema>;
 /** What the store keeps for a session: the public session plus what later steps need. */
 export const PurchaseSessionRecordSchema = PurchaseSessionSchema.extend({
   customer: CustomerSchema.describe('The paying customer, as given to `start`.'),
-  returnUrl: z.url().optional().describe('The return URL given to `start`.'),
   kind: ProductKindSchema.describe('Whether the product is a subscription or a one-time purchase.'),
   amount: PositivePaiseSchema.describe('The price of the product when the session started, in paise, tax included.'),
   taxRateBps: z.number().int().nonnegative().optional().describe('The tax rate of the product when the session started.'),
@@ -239,14 +249,7 @@ export const PurchaseSessionRecordSchema = PurchaseSessionSchema.extend({
   initialChargeId: z
     .string()
     .optional()
-    .describe('The charge or payment the first Google report stands for, once known. Later charges are renewals.'),
-  initialClaimable: z
-    .boolean()
-    .optional()
-    .describe(
-      'True while the first Google report stands for a subscription charge that is not known yet: the first ' +
-        '`subscription.charged` event then belongs to that report instead of being a renewal.',
-    ),
+    .describe('The paid charge or payment the first Google report states, if it states one. Every other charge is a renewal.'),
   initialReportId: z.string().optional().describe('The id of the first report queued for the session.'),
 }).describe('A purchase session as stored.');
 export type PurchaseSessionRecord = z.infer<typeof PurchaseSessionRecordSchema>;

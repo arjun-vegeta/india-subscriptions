@@ -52,7 +52,7 @@ import {
   UNAVAILABLE_ERROR_CODES,
   ACCESS_STATUSES,
 } from './constants.js';
-import { applyEvent, blocksPurchase, statusFromSubscription, toItem } from './entitlement.js';
+import { applyEvent, blocksPurchase, grantsAccess, statusFromSubscription, toItem } from './entitlement.js';
 import type { PurchaseHost } from './host.js';
 import { entitlementId, firstTransactionId, newReference, newSessionId, refundReportId, renewalTransactionId } from './ids.js';
 import { assertCatalog, resolvePolicy, type ResolvedPolicy } from './policy.js';
@@ -90,6 +90,8 @@ export interface IssueReport {
   issue: PurchaseIssue;
   message: string;
   sessionId?: string;
+  /** For `duplicate_purchase`: the other session that holds the product. */
+  otherSessionId?: string;
   eventId?: string;
   error?: unknown;
 }
@@ -117,6 +119,13 @@ export interface PurchasesOptions {
   reportLeaseMs?: number;
   /** Lock timing: how long a lock lives (`ttlMs`), how long a request waits for one (`waitMs`), how often it looks (`pollMs`). */
   lock?: { ttlMs?: number; waitMs?: number; pollMs?: number };
+  /**
+   * When set, gateways are given this URL as their return URL and the caller's `returnUrl` stays on the session as the
+   * final destination (the hosted checkout sends the customer there once the purchase is completed). Stores are unaffected.
+   */
+  gatewayReturnUrl?: (sessionId: string) => string;
+  /** When set, every gateway option carries `hostedUrl`: a page that performs the option's checkout step. Stores are unaffected. */
+  hostedCheckoutUrl?: (sessionId: string) => string;
   /** Called with problems that cannot be raised to the caller. Log them. */
   onIssue?: (issue: IssueReport) => void;
 }
@@ -170,8 +179,9 @@ const LIVE_STATUSES: readonly SessionStatus[] = [SessionStatus.Open, SessionStat
  *   `PROVIDER_ERROR` or `OUTCOME_UNKNOWN` the next gateway of the router's `ranked` list is tried; any other error
  *   (`VALIDATION`, `CONFLICT`, ...) is raised at once. Each attempt is passed to `router.record` and kept in the
  *   session's `attempts`.
- * - A purchase made through Google's user choice screen is reported to Google: the first transaction (amount 0 for a
- *   free trial) when `complete` runs, each renewal and each refund when `handleEvents` sees them. Reports are written to the
+ * - A purchase made through Google's user choice screen is reported to Google: the first transaction (the paid charge
+ *   the evidence shows; 0 for a free trial or when no charge has been paid yet, because only money that has moved is
+ *   reported) when `complete` runs, each renewal and each refund when `handleEvents` sees them. Reports are written to the
  *   store before `complete` returns and sent by `flush`.
  *
  * ## What it does not do
@@ -195,6 +205,8 @@ export class Purchases {
   private readonly lockWaitMs: number;
   private readonly lockPollMs: number;
   private readonly onIssue: ((issue: IssueReport) => void) | undefined;
+  private readonly gatewayReturnUrl: ((sessionId: string) => string) | undefined;
+  private readonly hostedCheckoutUrl: ((sessionId: string) => string) | undefined;
 
   constructor(options: PurchasesOptions) {
     this.host = options.host;
@@ -211,6 +223,8 @@ export class Purchases {
     this.lockWaitMs = options.lock?.waitMs ?? DEFAULT_LOCK_WAIT_MS;
     this.lockPollMs = options.lock?.pollMs ?? DEFAULT_LOCK_POLL_MS;
     this.onIssue = options.onIssue;
+    this.gatewayReturnUrl = options.gatewayReturnUrl;
+    this.hostedCheckoutUrl = options.hostedCheckoutUrl;
 
     const catalog = options.catalog.map((product, index) => parseInput(ProductSchema, product, `catalog product ${index}`));
     assertCatalog({ catalog, policy: this.policy, capabilities: this.capabilities(), hasReporter: this.reporter !== undefined });
@@ -666,11 +680,11 @@ export class Purchases {
     const created =
       product.kind === ProductKind.Subscription
         ? await this.host.create(store.provider, {
-            ...this.subscriptionInput(record, product),
+            ...this.subscriptionInput(record, product, record.returnUrl),
             storeProduct: store.product,
           })
         : await this.host.payments.create(store.provider, {
-            ...this.paymentInput(record, product),
+            ...this.paymentInput(record, product, record.returnUrl),
             storeProduct: store.product,
           });
     const userChoice = resolved.policy === ChannelPolicy.UserChoice;
@@ -708,12 +722,19 @@ export class Purchases {
       try {
         const created =
           product.kind === ProductKind.Subscription
-            ? await this.host.create(provider, this.subscriptionInput(record, product))
-            : await this.host.payments.create(provider, this.paymentInput(record, product));
+            ? await this.host.create(provider, this.subscriptionInput(record, product, this.gatewayReturn(record)))
+            : await this.host.payments.create(provider, this.paymentInput(record, product, this.gatewayReturn(record)));
         const checkout = requireCheckout(provider, created.checkout);
         attempts.push({ provider, outcome: AttemptOutcome.Created, at: this.now().toISOString() });
         await this.record(provider, RouteOutcomeKind.Request, RouteOutcomeResult.Success);
-        return { channel: SalesChannel.Gateway, provider, checkout, handle: created.id, routing: decision };
+        return {
+          channel: SalesChannel.Gateway,
+          provider,
+          checkout,
+          handle: created.id,
+          routing: decision,
+          ...(this.hostedCheckoutUrl ? { hostedUrl: this.hostedCheckoutUrl(record.id) } : {}),
+        };
       } catch (error) {
         const code = error instanceof SubscriptionError ? error.code : ErrorCode.Internal;
         const message = error instanceof Error ? error.message : String(error);
@@ -735,7 +756,12 @@ export class Purchases {
     );
   }
 
-  private subscriptionInput(record: PurchaseSessionRecord, product: Product): CreateSubscriptionInput {
+  /** The return URL a gateway is given: the hook's, when set, else the caller's. */
+  private gatewayReturn(record: PurchaseSessionRecord): string | undefined {
+    return this.gatewayReturnUrl ? this.gatewayReturnUrl(record.id) : record.returnUrl;
+  }
+
+  private subscriptionInput(record: PurchaseSessionRecord, product: Product, returnUrl: string | undefined): CreateSubscriptionInput {
     return {
       reference: record.reference,
       plan: {
@@ -747,19 +773,19 @@ export class Purchases {
       customer: record.customer,
       ...(product.trialDays !== undefined ? { trial: { days: product.trialDays } } : {}),
       ...(product.paymentMethods !== undefined ? { paymentMethods: product.paymentMethods } : {}),
-      ...(record.returnUrl !== undefined ? { returnUrl: record.returnUrl } : {}),
+      ...(returnUrl !== undefined ? { returnUrl } : {}),
     };
   }
 
   /** Only what every gateway takes, plus the payment methods when the product asks for them. */
-  private paymentInput(record: PurchaseSessionRecord, product: Product): CreatePaymentInput {
+  private paymentInput(record: PurchaseSessionRecord, product: Product, returnUrl: string | undefined): CreatePaymentInput {
     return {
       reference: record.reference,
       amount: product.amount,
       description: product.name,
       customer: record.customer,
       ...(product.paymentMethods !== undefined ? { paymentMethods: product.paymentMethods } : {}),
-      ...(record.returnUrl !== undefined ? { returnUrl: record.returnUrl } : {}),
+      ...(returnUrl !== undefined ? { returnUrl } : {}),
     };
   }
 
@@ -861,7 +887,10 @@ export class Purchases {
           sessionId: session.id,
         });
       } else {
-        const gross = trial ? 0 : (evidence.amount ?? session.amount);
+        // Only money that has moved is reported: a subscription's first report carries the amount of a paid charge when
+        // the evidence has one, and 0 otherwise (as for a free trial). Every later charge is a renewal.
+        const paid = subscription ? !trial && evidence.chargeId !== undefined : true;
+        const gross = paid ? (evidence.amount ?? session.amount) : 0;
         const time = evidence.paidAt ?? now.toISOString();
         const id = firstTransactionId(session.id);
         const split = splitTax(gross, session.taxRateBps ?? 0);
@@ -885,8 +914,7 @@ export class Purchases {
           now,
         });
         session.initialReportId = id;
-        if (evidence.chargeId !== undefined) session.initialChargeId = evidence.chargeId;
-        session.initialClaimable = subscription && !trial && evidence.chargeId === undefined;
+        if (paid && evidence.chargeId !== undefined) session.initialChargeId = evidence.chargeId;
       }
     }
 
@@ -913,6 +941,8 @@ export class Purchases {
       await this.store.saveEntitlement(EntitlementRecordSchema.parse(record));
     });
 
+    await this.flagDuplicate(session, id, now);
+
     session.status = SessionStatus.Completed;
     session.completedAt = now.toISOString();
     session.provider = option.provider;
@@ -921,6 +951,29 @@ export class Purchases {
     await this.store.saveSession(session);
     await this.recordOutcome(option, session.kind, RouteOutcomeResult.Success);
     return session;
+  }
+
+  /**
+   * Two sessions of one customer can both be open for a product (web and a phone at once) and both be paid: the guard in
+   * `start` only sees entitlements that exist. The money has moved, so both entitlements stay; the merchant is told, to
+   * refund or cancel one.
+   */
+  private async flagDuplicate(session: PurchaseSessionRecord, entitlement: string, now: Date): Promise<void> {
+    const product = this.catalog.get(session.product);
+    if (product?.appStore?.consumable === true || product?.googlePlay?.consumable === true) return;
+    const others = (await this.store.listEntitlements(session.customerRef)).filter(
+      (record) => record.product === session.product && record.id !== entitlement && record.sessionId !== session.id && grantsAccess(record, now),
+    );
+    for (const other of others) {
+      this.report({
+        issue: PurchaseIssue.DuplicatePurchase,
+        message:
+          `Customer ${session.customerRef} paid for ${session.product} twice: session ${session.id} and session ${other.sessionId} ` +
+          `(${other.provider} ${other.subscriptionId ?? other.paymentId ?? ''}) both hold an active entitlement. Refund or cancel one.`,
+        sessionId: session.id,
+        otherSessionId: other.sessionId,
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -965,7 +1018,8 @@ export class Purchases {
     const initial = session.initialReportId as string;
     if (event.type === EventType.SubscriptionCharged) {
       const charge = event.charge;
-      if (charge?.kind === ChargeKind.Authorization) return;
+      // Only a debit that succeeded is money that moved; an authorisation debit is not a billing cycle.
+      if (charge && (charge.kind === ChargeKind.Authorization || charge.status !== ChargeStatus.Succeeded)) return;
       if (!charge) {
         this.report({
           issue: PurchaseIssue.ReportNotQueued,
@@ -976,13 +1030,6 @@ export class Purchases {
         return;
       }
       if (session.initialChargeId === charge.id) return;
-      if (session.initialClaimable === true) {
-        // The first charge of a subscription whose first report was queued at completion: that report is this charge.
-        await this.store.saveSession({ ...session, initialChargeId: charge.id, initialClaimable: false });
-        session.initialChargeId = charge.id;
-        session.initialClaimable = false;
-        return;
-      }
       if (state === undefined) return;
       const time = charge.paidAt ?? event.occurredAt ?? now.toISOString();
       const split = splitTax(charge.amount, session.taxRateBps ?? 0);
@@ -1209,7 +1256,12 @@ function evidenceFromEvent(session: PurchaseSessionRecord, option: PurchaseOptio
     if (!ACCESS_STATUSES.includes(status)) return undefined;
     const charge = event.charge;
     const paidCharge =
-      event.type === EventType.SubscriptionCharged && charge && charge.kind !== ChargeKind.Authorization ? charge : undefined;
+      event.type === EventType.SubscriptionCharged &&
+      charge &&
+      charge.kind !== ChargeKind.Authorization &&
+      charge.status === ChargeStatus.Succeeded
+        ? charge
+        : undefined;
     return {
       providerId: event.subscriptionId ?? event.subscription?.id ?? option.handle,
       status,

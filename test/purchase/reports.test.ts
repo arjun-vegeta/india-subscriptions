@@ -43,7 +43,7 @@ interface Alternative {
 }
 
 /** An Android user choice purchase made through the alternative, completed. */
-async function alternative(h: Harness, productKey = MONTHLY.key, options: { customerRef?: string; paid?: Record<string, unknown> } = {}): Promise<Alternative> {
+async function alternative(h: Harness, productKey = MONTHLY.key, options: { customerRef?: string; firstCharge?: boolean } = {}): Promise<Alternative> {
   const session = await h.purchases.start({
     platform: Platform.Android,
     product: productKey,
@@ -52,6 +52,10 @@ async function alternative(h: Harness, productKey = MONTHLY.key, options: { cust
   });
   const chosen = await h.purchases.chooseAlternative(session.id, { externalTransactionToken: `tok_${session.id.slice(3, 9)}` });
   const gateway = chosen.options[1]!;
+  if (productKey === MONTHLY.key && options.firstCharge !== false) {
+    // The authorisation verified together with the first debit: a paid charge is in the evidence.
+    h.host.verifiedCharge.set(gateway.handle, charge(Provider.Razorpay, 'pay_1', gateway.handle, 59_000));
+  }
   await h.purchases.complete(session.id, { provider: gateway.provider, result: result(gateway.handle, Outcome.Paid) });
   return { sessionId: session.id, id: gateway.handle, externalId: firstTransactionId(session.id) };
 }
@@ -62,6 +66,7 @@ describe('the first report', () => {
     const session = await h.purchases.start({ platform: Platform.Android, product: MONTHLY.key, customer: CUSTOMER, customerRef: CUSTOMER_REF });
     const chosen = await h.purchases.chooseAlternative(session.id, { externalTransactionToken: 'tok_abc' });
     const gateway = chosen.options[1]!;
+    h.host.verifiedCharge.set(gateway.handle, charge(Provider.Razorpay, 'pay_1', gateway.handle, 59_000));
     await h.purchases.complete(session.id, { provider: gateway.provider, result: result(gateway.handle) });
 
     const stored = await h.store.getReport(firstTransactionId(session.id));
@@ -185,27 +190,24 @@ describe('the first report when a webhook completes the session', () => {
 });
 
 describe('renewals', () => {
-  it('the first charge of a subscription is the first report; each later charge is a renewal carrying the first id', async () => {
+  it('an authorisation with no paid charge is reported as 0, and every successful charge after it is a renewal with its real amount', async () => {
     const h = harness();
-    const a = await alternative(h);
-    const t = h.clock.iso();
-    const first = event(Provider.Razorpay, EventType.SubscriptionCharged, { subscriptionId: a.id, charge: charge(Provider.Razorpay, 'pay_1', a.id, 59_000, { paidAt: t }) });
-    await h.purchases.handleEvents([first, first]);
-    expect(await h.store.claimDueReports(h.clock.iso(), 10, MINUTE)).toHaveLength(1);
+    const a = await alternative(h, MONTHLY.key, { firstCharge: false });
+    const first = await h.store.getReport(a.externalId);
+    expect(first?.transaction).toMatchObject({ amount: 0, taxAmount: 0 });
 
-    h.clock.advance(30 * DAY);
-    const second = event(Provider.Razorpay, EventType.SubscriptionCharged, {
-      subscriptionId: a.id,
-      charge: charge(Provider.Razorpay, 'pay_2', a.id, 59_000, { paidAt: h.clock.iso() }),
-    });
-    await h.purchases.handleEvents([second, second]);
-
-    const renewalId = renewalTransactionId(a.sessionId, 'pay_2');
+    await h.purchases.handleEvents([
+      event(Provider.Razorpay, EventType.SubscriptionCharged, {
+        subscriptionId: a.id,
+        charge: charge(Provider.Razorpay, 'pay_1', a.id, 59_000, { paidAt: h.clock.iso() }),
+      }),
+    ]);
+    const renewalId = renewalTransactionId(a.sessionId, 'pay_1');
     const renewal = await h.store.getReport(renewalId);
     expect(renewal).toMatchObject({
       kind: 'transaction',
       dependsOn: a.externalId,
-      dueBy: new Date(Date.parse(h.clock.iso()) + 24 * HOUR).toISOString(),
+      dueBy: h.clock.iso(24 * HOUR),
       transaction: {
         externalTransactionId: renewalId,
         initialExternalTransactionId: a.externalId,
@@ -217,18 +219,46 @@ describe('renewals', () => {
     });
     expect(renewal?.transaction).not.toHaveProperty('externalTransactionToken');
 
+    // The same event again, and the next cycles, one renewal each.
+    const again = event(Provider.Razorpay, EventType.SubscriptionCharged, { subscriptionId: a.id, charge: charge(Provider.Razorpay, 'pay_2', a.id, 59_000) });
     h.clock.advance(30 * DAY);
-    await h.purchases.handleEvents([
-      event(Provider.Razorpay, EventType.SubscriptionCharged, { subscriptionId: a.id, charge: charge(Provider.Razorpay, 'pay_3', a.id, 59_000) }),
-    ]);
-    const flushed = await h.purchases.flush();
-    // The first report is sent first; the renewals refer to it, so they wait for it in the same run or the next.
+    await h.purchases.handleEvents([again, again]);
+
+    await h.purchases.flush();
     await h.purchases.flush();
     const sent = h.reporter.reports.map((r) => r.externalTransactionId);
-    expect(sent).toHaveLength(3);
-    expect(sent[0]).toBe(a.externalId);
-    expect(new Set(sent).size).toBe(3);
-    expect(flushed.entries.length).toBeGreaterThan(0);
+    expect(sent).toEqual([a.externalId, renewalId, renewalTransactionId(a.sessionId, 'pay_2')]);
+  });
+
+  it('a first charge the evidence already shows is in the first report: arriving again as an event it is not a renewal', async () => {
+    const h = harness();
+    const a = await alternative(h);
+    expect((await h.store.getReport(a.externalId))?.transaction).toMatchObject({ amount: 50_000, taxAmount: 9_000 });
+    const arrived = event(Provider.Razorpay, EventType.SubscriptionCharged, { subscriptionId: a.id, charge: charge(Provider.Razorpay, 'pay_1', a.id, 59_000) });
+    await h.purchases.handleEvents([arrived, arrived]);
+    expect(await h.store.getReport(renewalTransactionId(a.sessionId, 'pay_1'))).toBeUndefined();
+    expect(await h.store.claimDueReports(h.clock.iso(), 10, MINUTE)).toHaveLength(1);
+
+    h.clock.advance(30 * DAY);
+    await h.purchases.handleEvents([
+      event(Provider.Razorpay, EventType.SubscriptionCharged, { subscriptionId: a.id, charge: charge(Provider.Razorpay, 'pay_2', a.id, 59_000) }),
+    ]);
+    expect(await h.store.getReport(renewalTransactionId(a.sessionId, 'pay_2'))).toBeDefined();
+  });
+
+  it('a first debit that fails queues no further report', async () => {
+    const h = harness();
+    const a = await alternative(h, MONTHLY.key, { firstCharge: false });
+    await h.purchases.handleEvents([event(Provider.Razorpay, EventType.SubscriptionChargeFailed, { subscriptionId: a.id })]);
+    await h.purchases.handleEvents([
+      event(Provider.Razorpay, EventType.SubscriptionCharged, {
+        subscriptionId: a.id,
+        charge: charge(Provider.Razorpay, 'pay_x', a.id, 59_000, { status: 'failed' }),
+      }),
+    ]);
+    const claimed = await h.store.claimDueReports(h.clock.iso(), 10, MINUTE);
+    expect(claimed.map((r) => r.id)).toEqual([a.externalId]);
+    expect(claimed[0]?.transaction).toMatchObject({ amount: 0, taxAmount: 0 });
   });
 
   it('after a free trial the first charge is already a renewal', async () => {
@@ -265,9 +295,9 @@ describe('renewals', () => {
     expect(await h.store.getReport(renewalTransactionId(session.id, 'pay_2'))).toBeDefined();
   });
 
-  it('a small authorisation charge is neither a renewal nor the first charge', async () => {
+  it('a small authorisation charge is not reported as a renewal', async () => {
     const h = harness();
-    const a = await alternative(h);
+    const a = await alternative(h, MONTHLY.key, { firstCharge: false });
     await h.purchases.handleEvents([
       event(Provider.Razorpay, EventType.SubscriptionCharged, {
         subscriptionId: a.id,
@@ -278,8 +308,7 @@ describe('renewals', () => {
     await h.purchases.handleEvents([
       event(Provider.Razorpay, EventType.SubscriptionCharged, { subscriptionId: a.id, charge: charge(Provider.Razorpay, 'pay_1', a.id, 59_000) }),
     ]);
-    // pay_1 is the first charge: it belongs to the first report.
-    expect(await h.store.getReport(renewalTransactionId(a.sessionId, 'pay_1'))).toBeUndefined();
+    expect(await h.store.getReport(renewalTransactionId(a.sessionId, 'pay_1'))).toBeDefined();
   });
 
   it('a purchase that was not made through the alternative queues no renewal', async () => {

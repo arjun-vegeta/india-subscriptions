@@ -137,6 +137,11 @@ export const PurchaseIssue = {
   UnmatchedRefund: 'unmatched_refund',
   /** A user choice billing charge the library could not queue a report for. */
   ReportNotQueued: 'report_not_queued',
+  /**
+   * A customer paid for the same product in two sessions (for example on the web and on a phone at the same time). Both
+   * entitlements are kept because the money has moved; refund or cancel one.
+   */
+  DuplicatePurchase: 'duplicate_purchase',
   /** An event could not be applied; the others of its batch were. */
   EventFailed: 'event_failed',
   /** The router could not record an outcome (its statistics store failed). The purchase went on. */

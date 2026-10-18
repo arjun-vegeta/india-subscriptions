@@ -12,7 +12,7 @@
  * - **Entitlements.** One answer to "what does this customer own", across stores and gateways, kept current by webhook
  *   events (`handleEvents`).
  * - **Reports to Google.** Purchases made through the alternative must be reported to Google within 24 hours: the first
- *   transaction (amount 0 for a free trial), every renewal and every refund. They are queued in the store before
+ *   transaction (amount 0 for a free trial, or until a charge has been paid), every renewal and every refund. They are queued in the store before
  *   `complete` returns and sent by `flush`.
  */
 export * from './constants.js';
