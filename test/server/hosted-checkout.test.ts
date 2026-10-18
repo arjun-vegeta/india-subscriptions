@@ -386,6 +386,8 @@ describe('the hosted checkout routes', () => {
         `GET ${ApiPath.Checkout}`,
         `GET ${ApiPath.CheckoutReturn}`,
         `POST ${ApiPath.CheckoutReturn}`,
+        `GET ${ApiPath.CheckoutReturnByGateway}`,
+        `POST ${ApiPath.CheckoutReturnByGateway}`,
       ].sort(),
     );
   });
@@ -434,5 +436,7 @@ describe('helpers', () => {
       expect(returnLocation({ id: 'ps_1', returnUrl: url }, SessionStatus.Open), url).toBeUndefined();
     }
     expect(returnLocation({ id: 'ps_1' }, SessionStatus.Open)).toBeUndefined();
+    // A return that could not be verified leaves the session id out.
+    expect(returnLocation({ id: 'ps_1', returnUrl: 'https://a.example/p?session=old' }, SessionStatus.Open, false)).toBe('https://a.example/p?status=open');
   });
 });

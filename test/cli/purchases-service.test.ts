@@ -166,14 +166,19 @@ describe('buildService with purchases', () => {
     expect(await page.text()).toContain('https://checkout.razorpay.com/v1/checkout.js');
   });
 
-  it('warns at startup that PayU cannot take the hosted checkout\'s return URL, only when both are configured', async () => {
+  it('warns at startup, only when PayU is configured with purchases and a public URL so long that even its fixed return address exceeds 50 characters', async () => {
     const logger = recordingLogger();
-    running = await runServe({ env: await envWith({ catalog: [COINS] }, { ...payuEnv }), fetch: razorpayOrders, logger });
-    expect(logger.lines.join('\n')).toMatch(/warn: payu accepts return URLs of at most 50 characters and the hosted checkout's return URL is \d+/);
+    const long = 'https://billing-service.example.com';
+    running = await runServe({ env: await envWith({ catalog: [COINS] }, { ...payuEnv, [EnvVar.PublicBaseUrl]: long }), fetch: razorpayOrders, logger });
+    expect(logger.lines.join('\n')).toMatch(/warn: payu accepts return URLs of at most 50 characters and its hosted checkout return URL is 56: payu will be skipped for hosted purchases/);
     await running.stop();
-    const quiet = recordingLogger();
-    running = await runServe({ env: await envWith({ catalog: [COINS] }, { [EnvVar.PublicBaseUrl]: undefined }), fetch: razorpayOrders, logger: quiet });
-    expect(quiet.lines.join('\n')).not.toContain('payu accepts');
+    for (const env of [await envWith({ catalog: [COINS] }, { ...payuEnv }), await envWith({ catalog: [COINS] }, { [EnvVar.PublicBaseUrl]: undefined, ...payuEnv })]) {
+      const quiet = recordingLogger();
+      running = await runServe({ env, fetch: razorpayOrders, logger: quiet });
+      expect(quiet.lines.join('\n')).not.toContain('payu accepts');
+      await running.stop();
+    }
+    running = undefined;
   });
 
   it('the route that flushes the report queue answers, with nothing to send', async () => {

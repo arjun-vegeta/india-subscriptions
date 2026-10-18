@@ -205,7 +205,7 @@ describe('descriptions', () => {
       }
     }
     expect(missing).toEqual([]);
-    expect([...names].sort()).toEqual(['chargeId', 'customerRef', 'limit', 'paymentId', 'planId', 'provider', 'sessionId', 'subscriptionId']);
+    expect([...names].sort()).toEqual(['chargeId', 'customerRef', 'gateway', 'limit', 'paymentId', 'planId', 'provider', 'sessionId', 'subscriptionId']);
   });
 });
 

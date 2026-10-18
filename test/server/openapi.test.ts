@@ -107,6 +107,8 @@ describe('OpenAPI document', () => {
       [HttpMethod.Get, '/checkout/{sessionId}'],
       [HttpMethod.Get, '/checkout/{sessionId}/return'],
       [HttpMethod.Post, '/checkout/{sessionId}/return'],
+      [HttpMethod.Get, '/checkout/return/{gateway}'],
+      [HttpMethod.Post, '/checkout/return/{gateway}'],
     ];
     for (const [method, path] of expected) expect(() => operationOf(path, method), `${method} ${path}`).not.toThrow();
     expect(routes).toHaveLength(expected.length);
@@ -157,7 +159,7 @@ describe('OpenAPI document', () => {
     expect(routes.find((r) => r.path === ApiPath.Webhooks)?.auth).toBe(AuthMode.Signature);
     // The hosted checkout is public too: the unguessable session id is its credential.
     expect(routes.filter((r) => r.auth === AuthMode.Capability).map((r) => `${r.method} ${r.path}`).sort()).toEqual(
-      [`GET ${ApiPath.Checkout}`, `GET ${ApiPath.CheckoutReturn}`, `POST ${ApiPath.CheckoutReturn}`].sort(),
+      [`GET ${ApiPath.Checkout}`, `GET ${ApiPath.CheckoutReturn}`, `POST ${ApiPath.CheckoutReturn}`, `GET ${ApiPath.CheckoutReturnByGateway}`, `POST ${ApiPath.CheckoutReturnByGateway}`].sort(),
     );
   });
 

@@ -4384,6 +4384,139 @@
         }
       }
     },
+    "/checkout/return/{gateway}": {
+      "get": {
+        "operationId": "returnFromGatewayCheckout",
+        "tags": [
+          "Hosted checkout"
+        ],
+        "summary": "Hosted checkout return of a gateway (query)",
+        "description": "The return address of a gateway that cannot carry the session id (PayU limits return URLs to 50 characters). The gateway posts back the merchant's transaction id; the session is found by it and the return then behaves exactly like the session return: the purchase is completed by asking the gateway, and the customer is redirected to the `returnUrl` of the session with `session` and `status` appended. An unknown id, or a gateway without this route, answers 404 with no detail. Needs no API key.",
+        "parameters": [
+          {
+            "name": "gateway",
+            "in": "path",
+            "required": true,
+            "description": "The gateway the customer returns from. Only gateways that post back the merchant's transaction id have this route (payu).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Redirects the customer to the return URL of the purchase",
+            "headers": {
+              "location": {
+                "description": "The `returnUrl` of the purchase, with `session` and `status` appended.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown path, gateway not configured, or the object does not exist",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server misconfiguration or unexpected failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      },
+      "post": {
+        "operationId": "postReturnFromGatewayCheckout",
+        "tags": [
+          "Hosted checkout"
+        ],
+        "summary": "Hosted checkout return of a gateway (form)",
+        "description": "The same as the query form, for a gateway that posts the result as form fields (PayU). The fields of the query and of the form are both read. Needs no API key.",
+        "parameters": [
+          {
+            "name": "gateway",
+            "in": "path",
+            "required": true,
+            "description": "The gateway the customer returns from. Only gateways that post back the merchant's transaction id have this route (payu).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Redirects the customer to the return URL of the purchase",
+            "headers": {
+              "location": {
+                "description": "The `returnUrl` of the purchase, with `session` and `status` appended.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown path, gateway not configured, or the object does not exist",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server misconfiguration or unexpected failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookPayload"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookPayload"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/scheduler/tick": {
       "post": {
         "operationId": "runSchedulerTick",

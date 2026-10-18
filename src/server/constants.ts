@@ -18,6 +18,8 @@ export const PathParam = {
   PaymentId: 'paymentId',
   SessionId: 'sessionId',
   CustomerRef: 'customerRef',
+  /** The gateway of a provider-level return: not `provider`, which the dispatcher would answer itself with a JSON error. */
+  Gateway: 'gateway',
 } as const;
 export type PathParam = (typeof PathParam)[keyof typeof PathParam];
 
@@ -67,6 +69,7 @@ export const ApiPath = {
   Entitlements: `${API_PREFIX}/entitlements/${param(PathParam.CustomerRef)}`,
   Checkout: `${CHECKOUT_PREFIX}/${param(PathParam.SessionId)}`,
   CheckoutReturn: `${CHECKOUT_PREFIX}/${param(PathParam.SessionId)}/return`,
+  CheckoutReturnByGateway: `${CHECKOUT_PREFIX}/return/${param(PathParam.Gateway)}`,
   SchedulerTick: `${API_PREFIX}/scheduler/tick`,
 } as const;
 export type ApiPath = (typeof ApiPath)[keyof typeof ApiPath];
@@ -109,6 +112,8 @@ export const OperationId = {
   ShowHostedCheckout: 'showHostedCheckout',
   ReturnFromHostedCheckout: 'returnFromHostedCheckout',
   PostReturnFromHostedCheckout: 'postReturnFromHostedCheckout',
+  ReturnFromGatewayCheckout: 'returnFromGatewayCheckout',
+  PostReturnFromGatewayCheckout: 'postReturnFromGatewayCheckout',
 } as const;
 export type OperationId = (typeof OperationId)[keyof typeof OperationId];
 

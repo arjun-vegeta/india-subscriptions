@@ -71,6 +71,7 @@ const PATH_PARAM_DESCRIPTIONS: Record<PathParam, string> = {
   [PathParam.ChargeId]: 'The charge id, as returned by the gateway or when the charge was raised.',
   [PathParam.PaymentId]: 'The payment id returned when it was created or its checkout result was verified.',
   [PathParam.SessionId]: 'The purchase session id, as returned when the purchase was started. Unguessable: it is the credential of the hosted checkout.',
+  [PathParam.Gateway]: 'The gateway the customer returns from. Only gateways that post back the merchant\'s transaction id have this route (payu).',
   [PathParam.CustomerRef]: 'Your id for the customer: the `customerRef` the purchases were started with.',
 };
 

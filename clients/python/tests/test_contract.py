@@ -64,6 +64,8 @@ UNWRAPPED_OPERATIONS = {
     "showHostedCheckout",
     "returnFromHostedCheckout",
     "postReturnFromHostedCheckout",
+    "returnFromGatewayCheckout",
+    "postReturnFromGatewayCheckout",
 }
 HOSTED_CHECKOUT_PREFIX = "/checkout/"
 

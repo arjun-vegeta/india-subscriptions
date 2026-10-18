@@ -43,6 +43,8 @@ Every route of the service started by `india-subscriptions serve` or `createHand
 | [showHostedCheckout](#showhostedcheckout) | GET | `/checkout/{sessionId}` | none: the unguessable session id in the path |
 | [returnFromHostedCheckout](#returnfromhostedcheckout) | GET | `/checkout/{sessionId}/return` | none: the unguessable session id in the path |
 | [postReturnFromHostedCheckout](#postreturnfromhostedcheckout) | POST | `/checkout/{sessionId}/return` | none: the unguessable session id in the path |
+| [returnFromGatewayCheckout](#returnfromgatewaycheckout) | GET | `/checkout/return/{gateway}` | none: the unguessable session id in the path |
+| [postReturnFromGatewayCheckout](#postreturnfromgatewaycheckout) | POST | `/checkout/return/{gateway}` | none: the unguessable session id in the path |
 | [runSchedulerTick](#runschedulertick) | POST | `/v1/scheduler/tick` | API key (`Authorization: Bearer ...`) |
 
 ## Meta
@@ -598,6 +600,35 @@ Where a gateway, or the hosted page's own script, sends the customer back with t
 Hosted checkout return (form).
 
 The same as the query form, for a gateway that posts the result as form fields (PayU, Paytm, Razorpay's callback). The fields of the query and of the form are both read. Needs no API key.
+
+| Property | Value |
+|---|---|
+| Auth | none: the unguessable session id in the path |
+| Request body | [WebhookPayload](models.md#webhookpayload) (optional); the raw body, exactly as the gateway sent it |
+| Success | 303: a redirect to the return URL of the purchase |
+| Error statuses | 404 Unknown path, gateway not configured, or the object does not exist; 413 The request body is over the size limit; 500 Server misconfiguration or unexpected failure |
+
+### returnFromGatewayCheckout
+
+`GET /checkout/return/{gateway}`
+
+Hosted checkout return of a gateway (query).
+
+The return address of a gateway that cannot carry the session id (PayU limits return URLs to 50 characters). The gateway posts back the merchant's transaction id; the session is found by it and the return then behaves exactly like the session return: the purchase is completed by asking the gateway, and the customer is redirected to the `returnUrl` of the session with `session` and `status` appended. An unknown id, or a gateway without this route, answers 404 with no detail. Needs no API key.
+
+| Property | Value |
+|---|---|
+| Auth | none: the unguessable session id in the path |
+| Success | 303: a redirect to the return URL of the purchase |
+| Error statuses | 404 Unknown path, gateway not configured, or the object does not exist; 500 Server misconfiguration or unexpected failure |
+
+### postReturnFromGatewayCheckout
+
+`POST /checkout/return/{gateway}`
+
+Hosted checkout return of a gateway (form).
+
+The same as the query form, for a gateway that posts the result as form fields (PayU). The fields of the query and of the form are both read. Needs no API key.
 
 | Property | Value |
 |---|---|

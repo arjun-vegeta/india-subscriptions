@@ -32,7 +32,7 @@ import {
   type VerifyPaymentInput,
   type WebhookRequest,
 } from '../schemas.js';
-import { checkoutNotFound, gatherReturnFields, handleCheckoutReturn, renderCheckout } from './checkout.js';
+import { checkoutNotFound, gatherReturnFields, handleCheckoutReturn, handleGatewayCheckoutReturn, renderCheckout } from './checkout.js';
 import {
   ApiPath,
   AuthMode,
@@ -364,6 +364,14 @@ async function showCheckout(context: RouteContext): Promise<Response> {
     if (error instanceof SubscriptionError && error.code === ErrorCode.NotFound) return checkoutNotFound();
     throw error;
   }
+}
+
+async function returnFromGateway(context: RouteContext, body: string): Promise<Response> {
+  const purchases = context.client.purchases;
+  const gateway = context.params[PathParam.Gateway];
+  if (gateway === undefined || purchases === undefined) return checkoutNotFound();
+  const fields = gatherReturnFields(context.query, body, context.request.headers.get(HeaderName.ContentType));
+  return handleGatewayCheckoutReturn(purchases, gateway, fields);
 }
 
 async function returnFromCheckout(context: RouteContext, body: string): Promise<Response> {
@@ -875,6 +883,34 @@ export const routes: readonly RouteDefinition[] = [
     body: { schema: ServerSchemaName.WebhookPayload, raw: true, required: false },
     response: { status: HttpStatus.SeeOther, content: ResponseContent.Redirect },
     handler: (context) => returnFromCheckout(context, context.body),
+  }),
+
+  globalRoute({
+    operationId: OperationId.ReturnFromGatewayCheckout,
+    method: HttpMethod.Get,
+    path: ApiPath.CheckoutReturnByGateway,
+    tag: Tag.HostedCheckout,
+    summary: 'Hosted checkout return of a gateway (query)',
+    description:
+      'The return address of a gateway that cannot carry the session id (PayU limits return URLs to 50 characters). The gateway ' +
+      'posts back the merchant\'s transaction id; the session is found by it and the return then behaves exactly like the ' +
+      'session return: the purchase is completed by asking the gateway, and the customer is redirected to the `returnUrl` of ' +
+      'the session with `session` and `status` appended. An unknown id, or a gateway without this route, answers 404 with no detail. Needs no API key.',
+    auth: AuthMode.Capability,
+    response: { status: HttpStatus.SeeOther, content: ResponseContent.Redirect },
+    handler: (context) => returnFromGateway(context, ''),
+  }),
+  globalRoute({
+    operationId: OperationId.PostReturnFromGatewayCheckout,
+    method: HttpMethod.Post,
+    path: ApiPath.CheckoutReturnByGateway,
+    tag: Tag.HostedCheckout,
+    summary: 'Hosted checkout return of a gateway (form)',
+    description: 'The same as the query form, for a gateway that posts the result as form fields (PayU). The fields of the query and of the form are both read. Needs no API key.',
+    auth: AuthMode.Capability,
+    body: { schema: ServerSchemaName.WebhookPayload, raw: true, required: false },
+    response: { status: HttpStatus.SeeOther, content: ResponseContent.Redirect },
+    handler: (context) => returnFromGateway(context, context.body),
   }),
 
   globalRoute({

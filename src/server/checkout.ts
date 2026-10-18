@@ -23,8 +23,10 @@
  */
 import { createHash } from 'node:crypto';
 import { CASHFREE_MODE } from '../checkout/cashfree.js';
+import { PayUPaymentField } from '../providers/payu/constants.js';
 import { ScriptUrl } from '../checkout/constants.js';
-import { CheckoutKind, ContentType, ErrorCode, HashAlgorithm, HeaderName, ProductKind, SalesChannel } from '../constants.js';
+import { CheckoutKind, ContentType, ErrorCode, HashAlgorithm, HeaderName, ProductKind, Provider, SalesChannel } from '../constants.js';
+import { ProviderSchema } from '../schemas.js';
 import { SessionStatus } from '../purchase/constants.js';
 import type { Purchases } from '../purchase/purchases.js';
 import type { PurchaseOption, PurchaseSession } from '../purchase/schemas.js';
@@ -328,6 +330,15 @@ export function renderCheckout(session: PurchaseSession): Response {
 // GET and POST /checkout/{sessionId}/return
 // ---------------------------------------------------------------------------
 
+/**
+ * The field in which a gateway posts back the merchant's own transaction id, for the gateways that can be sent to a return
+ * address without the session id in it (PayU limits its return URLs to 50 characters; its `txnid` is the `reference` the
+ * purchase was created with). Only these providers have a provider-level return route.
+ */
+export const GATEWAY_RETURN_ID_FIELD: Readonly<Partial<Record<Provider, string>>> = {
+  [Provider.PayU]: PayUPaymentField.Txnid,
+};
+
 /** The most fields and the longest value taken from a return: a customer's browser can send anything. */
 const MAX_RETURN_FIELDS = 100;
 const MAX_RETURN_VALUE_LENGTH = 8192;
@@ -362,7 +373,12 @@ export function gatherReturnFields(query: URLSearchParams, body: string, content
 }
 
 /** The session's `returnUrl` with `session` and `status` appended, or undefined when it is absent or must not be redirected to. */
-export function returnLocation(session: Pick<PurchaseSession, 'id' | 'returnUrl'>, status: SessionStatus): string | undefined {
+export function returnLocation(
+  session: Pick<PurchaseSession, 'id' | 'returnUrl'>,
+  status: SessionStatus,
+  /** False leaves the session id out: a return that could not be verified must not hand the id to whoever asked. */
+  includeSession = true,
+): string | undefined {
   if (session.returnUrl === undefined) return undefined;
   let url: URL;
   try {
@@ -371,7 +387,8 @@ export function returnLocation(session: Pick<PurchaseSession, 'id' | 'returnUrl'
     return undefined;
   }
   if (BLOCKED_REDIRECT_PROTOCOLS.includes(url.protocol)) return undefined;
-  url.searchParams.set(ReturnParam.Session, session.id);
+  if (includeSession) url.searchParams.set(ReturnParam.Session, session.id);
+  else url.searchParams.delete(ReturnParam.Session);
   url.searchParams.set(ReturnParam.Status, status);
   return url.toString();
 }
@@ -386,6 +403,8 @@ export async function handleCheckoutReturn(
   purchases: Pick<Purchases, 'get' | 'complete'>,
   sessionId: string,
   fields: Record<string, string>,
+  /** Set by the provider-level route: the session must have its gateway option at this provider. */
+  expectedProvider?: Provider,
 ): Promise<Response> {
   let session: PurchaseSession;
   try {
@@ -395,23 +414,51 @@ export async function handleCheckoutReturn(
     throw error;
   }
   const option = gatewayOption(session);
-  if (!option) return checkoutNotFound();
+  if (!option || (expectedProvider !== undefined && option.provider !== expectedProvider)) return checkoutNotFound();
 
   let settled = session;
+  let verified = true;
   try {
     settled = await purchases.complete(sessionId, { provider: option.provider, result: fields });
   } catch (error) {
     // The verification failed (a result for another order, a gateway that did not answer): the session keeps its own state,
     // and a webhook may still settle it. The customer is told that state, never anything from the request.
     if (!isSubscriptionError(error)) throw error;
+    verified = false;
     settled = await purchases.get(sessionId).catch(() => session);
   }
 
-  const location = returnLocation(settled, settled.status);
+  // The provider-level return finds the session by an id a customer's browser supplies, so a return that did not verify
+  // does not hand the session id back: the app that started the session has it already.
+  const location = returnLocation(settled, settled.status, verified || expectedProvider === undefined);
   if (location === undefined) return plainResponse(HttpStatus.Ok, Text.Title, `${RETURN_MESSAGE[settled.status]} ${Text.Done}`);
   const headers = new Headers();
   headers.set(ServerHeader.Location, location);
   headers.set(ServerHeader.CacheControl, HeaderValue.NoStore);
   headers.set(ServerHeader.ReferrerPolicy, HeaderValue.StrictOriginWhenCrossOrigin);
   return new Response(null, { status: HttpStatus.SeeOther, headers });
+}
+
+/** The longest transaction id looked up: gateways' ids are short, and the id comes from a customer's browser. */
+const MAX_GATEWAY_ID_LENGTH = 128;
+
+/**
+ * The provider-level return: a gateway that posts back the merchant's transaction id (see `GATEWAY_RETURN_ID_FIELD`) is sent
+ * to one fixed address for all sessions. The session is found by that id, and from there the return is exactly the session
+ * return: `purchases.complete` verifies with the gateway and the customer is redirected only to the stored `returnUrl`. A
+ * provider without a return id field, a missing field and an id that belongs to no session all answer the same empty 404.
+ */
+export async function handleGatewayCheckoutReturn(
+  purchases: Pick<Purchases, 'get' | 'complete' | 'findByGatewayId'>,
+  rawProvider: string,
+  fields: Record<string, string>,
+): Promise<Response> {
+  const provider = ProviderSchema.safeParse(rawProvider);
+  const field = provider.success ? GATEWAY_RETURN_ID_FIELD[provider.data] : undefined;
+  if (!provider.success || field === undefined) return checkoutNotFound();
+  const id = fields[field];
+  if (id === undefined || id === '' || id.length > MAX_GATEWAY_ID_LENGTH) return checkoutNotFound();
+  const session = await purchases.findByGatewayId(provider.data, id);
+  if (!session) return checkoutNotFound();
+  return handleCheckoutReturn(purchases, session.id, fields, provider.data);
 }
