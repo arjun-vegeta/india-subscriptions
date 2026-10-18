@@ -20,6 +20,8 @@ import { PayUConfigSchema, type PayUConfig } from './providers/payu/schemas.js';
 import { PAYTM_DEBIT_REASON_MAX_LENGTH, PaytmChannelId } from './providers/paytm/constants.js';
 import { PaytmConfigSchema, type PaytmConfig } from './providers/paytm/schemas.js';
 import { PhonePeConfigSchema, type PhonePeConfig } from './providers/phonepe/schemas.js';
+import { AppStoreConfigSchema, type AppStoreConfig } from './providers/appstore/schemas.js';
+import { GooglePlayConfigSchema, type GooglePlayConfig } from './providers/googleplay/schemas.js';
 import { RAZORPAY_MAX_DURATION_YEARS } from './providers/razorpay/constants.js';
 import { RazorpayConfigSchema, type RazorpayConfig } from './providers/razorpay/schemas.js';
 
@@ -78,6 +80,30 @@ export const EnvVar = {
   PaytmRefundBaseUrl: 'PAYTM_REFUND_BASE_URL',
   PaytmCheckoutBaseUrl: 'PAYTM_CHECKOUT_BASE_URL',
 
+  AppStoreBundleId: 'APP_STORE_BUNDLE_ID',
+  AppStoreIssuerId: 'APP_STORE_ISSUER_ID',
+  AppStoreKeyId: 'APP_STORE_KEY_ID',
+  AppStorePrivateKey: 'APP_STORE_PRIVATE_KEY',
+  AppStoreEnvironment: 'APP_STORE_ENVIRONMENT',
+  AppStoreAppAppleId: 'APP_STORE_APP_APPLE_ID',
+  AppStoreOfferKeyId: 'APP_STORE_OFFER_KEY_ID',
+  AppStoreOfferPrivateKey: 'APP_STORE_OFFER_PRIVATE_KEY',
+
+  GooglePlayPackageName: 'GOOGLE_PLAY_PACKAGE_NAME',
+  GooglePlayClientEmail: 'GOOGLE_PLAY_CLIENT_EMAIL',
+  GooglePlayPrivateKey: 'GOOGLE_PLAY_PRIVATE_KEY',
+  GooglePlayPrivateKeyId: 'GOOGLE_PLAY_PRIVATE_KEY_ID',
+  GooglePlayEnvironment: 'GOOGLE_PLAY_ENVIRONMENT',
+  GooglePlayPushAudience: 'GOOGLE_PLAY_PUSH_AUDIENCE',
+  GooglePlayPushServiceAccountEmail: 'GOOGLE_PLAY_PUSH_SERVICE_ACCOUNT_EMAIL',
+  GooglePlayAcceptUnauthenticatedWebhooks: 'GOOGLE_PLAY_ACCEPT_UNAUTHENTICATED_WEBHOOKS',
+  GooglePlayRevokeOnRefund: 'GOOGLE_PLAY_REVOKE_ON_REFUND',
+  GooglePlayConsumableProductIds: 'GOOGLE_PLAY_CONSUMABLE_PRODUCT_IDS',
+
+  PublicBaseUrl: 'PUBLIC_BASE_URL',
+  PurchasesFile: 'PURCHASES_FILE',
+  PurchaseStoreFile: 'PURCHASE_STORE_FILE',
+
   SchedulerStoreFile: 'SCHEDULER_STORE_FILE',
   SchedulerTickSeconds: 'SCHEDULER_TICK_SECONDS',
 
@@ -100,7 +126,7 @@ const INSECURE_PROTOCOL = 'http:';
 const WHOLE_NUMBER = /^\d+$/;
 
 /** Variables of each gateway. Any of them being set means the gateway is meant to be on. */
-const GATEWAY_VARS: Record<EnvGateway, readonly EnvVar[]> = {
+const GATEWAY_VARS: Record<EnvProvider, readonly EnvVar[]> = {
   [Provider.Razorpay]: [
     EnvVar.RazorpayKeyId,
     EnvVar.RazorpayKeySecret,
@@ -155,10 +181,32 @@ const GATEWAY_VARS: Record<EnvGateway, readonly EnvVar[]> = {
     EnvVar.PaytmRefundBaseUrl,
     EnvVar.PaytmCheckoutBaseUrl,
   ],
+  [Provider.AppStore]: [
+    EnvVar.AppStoreBundleId,
+    EnvVar.AppStoreIssuerId,
+    EnvVar.AppStoreKeyId,
+    EnvVar.AppStorePrivateKey,
+    EnvVar.AppStoreEnvironment,
+    EnvVar.AppStoreAppAppleId,
+    EnvVar.AppStoreOfferKeyId,
+    EnvVar.AppStoreOfferPrivateKey,
+  ],
+  [Provider.GooglePlay]: [
+    EnvVar.GooglePlayPackageName,
+    EnvVar.GooglePlayClientEmail,
+    EnvVar.GooglePlayPrivateKey,
+    EnvVar.GooglePlayPrivateKeyId,
+    EnvVar.GooglePlayEnvironment,
+    EnvVar.GooglePlayPushAudience,
+    EnvVar.GooglePlayPushServiceAccountEmail,
+    EnvVar.GooglePlayAcceptUnauthenticatedWebhooks,
+    EnvVar.GooglePlayRevokeOnRefund,
+    EnvVar.GooglePlayConsumableProductIds,
+  ],
 };
 
 /** The variables a gateway cannot work without. */
-const GATEWAY_REQUIRED_VARS: Record<EnvGateway, readonly EnvVar[]> = {
+const GATEWAY_REQUIRED_VARS: Record<EnvProvider, readonly EnvVar[]> = {
   [Provider.Razorpay]: [EnvVar.RazorpayKeyId, EnvVar.RazorpayKeySecret],
   [Provider.Cashfree]: [EnvVar.CashfreeClientId, EnvVar.CashfreeClientSecret, EnvVar.CashfreeEnvironment],
   [Provider.PayU]: [EnvVar.PayuKey, EnvVar.PayuSalt, EnvVar.PayuEnvironment],
@@ -169,10 +217,23 @@ const GATEWAY_REQUIRED_VARS: Record<EnvGateway, readonly EnvVar[]> = {
     EnvVar.PhonepeEnvironment,
   ],
   [Provider.Paytm]: [EnvVar.PaytmMid, EnvVar.PaytmMerchantKey, EnvVar.PaytmWebsite, EnvVar.PaytmEnvironment],
+  [Provider.AppStore]: [
+    EnvVar.AppStoreBundleId,
+    EnvVar.AppStoreIssuerId,
+    EnvVar.AppStoreKeyId,
+    EnvVar.AppStorePrivateKey,
+    EnvVar.AppStoreEnvironment,
+  ],
+  [Provider.GooglePlay]: [
+    EnvVar.GooglePlayPackageName,
+    EnvVar.GooglePlayClientEmail,
+    EnvVar.GooglePlayPrivateKey,
+    EnvVar.GooglePlayEnvironment,
+  ],
 };
 
 /** Which variable feeds which field of each adapter's config, to name the variable when the adapter's schema objects. */
-const CONFIG_FIELD_VARS: Record<EnvGateway, Record<string, EnvVar>> = {
+const CONFIG_FIELD_VARS: Record<EnvProvider, Record<string, EnvVar>> = {
   [Provider.Razorpay]: {
     keyId: EnvVar.RazorpayKeyId,
     keySecret: EnvVar.RazorpayKeySecret,
@@ -227,6 +288,27 @@ const CONFIG_FIELD_VARS: Record<EnvGateway, Record<string, EnvVar>> = {
     refundBaseUrl: EnvVar.PaytmRefundBaseUrl,
     checkoutBaseUrl: EnvVar.PaytmCheckoutBaseUrl,
   },
+  [Provider.AppStore]: {
+    bundleId: EnvVar.AppStoreBundleId,
+    issuerId: EnvVar.AppStoreIssuerId,
+    keyId: EnvVar.AppStoreKeyId,
+    privateKey: EnvVar.AppStorePrivateKey,
+    environment: EnvVar.AppStoreEnvironment,
+    appAppleId: EnvVar.AppStoreAppAppleId,
+    promotionalOfferKey: EnvVar.AppStoreOfferPrivateKey,
+  },
+  [Provider.GooglePlay]: {
+    packageName: EnvVar.GooglePlayPackageName,
+    clientEmail: EnvVar.GooglePlayClientEmail,
+    privateKey: EnvVar.GooglePlayPrivateKey,
+    privateKeyId: EnvVar.GooglePlayPrivateKeyId,
+    environment: EnvVar.GooglePlayEnvironment,
+    pushAudience: EnvVar.GooglePlayPushAudience,
+    pushServiceAccountEmail: EnvVar.GooglePlayPushServiceAccountEmail,
+    acceptUnauthenticatedWebhooks: EnvVar.GooglePlayAcceptUnauthenticatedWebhooks,
+    revokeOnRefund: EnvVar.GooglePlayRevokeOnRefund,
+    consumableProductIds: EnvVar.GooglePlayConsumableProductIds,
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -272,6 +354,9 @@ const ServiceEnvSchema = z.object({
   [EnvVar.ApiKey]: z.string().optional(),
   [EnvVar.Host]: z.string().optional(),
   [EnvVar.Port]: wholeNumber(0, MAX_PORT).optional(),
+  [EnvVar.PublicBaseUrl]: urlText.refine(hasWebhookProtocol, { error: 'must be an http or https URL' }).optional(),
+  [EnvVar.PurchasesFile]: z.string().optional(),
+  [EnvVar.PurchaseStoreFile]: z.string().optional(),
   [EnvVar.SchedulerStoreFile]: z.string().optional(),
   [EnvVar.SchedulerTickSeconds]: wholeNumber(1, MAX_TICK_SECONDS).optional(),
   [EnvVar.EventsWebhookUrl]: urlText
@@ -348,7 +433,7 @@ const PayuEnvSchema = z
 
 /** The webhook username and password go together: one without the other is a half-configured webhook. */
 function requireTogether(
-  env: Record<string, string | undefined>,
+  env: Readonly<Record<string, unknown>>,
   first: EnvVar,
   second: EnvVar,
   context: z.RefinementCtx,
@@ -430,6 +515,83 @@ const PaytmEnvSchema = z
     }),
   );
 
+/** A PEM in one line of an environment file carries `\n` for each line break: put the real line breaks back. */
+function unescapeNewlines(value: string): string {
+  return value.replace(/\\n/g, '\n');
+}
+
+/** A comma-separated list: entries trimmed, blanks dropped. */
+function commaList(value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+}
+
+function commaListOrUndefined(value: string | undefined): string[] | undefined {
+  return value === undefined ? undefined : commaList(value);
+}
+
+const AppStoreEnvSchema = z
+  .object({
+    [EnvVar.AppStoreBundleId]: required(),
+    [EnvVar.AppStoreIssuerId]: required(),
+    [EnvVar.AppStoreKeyId]: required(),
+    [EnvVar.AppStorePrivateKey]: required(),
+    [EnvVar.AppStoreEnvironment]: environmentText,
+    [EnvVar.AppStoreAppAppleId]: wholeNumber(1, Number.MAX_SAFE_INTEGER).optional(),
+    [EnvVar.AppStoreOfferKeyId]: z.string().optional(),
+    [EnvVar.AppStoreOfferPrivateKey]: z.string().optional(),
+  })
+  .superRefine((env, context) => requireTogether(env, EnvVar.AppStoreOfferKeyId, EnvVar.AppStoreOfferPrivateKey, context))
+  .transform((env): AppStoreConfig => {
+    const offerKeyId = env[EnvVar.AppStoreOfferKeyId];
+    const offerPrivateKey = env[EnvVar.AppStoreOfferPrivateKey];
+    return {
+      bundleId: env[EnvVar.AppStoreBundleId],
+      issuerId: env[EnvVar.AppStoreIssuerId],
+      keyId: env[EnvVar.AppStoreKeyId],
+      privateKey: unescapeNewlines(env[EnvVar.AppStorePrivateKey]),
+      environment: env[EnvVar.AppStoreEnvironment],
+      appAppleId: env[EnvVar.AppStoreAppAppleId],
+      promotionalOfferKey:
+        offerKeyId !== undefined && offerPrivateKey !== undefined
+          ? { keyId: offerKeyId, privateKey: unescapeNewlines(offerPrivateKey) }
+          : undefined,
+    };
+  });
+
+const GooglePlayEnvSchema = z
+  .object({
+    [EnvVar.GooglePlayPackageName]: required(),
+    [EnvVar.GooglePlayClientEmail]: required(),
+    [EnvVar.GooglePlayPrivateKey]: required(),
+    [EnvVar.GooglePlayPrivateKeyId]: z.string().optional(),
+    [EnvVar.GooglePlayEnvironment]: environmentText,
+    [EnvVar.GooglePlayPushAudience]: z.string().optional(),
+    [EnvVar.GooglePlayPushServiceAccountEmail]: z.string().optional(),
+    [EnvVar.GooglePlayAcceptUnauthenticatedWebhooks]: flag.optional(),
+    [EnvVar.GooglePlayRevokeOnRefund]: flag.optional(),
+    [EnvVar.GooglePlayConsumableProductIds]: z.string().optional(),
+  })
+  .superRefine((env, context) =>
+    requireTogether(env, EnvVar.GooglePlayPushAudience, EnvVar.GooglePlayPushServiceAccountEmail, context),
+  )
+  .transform(
+    (env): GooglePlayConfig => ({
+      packageName: env[EnvVar.GooglePlayPackageName],
+      clientEmail: env[EnvVar.GooglePlayClientEmail],
+      privateKey: unescapeNewlines(env[EnvVar.GooglePlayPrivateKey]),
+      privateKeyId: env[EnvVar.GooglePlayPrivateKeyId],
+      environment: env[EnvVar.GooglePlayEnvironment],
+      pushAudience: env[EnvVar.GooglePlayPushAudience],
+      pushServiceAccountEmail: env[EnvVar.GooglePlayPushServiceAccountEmail],
+      acceptUnauthenticatedWebhooks: env[EnvVar.GooglePlayAcceptUnauthenticatedWebhooks],
+      revokeOnRefund: env[EnvVar.GooglePlayRevokeOnRefund],
+      consumableProductIds: commaListOrUndefined(env[EnvVar.GooglePlayConsumableProductIds]),
+    }),
+  );
+
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
@@ -453,6 +615,17 @@ export interface ServiceConfig {
     [Provider.PhonePe]?: PhonePeConfig;
     [Provider.Paytm]?: PaytmConfig;
   };
+  /** The app stores, each present when its variables are set. */
+  stores: {
+    [Provider.AppStore]?: AppStoreConfig;
+    [Provider.GooglePlay]?: GooglePlayConfig;
+  };
+  /** The service's public URL without a trailing slash, as customers' browsers reach it. The hosted checkout and the gateways' return URLs are built on it. */
+  publicBaseUrl?: string;
+  /** Path of the purchases configuration (`{ catalog, policy?, routing? }`). Absent: the purchase routes answer with a configuration error. */
+  purchasesFile?: string;
+  /** Path of the `FilePurchaseStore`. Set together with `purchasesFile`. */
+  purchaseStoreFile?: string;
   /** Path of the scheduler's `FileSchedulerStore`. Absent: the billing scheduler is off. */
   schedulerStoreFile?: string;
   tickSeconds: number;
@@ -483,12 +656,23 @@ export const GATEWAY_ORDER = [
 /** A gateway that can be configured from environment variables. */
 export type EnvGateway = (typeof GATEWAY_ORDER)[number];
 
+/** The app stores `serve` can configure from environment variables, in the order they are tried and listed. */
+export const STORE_ORDER = [Provider.AppStore, Provider.GooglePlay] as const;
+/** An app store that can be configured from environment variables. */
+export type EnvStore = (typeof STORE_ORDER)[number];
+
+/** Every provider `serve` can configure: the gateways, then the stores. */
+export const PROVIDER_ORDER = [...GATEWAY_ORDER, ...STORE_ORDER] as const;
+export type EnvProvider = EnvGateway | EnvStore;
+
 const GATEWAY_ENV_SCHEMAS = {
   [Provider.Razorpay]: { env: RazorpayEnvSchema, config: RazorpayConfigSchema },
   [Provider.Cashfree]: { env: CashfreeEnvSchema, config: CashfreeConfigSchema },
   [Provider.PayU]: { env: PayuEnvSchema, config: PayUConfigSchema },
   [Provider.PhonePe]: { env: PhonepeEnvSchema, config: PhonePeConfigSchema },
   [Provider.Paytm]: { env: PaytmEnvSchema, config: PaytmConfigSchema },
+  [Provider.AppStore]: { env: AppStoreEnvSchema, config: AppStoreConfigSchema },
+  [Provider.GooglePlay]: { env: GooglePlayEnvSchema, config: GooglePlayConfigSchema },
 } as const;
 
 type Values = Record<string, string>;
@@ -511,7 +695,7 @@ function variableName(path: PropertyKey[]): string {
   return path.length > 0 ? String(path[0]) : '(environment)';
 }
 
-function describeGatewayVars(provider: EnvGateway): string {
+function describeGatewayVars(provider: EnvProvider): string {
   return `${provider} (${GATEWAY_REQUIRED_VARS[provider].join(', ')})`;
 }
 
@@ -559,13 +743,14 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
     warnings.push(`${EnvVar.EventsWebhookUrl} is plain http: events travel unencrypted (they are signed, not secret-free).`);
   }
 
-  // Gateways.
+  // Gateways and app stores.
   const gateways: ServiceConfig['gateways'] = {};
-  let anyGatewayVariable = false;
-  for (const provider of GATEWAY_ORDER) {
+  const stores: ServiceConfig['stores'] = {};
+  let anyProviderVariable = false;
+  for (const provider of PROVIDER_ORDER) {
     const present = GATEWAY_VARS[provider].filter((name) => values[name] !== undefined);
     if (present.length === 0) continue;
-    anyGatewayVariable = true;
+    anyProviderVariable = true;
     const { env: envSchema, config: configSchema } = GATEWAY_ENV_SCHEMAS[provider];
     const fromEnv = envSchema.safeParse(values);
     if (!fromEnv.success) {
@@ -586,14 +771,39 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
       );
       continue;
     }
-    (gateways as Record<string, unknown>)[provider] = fromEnv.data;
+    ((STORE_ORDER as readonly Provider[]).includes(provider) ? (stores as Record<string, unknown>) : (gateways as Record<string, unknown>))[
+      provider
+    ] = fromEnv.data;
   }
 
-  if (!anyGatewayVariable) {
+  if (!anyProviderVariable) {
     problems.push(
-      'No payment gateway is configured. Set the variables of at least one: ' +
-        GATEWAY_ORDER.map((provider) => describeGatewayVars(provider)).join('; '),
+      'No payment gateway or app store is configured. Set the variables of at least one: ' +
+        PROVIDER_ORDER.map((provider) => describeGatewayVars(provider)).join('; '),
     );
+  }
+
+  // Purchases: the configuration file and its durable store go together; the public URL is what the hosted checkout is built on.
+  const purchasesFile = base?.[EnvVar.PurchasesFile];
+  const purchaseStoreFile = base?.[EnvVar.PurchaseStoreFile];
+  if (service.success) {
+    if (purchasesFile && !purchaseStoreFile) {
+      problems.push(
+        `${EnvVar.PurchaseStoreFile}: is required when ${EnvVar.PurchasesFile} is set (sessions, entitlements and the report queue must survive a restart)`,
+      );
+    } else if (purchaseStoreFile && !purchasesFile) {
+      problems.push(`${EnvVar.PurchasesFile}: is required when ${EnvVar.PurchaseStoreFile} is set`);
+    }
+  }
+  const publicBaseUrl = base?.[EnvVar.PublicBaseUrl]?.replace(/\/+$/, '');
+  if (purchasesFile && purchaseStoreFile) {
+    if (!publicBaseUrl) {
+      warnings.push(
+        `${EnvVar.PublicBaseUrl} is not set: purchase options carry no hostedUrl and gateways return customers to the returnUrl of the purchase, so the hosted checkout is not offered.`,
+      );
+    } else if (new URL(publicBaseUrl).protocol === INSECURE_PROTOCOL && !LOOPBACK_HOSTS.includes(new URL(publicBaseUrl).hostname)) {
+      warnings.push(`${EnvVar.PublicBaseUrl} is plain http: customers are sent to the hosted checkout over an unencrypted connection.`);
+    }
   }
 
   const { razorpay, cashfree, payu, phonepe } = {
@@ -610,6 +820,13 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
   }
   if (payu && !payu.successUrl) {
     warnings.push(`${EnvVar.PayuSuccessUrl} is not set: every payu subscription must carry its own returnUrl.`);
+  }
+
+  const googlePlayConfig = stores[Provider.GooglePlay];
+  if (googlePlayConfig && !googlePlayConfig.pushAudience && !googlePlayConfig.acceptUnauthenticatedWebhooks) {
+    warnings.push(
+      `${EnvVar.GooglePlayPushAudience} and ${EnvVar.GooglePlayPushServiceAccountEmail} are not set: webhooks from google_play will be rejected.`,
+    );
   }
 
   if (phonepe && !phonepe.webhookUsername) {
@@ -636,6 +853,10 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
     apiKey,
     allowUnauthenticated: !apiKey && allowUnauthenticated,
     gateways,
+    stores,
+    publicBaseUrl,
+    purchasesFile,
+    purchaseStoreFile,
     schedulerStoreFile: base?.[EnvVar.SchedulerStoreFile],
     tickSeconds: base?.[EnvVar.SchedulerTickSeconds] ?? DEFAULT_TICK_SECONDS,
     eventsWebhook,

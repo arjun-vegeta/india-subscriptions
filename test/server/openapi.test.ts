@@ -92,6 +92,21 @@ describe('OpenAPI document', () => {
       [HttpMethod.Post, '/v1/{provider}/webhooks/parse'],
       [HttpMethod.Post, '/v1/{provider}/webhooks'],
       [HttpMethod.Post, '/v1/scheduler/tick'],
+      [HttpMethod.Post, '/v1/{provider}/payments'],
+      [HttpMethod.Get, '/v1/{provider}/payments/{paymentId}'],
+      [HttpMethod.Post, '/v1/{provider}/payments/verify'],
+      [HttpMethod.Post, '/v1/{provider}/payment-refunds'],
+      [HttpMethod.Post, '/v1/routing/decide'],
+      [HttpMethod.Post, '/v1/routing/outcomes'],
+      [HttpMethod.Post, '/v1/purchases'],
+      [HttpMethod.Post, '/v1/purchases/flush'],
+      [HttpMethod.Get, '/v1/purchases/{sessionId}'],
+      [HttpMethod.Post, '/v1/purchases/{sessionId}/alternative'],
+      [HttpMethod.Post, '/v1/purchases/{sessionId}/complete'],
+      [HttpMethod.Get, '/v1/entitlements/{customerRef}'],
+      [HttpMethod.Get, '/checkout/{sessionId}'],
+      [HttpMethod.Get, '/checkout/{sessionId}/return'],
+      [HttpMethod.Post, '/checkout/{sessionId}/return'],
     ];
     for (const [method, path] of expected) expect(() => operationOf(path, method), `${method} ${path}`).not.toThrow();
     expect(routes).toHaveLength(expected.length);
@@ -120,7 +135,7 @@ describe('OpenAPI document', () => {
 
   it('defines every schema the routes reference, plus the service schemas', () => {
     for (const route of routes) {
-      expect(doc.components.schemas[route.response.schema], route.operationId).toBeDefined();
+      if (route.response.schema !== undefined) expect(doc.components.schemas[route.response.schema], route.operationId).toBeDefined();
       if (route.requestBody) expect(doc.components.schemas[route.requestBody.schema], route.operationId).toBeDefined();
     }
     for (const name of Object.values(ServerSchemaName)) expect(doc.components.schemas[name], name).toBeDefined();
@@ -140,6 +155,10 @@ describe('OpenAPI document', () => {
       [ApiPath.Health, ApiPath.OpenApi].sort(),
     );
     expect(routes.find((r) => r.path === ApiPath.Webhooks)?.auth).toBe(AuthMode.Signature);
+    // The hosted checkout is public too: the unguessable session id is its credential.
+    expect(routes.filter((r) => r.auth === AuthMode.Capability).map((r) => `${r.method} ${r.path}`).sort()).toEqual(
+      [`GET ${ApiPath.Checkout}`, `GET ${ApiPath.CheckoutReturn}`, `POST ${ApiPath.CheckoutReturn}`].sort(),
+    );
   });
 
   it('declares path parameters for every placeholder, and the limit query', () => {
@@ -160,6 +179,13 @@ describe('OpenAPI document', () => {
       const responses = operationOf(route.path, route.method).responses as Record<string, Json>;
       expect(responses[String(route.response.status)], route.operationId).toBeDefined();
       if (route.auth === AuthMode.None) continue;
+      if (route.auth === AuthMode.Capability) {
+        // No key to be wrong about: an unknown or expired session is a 404 page, a failure of the service a JSON error.
+        expect(responses['401'], route.operationId).toBeUndefined();
+        expect(JSON.stringify(responses['404']), route.operationId).toContain('text/html');
+        expect(JSON.stringify(responses['500']), route.operationId).toContain(`${SCHEMA_PREFIX}${ServerSchemaName.ErrorResponse}`);
+        continue;
+      }
       for (const status of ['401', '500']) expect(responses[status], `${route.operationId} ${status}`).toBeDefined();
       for (const [status, response] of Object.entries(responses)) {
         if (Number(status) < 400) continue;
@@ -170,6 +196,19 @@ describe('OpenAPI document', () => {
     for (const status of ['201', '400', '404', '409', '413', '422', '429', '502', '503', '504']) {
       expect(create[status], status).toBeDefined();
     }
+  });
+
+  it('documents a page and a redirect for the hosted checkout, and 422 NO_ROUTE for a routing decision', () => {
+    const page = operationOf(ApiPath.Checkout, HttpMethod.Get).responses as Record<string, Json>;
+    expect(page['200']).toMatchObject({ content: { 'text/html': { schema: { type: 'string' } } } });
+    const back = operationOf(ApiPath.CheckoutReturn, HttpMethod.Get).responses as Record<string, Json>;
+    expect(back['303']).toMatchObject({ headers: { location: { schema: { type: 'string' } } } });
+    expect(back['303']).not.toHaveProperty('content');
+    const decide = operationOf(ApiPath.RoutingDecide, HttpMethod.Post).responses as Record<string, Json>;
+    expect(decide['422']).toBeDefined();
+    const start = operationOf(ApiPath.Purchases, HttpMethod.Post).responses as Record<string, Json>;
+    for (const status of ['201', '400', '401', '409', '422', '502']) expect(start[status], status).toBeDefined();
+    expect((operationOf(ApiPath.Purchase, HttpMethod.Get).responses as Record<string, Json>)['404']).toBeDefined();
   });
 
   it('types array responses as arrays of the schema', () => {

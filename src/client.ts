@@ -1,6 +1,16 @@
-import { CancelMode, ErrorCode, GATEWAY_STATUS_UNAVAILABLE, SchedulingMode, SubscriptionStatus, type Provider } from './constants.js';
+import {
+  CancelMode,
+  ErrorCode,
+  GATEWAY_STATUS_UNAVAILABLE,
+  Provider as ProviderName,
+  SchedulingMode,
+  SubscriptionStatus,
+  type Provider,
+} from './constants.js';
 import { SubscriptionError, unsupported } from './errors.js';
-import type { SubscriptionProvider } from './provider.js';
+import type { ExternalTransactionReporter, SubscriptionProvider } from './provider.js';
+import { Purchases, type PurchasesOptions } from './purchase/purchases.js';
+import { Router, type RouterOptions } from './routing/router.js';
 import type {
   CancelSubscriptionOptions,
   Capabilities,
@@ -44,7 +54,24 @@ export interface SubscriptionsOptions {
    * scheduler itself, wired to exactly the `providers` above.
    */
   scheduler?: BillingScheduler | SchedulerSettings;
+  /**
+   * How `subs.router` chooses a gateway: the strategy (weights, fees, priorities, limits, circuit breaker) and where
+   * outcomes are counted. Optional: the router always exists, with documented defaults.
+   */
+  routing?: RoutingSettings;
+  /**
+   * Purchase sessions, platform policy and entitlements. When given, `subs.purchases` is a `Purchases` built over this
+   * client (its host), over `subs.router`, with the `google_play` provider as its reporter when one is configured.
+   * Required: `catalog` and `store`. A bad catalog throws `CONFIG` listing every problem.
+   */
+  purchases?: PurchasesSettings;
 }
+
+/** What `routing` takes: the router's options without the capabilities, which the client supplies. */
+export type RoutingSettings = Omit<RouterOptions, 'capabilities'>;
+
+/** What `purchases` takes: the options of `Purchases` without the host, the router and the reporter, which the client supplies. */
+export type PurchasesSettings = Omit<PurchasesOptions, 'host' | 'router' | 'reporter'>;
 
 /**
  * One entry point over every configured gateway. Each method takes the
@@ -57,6 +84,10 @@ export interface SubscriptionsOptions {
  */
 export class Subscriptions {
   readonly scheduler?: BillingScheduler;
+  /** Chooses the gateway for a new subscription or payment, over the configured providers' capabilities. */
+  readonly router: Router;
+  /** Purchase sessions, platform policy and entitlements. Present when the `purchases` option was given. */
+  readonly purchases?: Purchases;
   private readonly registry = new Map<Provider, SubscriptionProvider>();
 
   // Every method that returns a promise rejects: none of them throws synchronously, even for an unknown gateway.
@@ -122,15 +153,34 @@ export class Subscriptions {
     /** Verifies the signature and returns normalised events. Pure: nothing is stored. */
     parse: async (provider: Provider, request: WebhookRequest): Promise<SubscriptionEvent[]> =>
       this.provider(provider).parseWebhook(request),
-    /** `parse`, then applies each event to the billing scheduler. Use this in your webhook route. */
+    /**
+     * `parse`, then applies each event to the billing scheduler and to purchase sessions. Use this in your webhook route.
+     * Every consumer sees the events even when another one fails; if any failed, this rejects (so the gateway delivers
+     * the webhook again) with the first failure's code and the events in `raw`, so they are never lost to the caller.
+     */
     handle: async (provider: Provider, request: WebhookRequest): Promise<SubscriptionEvent[]> => {
       const events = await this.provider(provider).parseWebhook(request);
+      const failures: unknown[] = [];
       const scheduler = this.schedulerFor(provider);
       if (scheduler) {
         for (const event of events) {
-          await guarded(provider, 'applying a webhook event to the billing schedule', () => scheduler.handleEvent(event));
+          try {
+            await guarded(provider, 'applying a webhook event to the billing schedule', () => scheduler.handleEvent(event));
+          } catch (error) {
+            failures.push(error);
+            break;
+          }
         }
       }
+      const purchases = this.purchases;
+      if (purchases) {
+        try {
+          await guarded(provider, 'applying webhook events to purchases', () => purchases.handleEvents(events));
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length > 0) throw consumerFailure(provider, failures, events);
       return events;
     },
   };
@@ -153,6 +203,19 @@ export class Subscriptions {
       : isScheduler(scheduler)
         ? scheduler
         : new BillingScheduler({ ...scheduler, resolveProvider: (name) => this.provider(name) });
+
+    this.router = new Router({
+      ...options.routing,
+      capabilities: () => this.providers.map((name) => this.capabilities(name)),
+    });
+    if (options.purchases) {
+      this.purchases = new Purchases({
+        ...options.purchases,
+        host: this,
+        router: this.router,
+        reporter: this.reporter(),
+      });
+    }
   }
 
   /** The configured gateways. */
@@ -452,6 +515,12 @@ export class Subscriptions {
     return guarded(undefined, 'running the billing scheduler', () => scheduler.tick(options));
   }
 
+  /** The Google Play adapter, when it is configured: it reports purchases made through user choice billing. */
+  private reporter(): ExternalTransactionReporter | undefined {
+    const adapter = this.registry.get(ProviderName.GooglePlay);
+    return adapter !== undefined && isReporter(adapter) ? adapter : undefined;
+  }
+
   /** The scheduler, when this gateway can be merchant-scheduled at all; otherwise the facade never reads it. */
   private schedulerFor(provider: Provider): BillingScheduler | undefined {
     return this.scheduler && merchantSchedulingOf(this.provider(provider).capabilities) !== MerchantScheduling.Never
@@ -500,6 +569,19 @@ export class Subscriptions {
 
 export function createSubscriptions(options: SubscriptionsOptions): Subscriptions {
   return new Subscriptions(options);
+}
+
+function isReporter(adapter: SubscriptionProvider): adapter is SubscriptionProvider & ExternalTransactionReporter {
+  const candidate = adapter as Partial<ExternalTransactionReporter>;
+  return typeof candidate.reportExternalTransaction === 'function' && typeof candidate.refundExternalTransaction === 'function';
+}
+
+/** What `webhooks.handle` throws when a consumer of the events failed: the first failure's code, and the events in `raw`. */
+function consumerFailure(provider: Provider, failures: unknown[], events: SubscriptionEvent[]): SubscriptionError {
+  const first = failures[0];
+  const code = first instanceof SubscriptionError ? first.code : ErrorCode.Internal;
+  const extra = failures.length > 1 ? ` (and ${failures.length - 1} more failure${failures.length > 2 ? 's' : ''})` : '';
+  return new SubscriptionError(code, `${describe(first)}${extra}`, { provider, raw: events, cause: first });
 }
 
 /** A ready scheduler (it has `tick`), as opposed to the options to build one from. */

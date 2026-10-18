@@ -52,6 +52,7 @@ import {
   HealthStatus,
   ServerErrorCode,
   ServerHeader,
+  Tag,
   createHandler,
   createNodeServer,
   ErrorResponseSchema,
@@ -592,14 +593,20 @@ describe('routes: happy paths', () => {
     const covered = new Set([
       ...ROUTE_CASES.map((c) => `${c.method} ${c.path.split('?')[0]?.replace(/plan_1|plan_9|sub_1|pay_1|razorpay|cashfree/g, (m) => PLACEHOLDERS[m] ?? m)}`),
     ]);
-    // Health, openapi, providers, tick and the raw webhook are covered by their own tests.
+    // Health, openapi, providers, tick and the raw webhook are covered by their own tests, and so are the routes of one-time
+    // payments, routing, purchases and the hosted checkout (test/server/payment-routes.test.ts, purchase-routes.test.ts,
+    // hosted-checkout.test.ts, each of which also checks that it covers every route of its own tags).
     const own = new Set(['GET /v1/health', 'GET /v1/openapi.json', 'GET /v1/providers', 'POST /v1/scheduler/tick', 'POST /v1/{provider}/webhooks']);
+    const elsewhere = new Set<string>(routes.filter((route) => OTHER_FILE_TAGS.includes(route.tag)).map((route) => `${route.method} ${route.path}`));
+    for (const key of elsewhere) own.add(key);
     for (const route of routes) {
       const key = `${route.method} ${route.path}`;
       expect(covered.has(key) || own.has(key), `no test for ${key}`).toBe(true);
     }
   });
 });
+
+const OTHER_FILE_TAGS: readonly string[] = [Tag.Payments, Tag.Routing, Tag.Purchases, Tag.HostedCheckout];
 
 const PLACEHOLDERS: Record<string, string> = {
   plan_1: '{planId}',

@@ -6,6 +6,8 @@
 import { ErrorCode } from '../constants.js';
 
 export const API_PREFIX = '/v1';
+/** Where the hosted checkout lives: outside `/v1`, public, authenticated by the unguessable session id. */
+export const CHECKOUT_PREFIX = '/checkout';
 
 /** Names of `{placeholders}` in path templates. */
 export const PathParam = {
@@ -13,6 +15,9 @@ export const PathParam = {
   PlanId: 'planId',
   SubscriptionId: 'subscriptionId',
   ChargeId: 'chargeId',
+  PaymentId: 'paymentId',
+  SessionId: 'sessionId',
+  CustomerRef: 'customerRef',
 } as const;
 export type PathParam = (typeof PathParam)[keyof typeof PathParam];
 
@@ -48,6 +53,20 @@ export const ApiPath = {
   CheckoutVerify: `${PROVIDER_ROOT}/checkout/verify`,
   WebhooksParse: `${PROVIDER_ROOT}/webhooks/parse`,
   Webhooks: `${PROVIDER_ROOT}/webhooks`,
+  Payments: `${PROVIDER_ROOT}/payments`,
+  Payment: `${PROVIDER_ROOT}/payments/${param(PathParam.PaymentId)}`,
+  PaymentVerify: `${PROVIDER_ROOT}/payments/verify`,
+  PaymentRefunds: `${PROVIDER_ROOT}/payment-refunds`,
+  RoutingDecide: `${API_PREFIX}/routing/decide`,
+  RoutingOutcomes: `${API_PREFIX}/routing/outcomes`,
+  Purchases: `${API_PREFIX}/purchases`,
+  PurchasesFlush: `${API_PREFIX}/purchases/flush`,
+  Purchase: `${API_PREFIX}/purchases/${param(PathParam.SessionId)}`,
+  PurchaseAlternative: `${API_PREFIX}/purchases/${param(PathParam.SessionId)}/alternative`,
+  PurchaseComplete: `${API_PREFIX}/purchases/${param(PathParam.SessionId)}/complete`,
+  Entitlements: `${API_PREFIX}/entitlements/${param(PathParam.CustomerRef)}`,
+  Checkout: `${CHECKOUT_PREFIX}/${param(PathParam.SessionId)}`,
+  CheckoutReturn: `${CHECKOUT_PREFIX}/${param(PathParam.SessionId)}/return`,
   SchedulerTick: `${API_PREFIX}/scheduler/tick`,
 } as const;
 export type ApiPath = (typeof ApiPath)[keyof typeof ApiPath];
@@ -75,6 +94,21 @@ export const OperationId = {
   ParseWebhook: 'parseWebhook',
   ReceiveWebhook: 'receiveWebhook',
   RunSchedulerTick: 'runSchedulerTick',
+  CreatePayment: 'createPayment',
+  GetPayment: 'getPayment',
+  VerifyPayment: 'verifyPayment',
+  CreatePaymentRefund: 'createPaymentRefund',
+  DecideRoute: 'decideRoute',
+  RecordRouteOutcome: 'recordRouteOutcome',
+  StartPurchase: 'startPurchase',
+  GetPurchase: 'getPurchase',
+  ChooseAlternative: 'chooseAlternative',
+  CompletePurchase: 'completePurchase',
+  GetEntitlements: 'getEntitlements',
+  FlushPurchaseReports: 'flushPurchaseReports',
+  ShowHostedCheckout: 'showHostedCheckout',
+  ReturnFromHostedCheckout: 'returnFromHostedCheckout',
+  PostReturnFromHostedCheckout: 'postReturnFromHostedCheckout',
 } as const;
 export type OperationId = (typeof OperationId)[keyof typeof OperationId];
 
@@ -88,6 +122,10 @@ export const Tag = {
   Checkout: 'Checkout',
   Webhooks: 'Webhooks',
   Scheduler: 'Scheduler',
+  Payments: 'Payments',
+  Routing: 'Routing',
+  Purchases: 'Purchases',
+  HostedCheckout: 'Hosted checkout',
 } as const;
 export type Tag = (typeof Tag)[keyof typeof Tag];
 
@@ -101,6 +139,12 @@ export const TAG_DESCRIPTIONS: Record<Tag, string> = {
   [Tag.Checkout]: 'Verify what the gateway returned after the customer authorised.',
   [Tag.Webhooks]: 'Verify and normalise gateway webhooks.',
   [Tag.Scheduler]: 'The billing engine for merchant-scheduled mandates.',
+  [Tag.Payments]: 'One-time payments: create, read, verify what the customer returned with, refund.',
+  [Tag.Routing]: 'Choose the best gateway for a subscription or payment, and tell the router how a gateway did.',
+  [Tag.Purchases]:
+    'Purchase sessions, platform policy and entitlements: one call decides where a purchase may go, and one answer says what a customer owns. Answer with a configuration error unless the service was given a purchases file.',
+  [Tag.HostedCheckout]:
+    'Public pages for clients that cannot run the browser helper (the Android alternative payment opens one in a browser tab). The unguessable session id is the credential; no API key.',
 };
 
 /** How a route is protected. */
@@ -111,8 +155,24 @@ export const AuthMode = {
   Bearer: 'bearer',
   /** No API key: the request is authenticated by the gateway's webhook signature. */
   Signature: 'signature',
+  /** No API key: the unguessable session id in the path is the credential (the hosted checkout). */
+  Capability: 'capability',
 } as const;
 export type AuthMode = (typeof AuthMode)[keyof typeof AuthMode];
+
+/** What a route answers with. */
+export const ResponseContent = {
+  /** A JSON body of the route's response schema. */
+  Json: 'json',
+  /** An HTML page. */
+  Html: 'html',
+  /** A redirect (303) with no body. */
+  Redirect: 'redirect',
+} as const;
+export type ResponseContent = (typeof ResponseContent)[keyof typeof ResponseContent];
+
+/** Media type of the hosted checkout pages. */
+export const HTML_MEDIA_TYPE = 'text/html';
 
 export const BEARER_SCHEME = 'Bearer';
 export const SECURITY_SCHEME_NAME = 'bearerAuth';
@@ -125,6 +185,7 @@ export type HealthStatus = (typeof HealthStatus)[keyof typeof HealthStatus];
 export const HttpStatus = {
   Ok: 200,
   Created: 201,
+  SeeOther: 303,
   BadRequest: 400,
   Unauthorized: 401,
   NotFound: 404,
@@ -143,6 +204,7 @@ export type HttpStatus = (typeof HttpStatus)[keyof typeof HttpStatus];
 export const HTTP_STATUS_DESCRIPTIONS: Record<HttpStatus, string> = {
   [HttpStatus.Ok]: 'Success',
   [HttpStatus.Created]: 'Created',
+  [HttpStatus.SeeOther]: 'Redirects the customer to the return URL of the purchase',
   [HttpStatus.BadRequest]: 'The request is malformed or fails validation',
   [HttpStatus.Unauthorized]: 'Missing or wrong API key, or a webhook signature that does not verify',
   [HttpStatus.NotFound]: 'Unknown path, gateway not configured, or the object does not exist',
@@ -202,6 +264,10 @@ export const ServerHeader = {
   ContentTypeOptions: 'x-content-type-options',
   Connection: 'connection',
   ContentLength: 'content-length',
+  ContentSecurityPolicy: 'content-security-policy',
+  ReferrerPolicy: 'referrer-policy',
+  FrameOptions: 'x-frame-options',
+  Location: 'location',
 } as const;
 export type ServerHeader = (typeof ServerHeader)[keyof typeof ServerHeader];
 
@@ -210,6 +276,10 @@ export const HeaderValue = {
   NoSniff: 'nosniff',
   Close: 'close',
   JsonUtf8: 'application/json; charset=utf-8',
+  HtmlUtf8: 'text/html; charset=utf-8',
+  /** Only the origin leaves the page when a gateway is visited: the session id in the path never does. */
+  StrictOriginWhenCrossOrigin: 'strict-origin-when-cross-origin',
+  FrameDeny: 'DENY',
 } as const;
 
 /** Names of the schemas this service adds to `components.schemas`, beside the published unified model. */
@@ -236,6 +306,7 @@ export const ServerSchemaName = {
   SchedulerEventType: 'SchedulerEventType',
   ScheduleStatus: 'ScheduleStatus',
   ScheduleStatusReason: 'ScheduleStatusReason',
+  RoutingReceipt: 'RoutingReceipt',
 } as const;
 export type ServerSchemaName = (typeof ServerSchemaName)[keyof typeof ServerSchemaName];
 
@@ -243,7 +314,8 @@ export const OPENAPI_VERSION = '3.1.0';
 export const DEFAULT_API_TITLE = 'india-subscriptions HTTP API';
 export const DEFAULT_API_VERSION = '0.1.0';
 export const DEFAULT_API_DESCRIPTION =
-  'One API over subscriptions on Indian payment gateways (Razorpay, Cashfree, PayU). ' +
+  'One API over subscriptions and payments on Indian payment gateways (Razorpay, Cashfree, PayU, PhonePe, Paytm) and ' +
+  'app stores (Apple App Store, Google Play), with a gateway router and purchase sessions. ' +
   'Amounts are integer paise and instants are ISO-8601 strings.';
 /** Default request body limit: 1 MiB. */
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;

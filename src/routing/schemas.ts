@@ -192,8 +192,8 @@ export type RoutingDecision = z.infer<typeof RoutingDecisionSchema>;
 export const RouteOutcomeSchema = z
   .object({
     provider: ProviderSchema.describe('The gateway the attempt went to.'),
-    kind: RouteOutcomeKindSchema,
-    result: RouteOutcomeResultSchema,
+    kind: RouteOutcomeKindSchema.describe('What the attempt was: an authorisation, a charge, a payment or another request.'),
+    result: RouteOutcomeResultSchema.describe('How it ended: `success`, `failure` or `unavailable`.'),
     paymentMethod: PaymentMethodSchema.optional().describe(
       'The payment method used, when known. It is recorded in addition to the gateway-wide figures.',
     ),

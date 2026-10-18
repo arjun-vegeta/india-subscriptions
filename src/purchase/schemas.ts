@@ -4,6 +4,7 @@ import { RoutingDecisionSchema } from '../routing/schemas.js';
 import {
   BillingIntervalSchema,
   CheckoutInstructionSchema,
+  ChannelPolicySchema,
   CheckoutResultSchema,
   CustomerSchema,
   ExternalTransactionRefundSchema,
@@ -144,8 +145,7 @@ export const PlatformPolicySchema = z
       .literal(ChannelPolicy.Store)
       .default(ChannelPolicy.Store)
       .describe('iOS: App Store only.'),
-    android: z
-      .enum([ChannelPolicy.Store, ChannelPolicy.UserChoice, ChannelPolicy.Gateways])
+    android: ChannelPolicySchema
       .default(ChannelPolicy.Store)
       .describe(
         'Android: `store` (Google Play only), `user_choice` (Google Play with its choice screen offering a gateway, ' +
@@ -213,9 +213,7 @@ export const PurchaseSessionSchema = z
     id: z.string().describe('The session id. Unguessable: whoever holds it can complete the session.'),
     platform: PlatformSchema.describe('The platform the customer buys on.'),
     product: z.string().describe('The key of the product.'),
-    policy: z
-      .enum(ChannelPolicy)
-      .describe('The channel policy the session was resolved with: `store`, `user_choice` or `gateways`.'),
+    policy: ChannelPolicySchema.describe('The channel policy the session was resolved with: `store`, `user_choice` or `gateways`.'),
     status: SessionStatusSchema.describe('Where the session is.'),
     customerRef: z.string().describe('Your id for the customer.'),
     reference: ReferenceSchema,

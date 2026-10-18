@@ -12,10 +12,25 @@ export {
   type FileSchedulerStoreOptions,
 } from './scheduler-file-store.js';
 export {
+  FilePurchaseStore,
+  PURCHASE_STORE_FORMAT,
+  PURCHASE_STORE_MODE,
+  PURCHASE_STORE_VERSION,
+  type FilePurchaseStoreOptions,
+} from './purchase-file-store.js';
+export {
+  PurchasesFileKey,
+  loadPurchasesFile,
+  type LoadPurchasesFileOptions,
+  type PurchasesFileConfig,
+} from './service-purchases.js';
+export {
   EnvVar,
   DEFAULT_HOST,
   DEFAULT_PORT,
   DEFAULT_TICK_SECONDS,
+  PROVIDER_ORDER,
+  STORE_ORDER,
   parseServiceEnv,
   type EnvironmentVariables,
   type EventsWebhookConfig,

@@ -28,6 +28,21 @@ Every route of the service started by `india-subscriptions serve` or `createHand
 | [verifyCheckout](#verifycheckout) | POST | `/v1/{provider}/checkout/verify` | API key (`Authorization: Bearer ...`) |
 | [parseWebhook](#parsewebhook) | POST | `/v1/{provider}/webhooks/parse` | API key (`Authorization: Bearer ...`) |
 | [receiveWebhook](#receivewebhook) | POST | `/v1/{provider}/webhooks` | none: the gateway's signature over the raw body |
+| [createPayment](#createpayment) | POST | `/v1/{provider}/payments` | API key (`Authorization: Bearer ...`) |
+| [getPayment](#getpayment) | GET | `/v1/{provider}/payments/{paymentId}` | API key (`Authorization: Bearer ...`) |
+| [verifyPayment](#verifypayment) | POST | `/v1/{provider}/payments/verify` | API key (`Authorization: Bearer ...`) |
+| [createPaymentRefund](#createpaymentrefund) | POST | `/v1/{provider}/payment-refunds` | API key (`Authorization: Bearer ...`) |
+| [decideRoute](#decideroute) | POST | `/v1/routing/decide` | API key (`Authorization: Bearer ...`) |
+| [recordRouteOutcome](#recordrouteoutcome) | POST | `/v1/routing/outcomes` | API key (`Authorization: Bearer ...`) |
+| [startPurchase](#startpurchase) | POST | `/v1/purchases` | API key (`Authorization: Bearer ...`) |
+| [flushPurchaseReports](#flushpurchasereports) | POST | `/v1/purchases/flush` | API key (`Authorization: Bearer ...`) |
+| [getPurchase](#getpurchase) | GET | `/v1/purchases/{sessionId}` | API key (`Authorization: Bearer ...`) |
+| [chooseAlternative](#choosealternative) | POST | `/v1/purchases/{sessionId}/alternative` | API key (`Authorization: Bearer ...`) |
+| [completePurchase](#completepurchase) | POST | `/v1/purchases/{sessionId}/complete` | API key (`Authorization: Bearer ...`) |
+| [getEntitlements](#getentitlements) | GET | `/v1/entitlements/{customerRef}` | API key (`Authorization: Bearer ...`) |
+| [showHostedCheckout](#showhostedcheckout) | GET | `/checkout/{sessionId}` | none: the unguessable session id in the path |
+| [returnFromHostedCheckout](#returnfromhostedcheckout) | GET | `/checkout/{sessionId}/return` | none: the unguessable session id in the path |
+| [postReturnFromHostedCheckout](#postreturnfromhostedcheckout) | POST | `/checkout/{sessionId}/return` | none: the unguessable session id in the path |
 | [runSchedulerTick](#runschedulertick) | POST | `/v1/scheduler/tick` | API key (`Authorization: Bearer ...`) |
 
 ## Meta
@@ -354,6 +369,242 @@ The URL to register at the gateway. It takes no API key because gateways cannot 
 | Request body | [WebhookPayload](models.md#webhookpayload); the raw body, exactly as the gateway sent it |
 | Success | 200: [WebhookReceipt](models.md#webhookreceipt) |
 | Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 413 The request body is over the size limit; 500 Server misconfiguration or unexpected failure |
+
+## Payments
+
+One-time payments: create, read, verify what the customer returned with, refund.
+
+### createPayment
+
+`POST /v1/{provider}/payments`
+
+Create a one-time payment.
+
+Creates the payment (an order) and returns it with `checkout` instructions for the customer to pay. At an app store this makes no purchase: it returns the account token the purchase on the device must carry. Calls the gateway.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [CreatePaymentInput](models.md#createpaymentinput) |
+| Success | 201: [Payment](models.md#payment) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 409 The request conflicts with the current state at the gateway; 413 The request body is over the size limit; 422 The gateway does not support this operation; 429 The gateway rate-limited the request; retry later; 500 Server misconfiguration or unexpected failure; 502 The gateway rejected our credentials, errored, or answered with something unexpected; 503 The gateway is unavailable; retry later; 504 The gateway did not answer in time. For writes the outcome is unknown: fetch current state before retrying |
+
+### getPayment
+
+`GET /v1/{provider}/payments/{paymentId}`
+
+Get a payment.
+
+Fetches a one-time payment with its current status: the source of truth, whatever the browser reported. Calls the gateway.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Success | 200: [Payment](models.md#payment) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 409 The request conflicts with the current state at the gateway; 422 The gateway does not support this operation; 429 The gateway rate-limited the request; retry later; 500 Server misconfiguration or unexpected failure; 502 The gateway rejected our credentials, errored, or answered with something unexpected; 503 The gateway is unavailable; retry later; 504 The gateway did not answer in time. For writes the outcome is unknown: fetch current state before retrying |
+
+### verifyPayment
+
+`POST /v1/{provider}/payments/verify`
+
+Verify a payment result.
+
+Verifies what the gateway (or the store, on a device) returned after the customer paid. Pass the result untouched as `result`, and the payment id your server stored as `expectedPaymentId`: a genuine result that belongs to a different payment is then rejected like a forged one. Calls the gateway.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [VerifyPaymentInput](models.md#verifypaymentinput) |
+| Success | 200: [PaymentVerification](models.md#paymentverification) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 409 The request conflicts with the current state at the gateway; 413 The request body is over the size limit; 422 The gateway does not support this operation; 429 The gateway rate-limited the request; retry later; 500 Server misconfiguration or unexpected failure; 502 The gateway rejected our credentials, errored, or answered with something unexpected; 503 The gateway is unavailable; retry later; 504 The gateway did not answer in time. For writes the outcome is unknown: fetch current state before retrying |
+
+### createPaymentRefund
+
+`POST /v1/{provider}/payment-refunds`
+
+Refund a payment.
+
+Refunds a one-time payment in full or in part. Calls the gateway.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [RefundPaymentInput](models.md#refundpaymentinput) |
+| Success | 201: [Refund](models.md#refund) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 409 The request conflicts with the current state at the gateway; 413 The request body is over the size limit; 422 The gateway does not support this operation; 429 The gateway rate-limited the request; retry later; 500 Server misconfiguration or unexpected failure; 502 The gateway rejected our credentials, errored, or answered with something unexpected; 503 The gateway is unavailable; retry later; 504 The gateway did not answer in time. For writes the outcome is unknown: fetch current state before retrying |
+
+## Routing
+
+Choose the best gateway for a subscription or payment, and tell the router how a gateway did.
+
+### decideRoute
+
+`POST /v1/routing/decide`
+
+Decide a route.
+
+Chooses the best configured gateway for a subscription or a one-time payment, and explains the choice: every gateway comes back with its exclusions or its score. Answers 422 `NO_ROUTE` when no gateway can take the request. Nothing is created at a gateway.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [RouteRequest](models.md#routerequest) |
+| Success | 200: [RoutingDecision](models.md#routingdecision) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 413 The request body is over the size limit; 422 The gateway does not support this operation; 500 Server misconfiguration or unexpected failure |
+
+### recordRouteOutcome
+
+`POST /v1/routing/outcomes`
+
+Record a routing outcome.
+
+Tells the router how a gateway did (success, failure, or unavailable), so its success rates and circuit breaker follow what you see. Purchase sessions record their own outcomes: use this for payments you create through the explicit gateway routes.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [RouteOutcome](models.md#routeoutcome) |
+| Success | 200: [RoutingReceipt](models.md#routingreceipt) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 413 The request body is over the size limit; 500 Server misconfiguration or unexpected failure |
+
+## Purchases
+
+Purchase sessions, platform policy and entitlements: one call decides where a purchase may go, and one answer says what a customer owns. Answer with a configuration error unless the service was given a purchases file.
+
+### startPurchase
+
+`POST /v1/purchases`
+
+Start a purchase.
+
+Decides where the purchase may go on the customer's platform (the App Store on iOS; Google Play, Google Play with user choice billing, or the gateways on Android; the gateways on the web), creates it there and returns the session with the ways to pay. Repeating the call with the same `reference` returns the same session. Answers 409 when the customer already owns the product. Calls the gateway. Needs purchases configured on the service (PURCHASES_FILE), else answers with a configuration error.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [StartPurchaseInput](models.md#startpurchaseinput) |
+| Success | 201: [PurchaseSession](models.md#purchasesession) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 409 The request conflicts with the current state at the gateway; 413 The request body is over the size limit; 422 The gateway does not support this operation; 429 The gateway rate-limited the request; retry later; 500 Server misconfiguration or unexpected failure; 502 The gateway rejected our credentials, errored, or answered with something unexpected; 503 The gateway is unavailable; retry later; 504 The gateway did not answer in time. For writes the outcome is unknown: fetch current state before retrying |
+
+### flushPurchaseReports
+
+`POST /v1/purchases/flush`
+
+Send the queued Google reports.
+
+Sends the purchases, renewals and refunds made through Google Play user choice billing that Google has not been told about yet. The service does this on every tick by itself; call it to do it now. `overdue` lists the reports past their 24 hour deadline: page someone when it is not empty. Calls the gateway. Needs purchases configured on the service (PURCHASES_FILE), else answers with a configuration error.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [FlushOptions](models.md#flushoptions) (optional) |
+| Success | 200: [FlushResult](models.md#flushresult) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 409 The request conflicts with the current state at the gateway; 413 The request body is over the size limit; 422 The gateway does not support this operation; 429 The gateway rate-limited the request; retry later; 500 Server misconfiguration or unexpected failure; 502 The gateway rejected our credentials, errored, or answered with something unexpected; 503 The gateway is unavailable; retry later; 504 The gateway did not answer in time. For writes the outcome is unknown: fetch current state before retrying |
+
+### getPurchase
+
+`GET /v1/purchases/{sessionId}`
+
+Get a purchase session.
+
+The session with its current status. Needs purchases configured on the service (PURCHASES_FILE), else answers with a configuration error.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Success | 200: [PurchaseSession](models.md#purchasesession) |
+| Error statuses | 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 500 Server misconfiguration or unexpected failure |
+
+### chooseAlternative
+
+`POST /v1/purchases/{sessionId}/alternative`
+
+Choose the alternative payment.
+
+The customer picked the alternative payment on Google's choice screen (Android sessions with the `user_choice` policy). Creates the purchase at the best gateway and adds it to the session as a second option, with a `hostedUrl` to open in a browser tab. Repeating it with the same token returns the same option. Calls the gateway. Needs purchases configured on the service (PURCHASES_FILE), else answers with a configuration error.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [ChooseAlternativeInput](models.md#choosealternativeinput) |
+| Success | 200: [PurchaseSession](models.md#purchasesession) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 409 The request conflicts with the current state at the gateway; 413 The request body is over the size limit; 422 The gateway does not support this operation; 429 The gateway rate-limited the request; retry later; 500 Server misconfiguration or unexpected failure; 502 The gateway rejected our credentials, errored, or answered with something unexpected; 503 The gateway is unavailable; retry later; 504 The gateway did not answer in time. For writes the outcome is unknown: fetch current state before retrying |
+
+### completePurchase
+
+`POST /v1/purchases/{sessionId}/complete`
+
+Complete a purchase.
+
+Verifies what the checkout handed back (the store's transaction from the device, or a gateway's result) against the order the session created, and records the entitlement. A result for another order is rejected with `SIGNATURE_INVALID` and the session stays as it was. Calls the gateway. Needs purchases configured on the service (PURCHASES_FILE), else answers with a configuration error.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Request body | [CompletePurchaseInput](models.md#completepurchaseinput) |
+| Success | 200: [PurchaseSession](models.md#purchasesession) |
+| Error statuses | 400 The request is malformed or fails validation; 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 409 The request conflicts with the current state at the gateway; 413 The request body is over the size limit; 422 The gateway does not support this operation; 429 The gateway rate-limited the request; retry later; 500 Server misconfiguration or unexpected failure; 502 The gateway rejected our credentials, errored, or answered with something unexpected; 503 The gateway is unavailable; retry later; 504 The gateway did not answer in time. For writes the outcome is unknown: fetch current state before retrying |
+
+### getEntitlements
+
+`GET /v1/entitlements/{customerRef}`
+
+Get what a customer owns.
+
+Every purchase of the customer across app stores and gateways; `active` is true when one gives access now. Needs purchases configured on the service (PURCHASES_FILE), else answers with a configuration error.
+
+| Property | Value |
+|---|---|
+| Auth | API key (`Authorization: Bearer ...`) |
+| Success | 200: [Entitlements](models.md#entitlements) |
+| Error statuses | 401 Missing or wrong API key, or a webhook signature that does not verify; 404 Unknown path, gateway not configured, or the object does not exist; 500 Server misconfiguration or unexpected failure |
+
+## Hosted checkout
+
+Public pages for clients that cannot run the browser helper (the Android alternative payment opens one in a browser tab). The unguessable session id is the credential; no API key.
+
+### showHostedCheckout
+
+`GET /checkout/{sessionId}`
+
+Hosted checkout page.
+
+An HTML page that performs the checkout step of the session's gateway option (a redirect, a form post, Razorpay Standard Checkout or cashfree.js) for a client that cannot run the browser helper. Needs no API key: the session id is the credential. Answers 404, with no detail, for an unknown or expired session. Served with a strict Content-Security-Policy and holds no secret.
+
+| Property | Value |
+|---|---|
+| Auth | none: the unguessable session id in the path |
+| Success | 200: an HTML page |
+| Error statuses | 404 Unknown path, gateway not configured, or the object does not exist; 500 Server misconfiguration or unexpected failure |
+
+### returnFromHostedCheckout
+
+`GET /checkout/{sessionId}/return`
+
+Hosted checkout return (query).
+
+Where a gateway, or the hosted page's own script, sends the customer back with the result in the query. The fields are never trusted: the purchase is completed by asking the gateway, and the customer is redirected to the `returnUrl` of the session with `session` and `status` appended, whatever the outcome. Needs no API key.
+
+| Property | Value |
+|---|---|
+| Auth | none: the unguessable session id in the path |
+| Success | 303: a redirect to the return URL of the purchase |
+| Error statuses | 404 Unknown path, gateway not configured, or the object does not exist; 500 Server misconfiguration or unexpected failure |
+
+### postReturnFromHostedCheckout
+
+`POST /checkout/{sessionId}/return`
+
+Hosted checkout return (form).
+
+The same as the query form, for a gateway that posts the result as form fields (PayU, Paytm, Razorpay's callback). The fields of the query and of the form are both read. Needs no API key.
+
+| Property | Value |
+|---|---|
+| Auth | none: the unguessable session id in the path |
+| Request body | [WebhookPayload](models.md#webhookpayload) (optional); the raw body, exactly as the gateway sent it |
+| Success | 303: a redirect to the return URL of the purchase |
+| Error statuses | 404 Unknown path, gateway not configured, or the object does not exist; 413 The request body is over the size limit; 500 Server misconfiguration or unexpected failure |
 
 ## Scheduler
 

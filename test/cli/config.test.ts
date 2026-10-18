@@ -169,7 +169,7 @@ describe('parseServiceEnv', () => {
   describe('gateways', () => {
     it('refuses to start with no gateway at all, naming what to set', () => {
       const error = failure({ [EnvVar.ApiKey]: API_KEY });
-      expect(error.message).toContain('No payment gateway is configured');
+      expect(error.message).toContain('No payment gateway or app store is configured');
       for (const name of [EnvVar.RazorpayKeyId, EnvVar.CashfreeClientId, EnvVar.PayuKey, EnvVar.PayuEnvironment]) {
         expect(error.message).toContain(name);
       }
@@ -183,7 +183,7 @@ describe('parseServiceEnv', () => {
     ])('refuses a half-configured gateway: %s', (_name, partial, missing) => {
       const error = failure({ [EnvVar.ApiKey]: API_KEY, ...partial });
       for (const name of missing) expect(error.message).toContain(`${name}: is required`);
-      expect(error.message).not.toContain('No payment gateway is configured');
+      expect(error.message).not.toContain('No payment gateway or app store is configured');
     });
 
     it('a broken gateway is an error even when another one is fine', () => {
@@ -387,7 +387,7 @@ describe('PhonePe and Paytm', () => {
   ])('refuses a half-configured gateway: %s', (_name, partial, missing) => {
     const error = failure({ ...base, ...partial });
     for (const name of missing) expect(error.message).toContain(`${name}: is required`);
-    expect(error.message).not.toContain('No payment gateway is configured');
+    expect(error.message).not.toContain('No payment gateway or app store is configured');
   });
 
   it('needs the PhonePe webhook username and password together', () => {

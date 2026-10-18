@@ -91,7 +91,7 @@ describe('runCli', () => {
       expect(h.stdout()).toBe('');
       expect(h.stderr()).toContain('Invalid configuration');
       expect(h.stderr()).toContain(EnvVar.ApiKey);
-      expect(h.stderr()).toContain('No payment gateway is configured');
+      expect(h.stderr()).toContain('No payment gateway or app store is configured');
     });
 
     it('refuses a half-configured gateway', async () => {

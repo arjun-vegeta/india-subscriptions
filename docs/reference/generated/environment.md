@@ -83,6 +83,42 @@
 | `PAYTM_REFUND_BASE_URL` | no |  | Optional: replaces the Paytm Refund API host. |
 | `PAYTM_CHECKOUT_BASE_URL` | no |  | Optional: replaces the host customers are sent to for authorisation. |
 
+## App Store
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `APP_STORE_BUNDLE_ID` | yes |  | The app's bundle id (App Store Connect). |
+| `APP_STORE_ISSUER_ID` | yes |  | Issuer id from the Keys page of App Store Connect (In-App Purchase keys). |
+| `APP_STORE_KEY_ID` | yes |  | Id of the In-App Purchase key that signs API requests. |
+| `APP_STORE_PRIVATE_KEY` | yes |  | Text of that key's .p8 file (PKCS #8, PEM). On one line, write each line break as \n. |
+| `APP_STORE_ENVIRONMENT` | yes |  | test (Apple sandbox) or live (production). |
+| `APP_STORE_APP_APPLE_ID` | no |  | The app's Apple id (App Store Connect, App Information); required when the environment is live. |
+| `APP_STORE_OFFER_KEY_ID` | yes |  | Optional: id of the key that signs promotional offers; set with its private key. Needed only to sell offers. |
+| `APP_STORE_OFFER_PRIVATE_KEY` | yes |  | Optional: text of the promotional offer key's .p8 file (\n for line breaks); set with its key id. |
+
+## Google Play
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GOOGLE_PLAY_PACKAGE_NAME` | yes |  | The app's package name, as in Play Console (for example com.example.app). |
+| `GOOGLE_PLAY_CLIENT_EMAIL` | yes |  | client_email of the service account key; the account needs access to the app in Play Console. |
+| `GOOGLE_PLAY_PRIVATE_KEY` | yes |  | private_key of the service account key (PEM). On one line, write each line break as \n. |
+| `GOOGLE_PLAY_PRIVATE_KEY_ID` | no |  | Optional: private_key_id of the key. |
+| `GOOGLE_PLAY_ENVIRONMENT` | yes |  | test (accepts purchases made by licence testers) or live (grants nothing for them). |
+| `GOOGLE_PLAY_PUSH_AUDIENCE` | yes |  | Audience of the Pub/Sub push subscription; set with the service account e-mail, or Google Play webhooks are rejected. |
+| `GOOGLE_PLAY_PUSH_SERVICE_ACCOUNT_EMAIL` | yes |  | E-mail of the push subscription's authentication service account; set together with the audience. |
+| `GOOGLE_PLAY_ACCEPT_UNAUTHENTICATED_WEBHOOKS` | no |  | Optional: true to accept pushes without push authentication; only when the route is protected some other way. |
+| `GOOGLE_PLAY_REVOKE_ON_REFUND` | no |  | Optional: false to refund the money only; by default a refund also ends access and future payments (true). |
+| `GOOGLE_PLAY_CONSUMABLE_PRODUCT_IDS` | no |  | Optional: comma-separated product ids of consumable one-time products, consumed instead of acknowledged. |
+
+## Purchases
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PUBLIC_BASE_URL` | no |  | Where customers' browsers reach this service, for example https://billing.example.com (no trailing slash needed). The hosted checkout (/checkout/{sessionId}) and the gateways' return URLs are built on it; without it purchases carry no hostedUrl. |
+| `PURCHASES_FILE` | yes |  | Path of the purchases configuration, a JSON file {"catalog": [...], "policy": {...}, "routing": {...}}; policy and routing are optional. Unset: the /v1/purchases and /v1/entitlements routes answer with a configuration error and everything else works as before. |
+| `PURCHASE_STORE_FILE` | yes |  | Path of the purchase state file (sessions, entitlements, the report queue for Google; one JSON file, one service instance only). |
+
 ## Billing scheduler
 
 | Variable | Required | Default | Description |
@@ -130,6 +166,8 @@ Environment (serve):
     RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET [RAZORPAY_WEBHOOK_SECRET]
     CASHFREE_CLIENT_ID CASHFREE_CLIENT_SECRET CASHFREE_ENVIRONMENT [CASHFREE_WEBHOOK_SECRET]
     PAYU_KEY PAYU_SALT PAYU_ENVIRONMENT [PAYU_SUCCESS_URL PAYU_FAILURE_URL]
+    (PhonePe, Paytm, and the app stores APP_STORE_* and GOOGLE_PLAY_*: see .env.example)
+  PURCHASES_FILE, PURCHASE_STORE_FILE, PUBLIC_BASE_URL   purchase sessions, entitlements, hosted checkout (off without the files)
   SCHEDULER_STORE_FILE, SCHEDULER_TICK_SECONDS   billing scheduler (off without a store file)
   EVENTS_WEBHOOK_URL, EVENTS_WEBHOOK_SECRET   forward gateway events, signed
 ```

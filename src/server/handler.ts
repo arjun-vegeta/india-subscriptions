@@ -296,6 +296,8 @@ export function createHandler(options: HandlerOptions): FetchHandler {
       onEvents,
       openApiDocument,
     });
+    // A page or a redirect (the hosted checkout) is built by its handler, with its own headers.
+    if (result instanceof Response) return result;
     return jsonResponse(route.response.status, result);
   }
 

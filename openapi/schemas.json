@@ -2100,6 +2100,1199 @@
       ],
       "additionalProperties": false,
       "description": "An external transaction as Google holds it."
+    },
+    "RouteExclusion": {
+      "type": "string",
+      "enum": [
+        "wrong_product_kind",
+        "missing_capability",
+        "payment_method_unsupported",
+        "excluded_by_merchant",
+        "unhealthy",
+        "above_max_amount",
+        "below_min_amount"
+      ],
+      "description": "Why a gateway was ruled out: `wrong_product_kind` (no one-time payments), `missing_capability` (a `needs` flag it cannot meet), `payment_method_unsupported` (no overlap with the customer's methods), `excluded_by_merchant` (listed in `exclude`), `unhealthy` (circuit breaker open), `above_max_amount` and `below_min_amount` (the merchant's per-gateway amount bounds)."
+    },
+    "RouteOutcomeKind": {
+      "type": "string",
+      "enum": [
+        "authorization",
+        "charge",
+        "payment",
+        "request"
+      ],
+      "description": "What an outcome is about: `authorization` (a customer authorising a mandate), `charge` (a recurring debit), `payment` (a one-time payment) or `request` (any other call to the gateway)."
+    },
+    "RouteOutcomeResult": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failure",
+        "unavailable"
+      ],
+      "description": "`success`, `failure` (the gateway answered and the attempt did not succeed, such as a declined card) or `unavailable` (the gateway could not be reached or errored out; this feeds the circuit breaker)."
+    },
+    "CircuitState": {
+      "type": "string",
+      "enum": [
+        "closed",
+        "open",
+        "half_open"
+      ],
+      "description": "A gateway's circuit breaker: `closed` (normal), `open` (excluded until the cooldown passes) or `half_open` (a candidate again; one `unavailable` result reopens it, one `success` closes it)."
+    },
+    "RouteNeeds": {
+      "type": "object",
+      "properties": {
+        "trial": {
+          "description": "The gateway must support free trials.",
+          "type": "boolean"
+        },
+        "upfrontAmount": {
+          "description": "The gateway must be able to collect an upfront amount with the authorisation.",
+          "type": "boolean"
+        },
+        "quantity": {
+          "description": "The gateway must be able to bill several units of a plan.",
+          "type": "boolean"
+        },
+        "pause": {
+          "description": "The gateway must be able to pause a subscription.",
+          "type": "boolean"
+        },
+        "cancelAtPeriodEnd": {
+          "description": "The gateway must be able to cancel a subscription at the end of the paid period.",
+          "type": "boolean"
+        },
+        "changePlan": {
+          "description": "The gateway must be able to move a subscription to another plan.",
+          "type": "boolean"
+        },
+        "refunds": {
+          "description": "The gateway must be able to refund charges and payments.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Capabilities the purchase depends on. A flag set to `true` excludes every gateway whose capability of the same name is off; `false` or absent means the capability is not needed."
+    },
+    "RouteRequest": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Whether the purchase is a subscription or a one-time payment.",
+          "$ref": "#/$defs/ProductKind"
+        },
+        "amount": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "The amount in paise: the amount of every cycle for a subscription, the payment amount for a one-time payment. Checked against the merchant's per-gateway bounds and used to price fees."
+        },
+        "interval": {
+          "description": "How often a subscription bills. Accepted so a request can describe the whole plan; no gateway capability depends on it today, so it does not change the decision. Ignored for one-time payments.",
+          "$ref": "#/$defs/BillingInterval"
+        },
+        "paymentMethods": {
+          "description": "The payment methods the customer can use. A gateway is a candidate only if it offers at least one of them (its mandate methods for a subscription, its one-time methods for a one-time payment). Absent: any method.",
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PaymentMethod"
+          }
+        },
+        "needs": {
+          "description": "Capabilities the purchase depends on.",
+          "$ref": "#/$defs/RouteNeeds"
+        },
+        "exclude": {
+          "description": "Providers that must not be chosen, for example one that just failed this customer.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Provider"
+          }
+        },
+        "prefer": {
+          "description": "A provider to favour, for example the gateway the customer already has a mandate with. It earns a score bonus but is never chosen if a hard filter excludes it.",
+          "$ref": "#/$defs/Provider"
+        }
+      },
+      "required": [
+        "kind",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "description": "What is about to be sold, and what the gateway must be able to do for it."
+    },
+    "RouteFactors": {
+      "type": "object",
+      "properties": {
+        "successRate": {
+          "description": "The success rate used in the score, from 0 to 1: successes over all observations in the window, with missing observations below the minimum sample count filled in with the prior rate.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "samples": {
+          "description": "How many observations in the window the success rate is based on.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost": {
+          "description": "The gateway's estimated fee for this amount, in paise (fractional when it is the mean over several payment methods). Priced from the strategy's `costs`, or its `defaultCost` for a gateway without an entry.",
+          "type": "number",
+          "minimum": 0
+        },
+        "priority": {
+          "description": "The priority factor from 0 to 1: 1 for the first provider in the merchant's priority list, 0 for one that is not listed.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "healthy": {
+          "description": "`true` when the circuit is closed, `false` when it is half-open and the gateway is on probation.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "description": "The inputs behind a candidate's score."
+    },
+    "RouteCandidate": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The gateway.",
+          "$ref": "#/$defs/Provider"
+        },
+        "eligible": {
+          "type": "boolean",
+          "description": "`true` when no hard filter excluded the gateway."
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RouteExclusion"
+          },
+          "description": "Every hard filter that excluded the gateway; empty when it is eligible."
+        },
+        "details": {
+          "description": "A readable sentence for each entry of `exclusions`, in the same order. Absent when the gateway is eligible.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "score": {
+          "description": "The score of an eligible gateway; higher is better. Absent when excluded.",
+          "type": "number"
+        },
+        "factors": {
+          "description": "The inputs behind the score. Absent when excluded.",
+          "$ref": "#/$defs/RouteFactors"
+        }
+      },
+      "required": [
+        "provider",
+        "eligible",
+        "exclusions"
+      ],
+      "additionalProperties": false,
+      "description": "One gateway considered for a request, with the reason it was excluded or the score it earned."
+    },
+    "RoutingDecision": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The best gateway for the request: the first of `ranked`.",
+          "$ref": "#/$defs/Provider"
+        },
+        "ranked": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Provider"
+          },
+          "description": "Every eligible gateway, best first. Try them in this order when one fails to create the purchase."
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RouteCandidate"
+          },
+          "description": "Every gateway that was considered: the eligible ones in rank order, then the excluded ones by name."
+        }
+      },
+      "required": [
+        "provider",
+        "ranked",
+        "candidates"
+      ],
+      "additionalProperties": false,
+      "description": "The router's answer, with the reasoning behind it."
+    },
+    "RouteOutcome": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The gateway the attempt went to.",
+          "$ref": "#/$defs/Provider"
+        },
+        "kind": {
+          "description": "What the attempt was: an authorisation, a charge, a payment or another request.",
+          "$ref": "#/$defs/RouteOutcomeKind"
+        },
+        "result": {
+          "description": "How it ended: `success`, `failure` or `unavailable`.",
+          "$ref": "#/$defs/RouteOutcomeResult"
+        },
+        "paymentMethod": {
+          "description": "The payment method used, when known. It is recorded in addition to the gateway-wide figures.",
+          "$ref": "#/$defs/PaymentMethod"
+        },
+        "at": {
+          "description": "When the attempt ended. Defaults to the router's clock.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        }
+      },
+      "required": [
+        "provider",
+        "kind",
+        "result"
+      ],
+      "additionalProperties": false,
+      "description": "How one attempt at a gateway ended; report it to `Router.record` so routing learns."
+    },
+    "RoutingStrategy": {
+      "type": "object",
+      "properties": {
+        "weights": {
+          "type": "object",
+          "properties": {
+            "successRate": {
+              "default": 1,
+              "description": "Weight of the success rate (0 to 1). Default 1.",
+              "type": "number",
+              "minimum": 0
+            },
+            "cost": {
+              "default": 1,
+              "description": "Weight of the share of the amount kept after the gateway's fee (0 to 1). Default 1.",
+              "type": "number",
+              "minimum": 0
+            },
+            "priority": {
+              "default": 0.02,
+              "description": "Weight of the priority factor (0 to 1). Default 0.02.",
+              "type": "number",
+              "minimum": 0
+            },
+            "prefer": {
+              "default": 0.05,
+              "description": "Bonus added to the gateway named in the request's `prefer`. Default 0.05.",
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "successRate",
+            "cost",
+            "priority",
+            "prefer"
+          ],
+          "additionalProperties": false,
+          "description": "How much each factor counts. The score is the weighted sum of the factors plus the `prefer` bonus."
+        },
+        "successRate": {
+          "type": "object",
+          "properties": {
+            "windowHours": {
+              "default": 24,
+              "description": "How many hours of statistics to look at. Statistics are kept in whole UTC hours, so the window is rounded out to the hour. Default 24.",
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "minSamples": {
+              "default": 20,
+              "description": "Observations needed before the observed rate counts fully. Below it, the missing observations are filled in with `priorRate`. Default 20.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "priorRate": {
+              "default": 0.9,
+              "description": "The success rate assumed when nothing is known (0 to 1). Default 0.9.",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "kinds": {
+              "type": "object",
+              "properties": {
+                "subscription": {
+                  "default": [
+                    "authorization",
+                    "charge"
+                  ],
+                  "description": "Outcome kinds that count for a subscription. Default: `authorization` and `charge`.",
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/RouteOutcomeKind"
+                  }
+                },
+                "one_time": {
+                  "default": [
+                    "payment"
+                  ],
+                  "description": "Outcome kinds that count for a one-time payment. Default: `payment`.",
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/RouteOutcomeKind"
+                  }
+                }
+              },
+              "required": [
+                "subscription",
+                "one_time"
+              ],
+              "additionalProperties": false,
+              "description": "Which recorded outcome kinds make up the success rate, per product kind."
+            }
+          },
+          "required": [
+            "windowHours",
+            "minSamples",
+            "priorRate",
+            "kinds"
+          ],
+          "additionalProperties": false,
+          "description": "How the observed success rate is computed."
+        },
+        "costs": {
+          "default": {},
+          "description": "What each gateway charges the merchant. Absent for a gateway means `defaultCost` applies.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Provider"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "percentBps": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The percentage part of the fee in basis points of the amount: 200 is 2%."
+              },
+              "fixedPaise": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The fixed part of the fee in paise."
+              },
+              "methods": {
+                "description": "Fees that replace the gateway's own fee for a payment method (UPI is often cheaper than cards).",
+                "type": "object",
+                "propertyNames": {
+                  "$ref": "#/$defs/PaymentMethod"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "percentBps": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "The percentage part of the fee in basis points of the amount: 200 is 2%."
+                    },
+                    "fixedPaise": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "The fixed part of the fee in paise."
+                    }
+                  },
+                  "required": [
+                    "percentBps",
+                    "fixedPaise"
+                  ],
+                  "additionalProperties": false,
+                  "description": "A fee: a percentage of the amount plus a fixed amount."
+                }
+              }
+            },
+            "required": [
+              "percentBps",
+              "fixedPaise"
+            ],
+            "additionalProperties": false,
+            "description": "What a gateway charges the merchant: a fee, optionally different per payment method."
+          }
+        },
+        "defaultCost": {
+          "default": {
+            "percentBps": 0,
+            "fixedPaise": 0
+          },
+          "description": "The fee assumed for a gateway that has no entry in `costs`. Default: free, so list every gateway once you list any.",
+          "type": "object",
+          "properties": {
+            "percentBps": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The percentage part of the fee in basis points of the amount: 200 is 2%."
+            },
+            "fixedPaise": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The fixed part of the fee in paise."
+            }
+          },
+          "required": [
+            "percentBps",
+            "fixedPaise"
+          ],
+          "additionalProperties": false
+        },
+        "priority": {
+          "default": [],
+          "description": "Merchant preference order, most preferred first. Also breaks ties between equal scores.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Provider"
+          }
+        },
+        "limits": {
+          "default": {},
+          "description": "Per-gateway bounds on the amount the merchant routes there.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Provider"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "minAmount": {
+                "description": "The smallest amount, in paise, the merchant sends to this gateway.",
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "maxAmount": {
+                "description": "The largest amount, in paise, the merchant sends to this gateway, for example the per-debit ceiling a mandate allows without extra authentication.",
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "description": "The amounts the merchant is willing to route to a gateway. Applies to subscriptions and one-time payments alike."
+          }
+        },
+        "circuitBreaker": {
+          "type": "object",
+          "properties": {
+            "failureThreshold": {
+              "default": 5,
+              "description": "Consecutive `unavailable` results that open the circuit. Default 5.",
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "cooldownMs": {
+              "default": 60000,
+              "description": "Milliseconds an open circuit waits before it half-opens. Default 60000.",
+              "type": "integer",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "failureThreshold",
+            "cooldownMs"
+          ],
+          "additionalProperties": false,
+          "description": "When a gateway that keeps being unavailable is taken out of rotation, and when it is let back in."
+        }
+      },
+      "required": [
+        "weights",
+        "successRate",
+        "costs",
+        "defaultCost",
+        "priority",
+        "limits",
+        "circuitBreaker"
+      ],
+      "additionalProperties": false,
+      "description": "How the router decides: the weights of the score, the merchant's fees, priorities and limits, and the circuit breaker."
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "open",
+        "awaiting_payment",
+        "completed",
+        "failed",
+        "expired"
+      ],
+      "description": "`open` (the customer has not come back from checkout), `awaiting_payment` (paid or approved but not confirmed yet, or the gateway checkout of a user choice billing purchase is under way), `completed`, `failed` (a verification said not paid; a later payment still completes it) or `expired` (a payment confirmed afterwards still completes it)."
+    },
+    "EntitlementStatus": {
+      "type": "string",
+      "enum": [
+        "active",
+        "trialing",
+        "past_due",
+        "paused",
+        "halted",
+        "cancelled",
+        "expired",
+        "refunded"
+      ],
+      "description": "`active`, `trialing` and `past_due` give access; `paused`, `halted`, `cancelled`, `expired` and `refunded` do not. A subscription cancelled at the end of its period stays `active` with `cancelAtPeriodEnd` set until the period ends."
+    },
+    "ReportKind": {
+      "type": "string",
+      "enum": [
+        "transaction",
+        "refund"
+      ],
+      "description": "`transaction` reports a purchase, a free trial or a renewal to Google; `refund` reports a refund."
+    },
+    "ReportStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "sent",
+        "rejected"
+      ],
+      "description": "`queued` (waiting to be sent), `sent` (Google accepted it) or `rejected` (Google refused it as invalid; never retried)."
+    },
+    "FlushOutcome": {
+      "type": "string",
+      "enum": [
+        "sent",
+        "retrying",
+        "blocked",
+        "rejected",
+        "no_reporter"
+      ],
+      "description": "What a flush did with a report: `sent`, `retrying` (failed, tried again after a backoff), `blocked` (waiting for the report it refers to), `rejected` (invalid, never retried) or `no_reporter` (nothing configured to send with)."
+    },
+    "AttemptOutcome": {
+      "type": "string",
+      "enum": [
+        "created",
+        "failed"
+      ],
+      "description": "`created` or `failed`."
+    },
+    "ProductPlan": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "description": "Plan description.",
+          "type": "string",
+          "maxLength": 500
+        },
+        "scheduling": {
+          "description": "Who raises each charge. Defaults to the gateway's native mode.",
+          "$ref": "#/$defs/SchedulingMode"
+        },
+        "maxAmount": {
+          "description": "Ceiling the mandate allows per debit, in paise. Defaults to the product `amount`.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "maxCycles": {
+          "description": "Number of cycles after which the plan ends. Omit for open-ended.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "metadata": {
+          "description": "Free-form key/value pairs stored with the plan.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "Extra plan fields passed to a gateway when a subscription of the product is created. The name, amount and interval come from the product."
+    },
+    "Product": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Your product key. Purchases, sessions and entitlements refer to it."
+        },
+        "kind": {
+          "description": "`subscription` or `one_time`.",
+          "$ref": "#/$defs/ProductKind"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Product name, shown to the customer by the gateways."
+        },
+        "amount": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Price on gateways in paise, tax included."
+        },
+        "interval": {
+          "description": "How often a subscription bills. Required for subscriptions.",
+          "$ref": "#/$defs/BillingInterval"
+        },
+        "trialDays": {
+          "description": "Free trial length in days on gateways (only gateways that support trials are chosen). Stores use their own offers.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "taxRateBps": {
+          "description": "Tax included in `amount`, in basis points (1800 is 18%). Required for products sold through Google Play user choice billing: reports to Google split the charge into a pre-tax amount and tax.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "physicalGoods": {
+          "description": "True: the product is never sold through app store billing and goes to the gateways on every platform.",
+          "type": "boolean"
+        },
+        "platforms": {
+          "description": "The platforms the product is sold on. Omit for all of them.",
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Platform"
+          }
+        },
+        "paymentMethods": {
+          "description": "Restrict gateway purchases of the product to these payment methods. Only gateways that offer one of them are chosen, and the gateway is told to offer only these. Omit to allow every method the gateway supports.",
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PaymentMethod"
+          }
+        },
+        "appStore": {
+          "description": "The product in App Store Connect. Required to sell on iOS.",
+          "$ref": "#/$defs/StoreProduct"
+        },
+        "googlePlay": {
+          "description": "The product in Play Console. Required to sell on Android when the policy is `store` or `user_choice`.",
+          "$ref": "#/$defs/StoreProduct"
+        },
+        "plan": {
+          "description": "Extra plan fields for gateway subscriptions, such as `maxAmount`.",
+          "$ref": "#/$defs/ProductPlan"
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "name",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "description": "A product you sell, with its price and where it lives in each store."
+    },
+    "PlatformPolicy": {
+      "type": "object",
+      "properties": {
+        "ios": {
+          "default": "store",
+          "description": "iOS: App Store only.",
+          "type": "string",
+          "const": "store"
+        },
+        "android": {
+          "default": "store",
+          "description": "Android: `store` (Google Play only), `user_choice` (Google Play with its choice screen offering a gateway, reported to Google) or `gateways` (apps distributed outside Google Play).",
+          "$ref": "#/$defs/ChannelPolicy"
+        },
+        "web": {
+          "default": "gateways",
+          "description": "Web: payment gateways only.",
+          "type": "string",
+          "const": "gateways"
+        }
+      },
+      "required": [
+        "ios",
+        "android",
+        "web"
+      ],
+      "additionalProperties": false,
+      "description": "Where purchases on each platform may be taken."
+    },
+    "PurchaseOption": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "description": "`store` for an app store, `gateway` for a payment gateway.",
+          "$ref": "#/$defs/SalesChannel"
+        },
+        "provider": {
+          "description": "The provider that holds the purchase.",
+          "$ref": "#/$defs/Provider"
+        },
+        "checkout": {
+          "description": "What the browser or device must do to pay.",
+          "$ref": "#/$defs/CheckoutInstruction"
+        },
+        "handle": {
+          "type": "string",
+          "description": "The id the provider returned when the purchase was created: the id to expect back from the checkout. For a store it is the account token."
+        },
+        "routing": {
+          "description": "Why this gateway was chosen. Present on gateway options.",
+          "$ref": "#/$defs/RoutingDecision"
+        },
+        "hostedUrl": {
+          "description": "A page that performs this option's checkout step, for a client that cannot run the browser helper (the Android alternative path opens it in a browser tab). Present on gateway options when the service serves a hosted checkout.",
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "required": [
+        "channel",
+        "provider",
+        "checkout",
+        "handle"
+      ],
+      "additionalProperties": false,
+      "description": "One way the customer can pay for the session."
+    },
+    "PurchaseAttempt": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The gateway that was tried.",
+          "$ref": "#/$defs/Provider"
+        },
+        "outcome": {
+          "description": "Whether the gateway created the order or mandate.",
+          "$ref": "#/$defs/AttemptOutcome"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "description": "When the attempt was made."
+        },
+        "errorCode": {
+          "description": "The error code of a failed attempt.",
+          "type": "string"
+        },
+        "message": {
+          "description": "The error message of a failed attempt.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "outcome",
+        "at"
+      ],
+      "additionalProperties": false,
+      "description": "One gateway tried while creating the purchase."
+    },
+    "PurchaseSession": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The session id. Unguessable: whoever holds it can complete the session."
+        },
+        "platform": {
+          "description": "The platform the customer buys on.",
+          "$ref": "#/$defs/Platform"
+        },
+        "product": {
+          "type": "string",
+          "description": "The key of the product."
+        },
+        "policy": {
+          "description": "The channel policy the session was resolved with: `store`, `user_choice` or `gateways`.",
+          "$ref": "#/$defs/ChannelPolicy"
+        },
+        "status": {
+          "description": "Where the session is.",
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "customerRef": {
+          "type": "string",
+          "description": "Your id for the customer."
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 25,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Your own id for the purchase: at most 25 characters of letters, digits, `_` and `-`, the tightest limit among the gateways. Retrying a start with the same reference and customer returns the same session."
+        },
+        "returnUrl": {
+          "description": "Where the customer is sent when the purchase is done: the `returnUrl` given to `start`.",
+          "type": "string",
+          "format": "uri"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PurchaseOption"
+          },
+          "description": "How the customer can pay. A `user_choice` session has the Google Play option first and the gateway option once the customer chose the alternative."
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PurchaseAttempt"
+          },
+          "description": "Every gateway tried while creating the gateway option, in order."
+        },
+        "externalTransactionToken": {
+          "description": "Set when the customer chose the alternative payment on Google's screen.",
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "description": "When the session was created."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "description": "When an unpaid session expires."
+        },
+        "completedAt": {
+          "description": "When the session completed.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "subscriptionId": {
+          "description": "The provider's subscription id, once the purchase is confirmed.",
+          "type": "string"
+        },
+        "paymentId": {
+          "description": "The provider's payment id, once the purchase is confirmed.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "The provider the purchase was confirmed at.",
+          "$ref": "#/$defs/Provider"
+        }
+      },
+      "required": [
+        "id",
+        "platform",
+        "product",
+        "policy",
+        "status",
+        "customerRef",
+        "reference",
+        "options",
+        "attempts",
+        "createdAt",
+        "expiresAt"
+      ],
+      "additionalProperties": false,
+      "description": "A purchase in progress or done: where the customer may pay and how it ended."
+    },
+    "EntitlementItem": {
+      "type": "object",
+      "properties": {
+        "product": {
+          "type": "string",
+          "description": "The key of the product."
+        },
+        "kind": {
+          "description": "`subscription` or `one_time`.",
+          "$ref": "#/$defs/ProductKind"
+        },
+        "provider": {
+          "description": "The provider that holds the purchase.",
+          "$ref": "#/$defs/Provider"
+        },
+        "channel": {
+          "description": "`store` or `gateway`.",
+          "$ref": "#/$defs/SalesChannel"
+        },
+        "platform": {
+          "description": "The platform the customer bought on.",
+          "$ref": "#/$defs/Platform"
+        },
+        "subscriptionId": {
+          "description": "The provider's subscription id.",
+          "type": "string"
+        },
+        "paymentId": {
+          "description": "The provider's payment id.",
+          "type": "string"
+        },
+        "status": {
+          "description": "What the customer has.",
+          "$ref": "#/$defs/EntitlementStatus"
+        },
+        "active": {
+          "type": "boolean",
+          "description": "True when the item gives access now."
+        },
+        "cancelAtPeriodEnd": {
+          "description": "True when the subscription ends at the end of the current period.",
+          "type": "boolean"
+        },
+        "currentPeriodEnd": {
+          "description": "End of the current paid period, where known.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "description": "When the item last changed."
+        }
+      },
+      "required": [
+        "product",
+        "kind",
+        "provider",
+        "channel",
+        "platform",
+        "status",
+        "active",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "description": "One purchase the customer owns or owned."
+    },
+    "Entitlements": {
+      "type": "object",
+      "properties": {
+        "customerRef": {
+          "type": "string",
+          "description": "Your id for the customer."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "True when at least one item gives access now."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntitlementItem"
+          },
+          "description": "Every purchase of the customer, newest change first, including ended ones."
+        }
+      },
+      "required": [
+        "customerRef",
+        "active",
+        "items"
+      ],
+      "additionalProperties": false,
+      "description": "What a customer owns, across app stores and gateways."
+    },
+    "StartPurchaseInput": {
+      "type": "object",
+      "properties": {
+        "platform": {
+          "description": "The platform the customer buys on.",
+          "$ref": "#/$defs/Platform"
+        },
+        "product": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The key of the product."
+        },
+        "customer": {
+          "description": "The paying customer. `state` is required when the platform policy is `user_choice`, because the purchase is then reported to Google.",
+          "$ref": "#/$defs/Customer"
+        },
+        "customerRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Your id for the customer: entitlements are kept under it."
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 25,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Your own id for the purchase: at most 25 characters of letters, digits, `_` and `-`, the tightest limit among the gateways. Retrying a start with the same reference and customer returns the same session."
+        },
+        "returnUrl": {
+          "description": "Where a gateway sends the customer after paying.",
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "required": [
+        "platform",
+        "product",
+        "customer",
+        "customerRef"
+      ],
+      "additionalProperties": false,
+      "description": "Everything needed to start a purchase."
+    },
+    "ChooseAlternativeInput": {
+      "type": "object",
+      "properties": {
+        "externalTransactionToken": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The token Google gave the app when the customer chose the alternative on its choice screen."
+        }
+      },
+      "required": [
+        "externalTransactionToken"
+      ],
+      "additionalProperties": false,
+      "description": "The customer's choice of the alternative payment on Google's screen."
+    },
+    "CompletePurchaseInput": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The provider the customer paid at.",
+          "$ref": "#/$defs/Provider"
+        },
+        "result": {
+          "description": "What the provider handed back to the browser or device, untouched.",
+          "$ref": "#/$defs/CheckoutResult"
+        }
+      },
+      "required": [
+        "provider",
+        "result"
+      ],
+      "additionalProperties": false,
+      "description": "The result of a checkout, to complete a purchase session with."
+    },
+    "FlushOptions": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "description": "Most reports to send in this flush. Defaults to 50.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      },
+      "additionalProperties": false,
+      "description": "Options for sending queued reports."
+    },
+    "FlushEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The report id."
+        },
+        "kind": {
+          "description": "A transaction or a refund.",
+          "$ref": "#/$defs/ReportKind"
+        },
+        "outcome": {
+          "description": "What the flush did with the report. Absent for an overdue report this flush did not try.",
+          "$ref": "#/$defs/FlushOutcome"
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Attempts made so far, including this one."
+        },
+        "dueBy": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "description": "When Google must have the report."
+        },
+        "overdue": {
+          "type": "boolean",
+          "description": "True when the report was not sent by `dueBy`."
+        },
+        "errorCode": {
+          "description": "The error code of a failed attempt.",
+          "type": "string"
+        },
+        "errorMessage": {
+          "description": "The error message of a failed attempt.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "attempts",
+        "dueBy",
+        "overdue"
+      ],
+      "additionalProperties": false,
+      "description": "What a flush did with one report."
+    },
+    "FlushResult": {
+      "type": "object",
+      "properties": {
+        "sent": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reports Google accepted in this flush."
+        },
+        "retrying": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reports whose attempt failed and that stay queued with a backoff."
+        },
+        "blocked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reports waiting for an earlier report to be sent."
+        },
+        "rejected": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reports Google refused as invalid. They are not retried."
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reports left queued because no reporter is configured."
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FlushEntry"
+          },
+          "description": "One entry per report this flush looked at."
+        },
+        "overdue": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FlushEntry"
+          },
+          "description": "Every queued report past its `dueBy`, whether or not this flush tried it. Page someone when this is not empty."
+        }
+      },
+      "required": [
+        "sent",
+        "retrying",
+        "blocked",
+        "rejected",
+        "skipped",
+        "entries",
+        "overdue"
+      ],
+      "additionalProperties": false,
+      "description": "The outcome of sending queued reports to Google."
     }
   }
 }

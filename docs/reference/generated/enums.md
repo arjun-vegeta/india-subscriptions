@@ -240,6 +240,118 @@ Normalised status of a one-time payment. The gateway's own status is preserved v
 | `PaymentStatus.Refunded` | `refunded` |  |
 | `PaymentStatus.PartiallyRefunded` | `partially_refunded` |  |
 
+### RouteExclusion
+
+Why a gateway was ruled out: `wrong_product_kind` (no one-time payments), `missing_capability` (a `needs` flag it cannot meet), `payment_method_unsupported` (no overlap with the customer's methods), `excluded_by_merchant` (listed in `exclude`), `unhealthy` (circuit breaker open), `above_max_amount` and `below_min_amount` (the merchant's per-gateway amount bounds).
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `wrong_product_kind` |  |
+|  | `missing_capability` |  |
+|  | `payment_method_unsupported` |  |
+|  | `excluded_by_merchant` |  |
+|  | `unhealthy` |  |
+|  | `above_max_amount` |  |
+|  | `below_min_amount` |  |
+
+### RouteOutcomeKind
+
+What an outcome is about: `authorization` (a customer authorising a mandate), `charge` (a recurring debit), `payment` (a one-time payment) or `request` (any other call to the gateway).
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `authorization` |  |
+|  | `charge` |  |
+|  | `payment` |  |
+|  | `request` |  |
+
+### RouteOutcomeResult
+
+`success`, `failure` (the gateway answered and the attempt did not succeed, such as a declined card) or `unavailable` (the gateway could not be reached or errored out; this feeds the circuit breaker).
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `success` |  |
+|  | `failure` |  |
+|  | `unavailable` |  |
+
+### CircuitState
+
+A gateway's circuit breaker: `closed` (normal), `open` (excluded until the cooldown passes) or `half_open` (a candidate again; one `unavailable` result reopens it, one `success` closes it).
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `closed` |  |
+|  | `open` |  |
+|  | `half_open` |  |
+
+### SessionStatus
+
+`open` (the customer has not come back from checkout), `awaiting_payment` (paid or approved but not confirmed yet, or the gateway checkout of a user choice billing purchase is under way), `completed`, `failed` (a verification said not paid; a later payment still completes it) or `expired` (a payment confirmed afterwards still completes it).
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `open` |  |
+|  | `awaiting_payment` |  |
+|  | `completed` |  |
+|  | `failed` |  |
+|  | `expired` |  |
+
+### EntitlementStatus
+
+`active`, `trialing` and `past_due` give access; `paused`, `halted`, `cancelled`, `expired` and `refunded` do not. A subscription cancelled at the end of its period stays `active` with `cancelAtPeriodEnd` set until the period ends.
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `active` |  |
+|  | `trialing` |  |
+|  | `past_due` |  |
+|  | `paused` |  |
+|  | `halted` |  |
+|  | `cancelled` |  |
+|  | `expired` |  |
+|  | `refunded` |  |
+
+### ReportKind
+
+`transaction` reports a purchase, a free trial or a renewal to Google; `refund` reports a refund.
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `transaction` |  |
+|  | `refund` |  |
+
+### ReportStatus
+
+`queued` (waiting to be sent), `sent` (Google accepted it) or `rejected` (Google refused it as invalid; never retried).
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `queued` |  |
+|  | `sent` |  |
+|  | `rejected` |  |
+
+### FlushOutcome
+
+What a flush did with a report: `sent`, `retrying` (failed, tried again after a backoff), `blocked` (waiting for the report it refers to), `rejected` (invalid, never retried) or `no_reporter` (nothing configured to send with).
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `sent` |  |
+|  | `retrying` |  |
+|  | `blocked` |  |
+|  | `rejected` |  |
+|  | `no_reporter` |  |
+
+### AttemptOutcome
+
+`created` or `failed`.
+
+| Constant | Value | Meaning |
+|---|---|---|
+|  | `created` |  |
+|  | `failed` |  |
+
 ### ErrorCode
 
 A stable error code: one of the library's `ErrorCode`s or one of the service's own (`UNAUTHORIZED`, `METHOD_NOT_ALLOWED`, `PAYLOAD_TOO_LARGE`). Branch on this, never on the message.

@@ -576,6 +576,282 @@ An external transaction as Google holds it.
 | `state` | string | yes | The state Google holds the transaction in, verbatim. |
 | `raw` | any JSON value | no | The gateway's response, untouched. Absent when the gateway returned no body. |
 
+### RouteNeeds
+
+Capabilities the purchase depends on. A flag set to `true` excludes every gateway whose capability of the same name is off; `false` or absent means the capability is not needed.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `trial` | boolean | no | The gateway must support free trials. |
+| `upfrontAmount` | boolean | no | The gateway must be able to collect an upfront amount with the authorisation. |
+| `quantity` | boolean | no | The gateway must be able to bill several units of a plan. |
+| `pause` | boolean | no | The gateway must be able to pause a subscription. |
+| `cancelAtPeriodEnd` | boolean | no | The gateway must be able to cancel a subscription at the end of the paid period. |
+| `changePlan` | boolean | no | The gateway must be able to move a subscription to another plan. |
+| `refunds` | boolean | no | The gateway must be able to refund charges and payments. |
+
+### RouteRequest
+
+What is about to be sold, and what the gateway must be able to do for it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | [ProductKind](enums.md#productkind) | yes | Whether the purchase is a subscription or a one-time payment. |
+| `amount` | integer; greater than 0 | yes | The amount in paise: the amount of every cycle for a subscription, the payment amount for a one-time payment. Checked against the merchant's per-gateway bounds and used to price fees. |
+| `interval` | [BillingInterval](#billinginterval) | no | How often a subscription bills. Accepted so a request can describe the whole plan; no gateway capability depends on it today, so it does not change the decision. Ignored for one-time payments. |
+| `paymentMethods` | array of [PaymentMethod](enums.md#paymentmethod) | no | The payment methods the customer can use. A gateway is a candidate only if it offers at least one of them (its mandate methods for a subscription, its one-time methods for a one-time payment). Absent: any method. |
+| `needs` | [RouteNeeds](#routeneeds) | no | Capabilities the purchase depends on. |
+| `exclude` | array of [Provider](enums.md#provider) | no | Providers that must not be chosen, for example one that just failed this customer. |
+| `prefer` | [Provider](enums.md#provider) | no | A provider to favour, for example the gateway the customer already has a mandate with. It earns a score bonus but is never chosen if a hard filter excludes it. |
+
+### RouteFactors
+
+The inputs behind a candidate's score.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `successRate` | number; 0 to 1 | no | The success rate used in the score, from 0 to 1: successes over all observations in the window, with missing observations below the minimum sample count filled in with the prior rate. |
+| `samples` | integer; at least 0 | no | How many observations in the window the success rate is based on. |
+| `cost` | number; at least 0 | no | The gateway's estimated fee for this amount, in paise (fractional when it is the mean over several payment methods). Priced from the strategy's `costs`, or its `defaultCost` for a gateway without an entry. |
+| `priority` | number; 0 to 1 | no | The priority factor from 0 to 1: 1 for the first provider in the merchant's priority list, 0 for one that is not listed. |
+| `healthy` | boolean | no | `true` when the circuit is closed, `false` when it is half-open and the gateway is on probation. |
+
+### RouteCandidate
+
+One gateway considered for a request, with the reason it was excluded or the score it earned.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | [Provider](enums.md#provider) | yes | The gateway. |
+| `eligible` | boolean | yes | `true` when no hard filter excluded the gateway. |
+| `exclusions` | array of [RouteExclusion](enums.md#routeexclusion) | yes | Every hard filter that excluded the gateway; empty when it is eligible. |
+| `details` | array of string | no | A readable sentence for each entry of `exclusions`, in the same order. Absent when the gateway is eligible. |
+| `score` | number | no | The score of an eligible gateway; higher is better. Absent when excluded. |
+| `factors` | [RouteFactors](#routefactors) | no | The inputs behind the score. Absent when excluded. |
+
+### RoutingDecision
+
+The router's answer, with the reasoning behind it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | [Provider](enums.md#provider) | yes | The best gateway for the request: the first of `ranked`. |
+| `ranked` | array of [Provider](enums.md#provider) | yes | Every eligible gateway, best first. Try them in this order when one fails to create the purchase. |
+| `candidates` | array of [RouteCandidate](#routecandidate) | yes | Every gateway that was considered: the eligible ones in rank order, then the excluded ones by name. |
+
+### RouteOutcome
+
+How one attempt at a gateway ended; report it to `Router.record` so routing learns.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | [Provider](enums.md#provider) | yes | The gateway the attempt went to. |
+| `kind` | [RouteOutcomeKind](enums.md#routeoutcomekind) | yes | What the attempt was: an authorisation, a charge, a payment or another request. |
+| `result` | [RouteOutcomeResult](enums.md#routeoutcomeresult) | yes | How it ended: `success`, `failure` or `unavailable`. |
+| `paymentMethod` | [PaymentMethod](enums.md#paymentmethod) | no | The payment method used, when known. It is recorded in addition to the gateway-wide figures. |
+| `at` | string (date-time) | no | When the attempt ended. Defaults to the router's clock. |
+
+### RoutingStrategy
+
+How the router decides: the weights of the score, the merchant's fees, priorities and limits, and the circuit breaker.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `weights` | object | yes | How much each factor counts. The score is the weighted sum of the factors plus the `prefer` bonus. |
+| `successRate` | object | yes | How the observed success rate is computed. |
+| `costs` | map of string to object | yes | What each gateway charges the merchant. Absent for a gateway means `defaultCost` applies. |
+| `defaultCost` | object | yes | The fee assumed for a gateway that has no entry in `costs`. Default: free, so list every gateway once you list any. |
+| `priority` | array of [Provider](enums.md#provider) | yes | Merchant preference order, most preferred first. Also breaks ties between equal scores. |
+| `limits` | map of string to object | yes | Per-gateway bounds on the amount the merchant routes there. |
+| `circuitBreaker` | object | yes | When a gateway that keeps being unavailable is taken out of rotation, and when it is let back in. |
+
+### ProductPlan
+
+Extra plan fields passed to a gateway when a subscription of the product is created. The name, amount and interval come from the product.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `description` | string; at most 500 characters | no | Plan description. |
+| `scheduling` | [SchedulingMode](enums.md#schedulingmode) | no | Who raises each charge. Defaults to the gateway's native mode. |
+| `maxAmount` | integer; greater than 0 | no | Ceiling the mandate allows per debit, in paise. Defaults to the product `amount`. |
+| `maxCycles` | integer; greater than 0 | no | Number of cycles after which the plan ends. Omit for open-ended. |
+| `metadata` | map of string to string | no | Free-form key/value pairs stored with the plan. |
+
+### Product
+
+A product you sell, with its price and where it lives in each store.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | string; 1 to 60 characters | yes | Your product key. Purchases, sessions and entitlements refer to it. |
+| `kind` | [ProductKind](enums.md#productkind) | yes | `subscription` or `one_time`. |
+| `name` | string; 1 to 100 characters | yes | Product name, shown to the customer by the gateways. |
+| `amount` | integer; greater than 0 | yes | Price on gateways in paise, tax included. |
+| `interval` | [BillingInterval](#billinginterval) | no | How often a subscription bills. Required for subscriptions. |
+| `trialDays` | integer; greater than 0 | no | Free trial length in days on gateways (only gateways that support trials are chosen). Stores use their own offers. |
+| `taxRateBps` | integer; at least 0 | no | Tax included in `amount`, in basis points (1800 is 18%). Required for products sold through Google Play user choice billing: reports to Google split the charge into a pre-tax amount and tax. |
+| `physicalGoods` | boolean | no | True: the product is never sold through app store billing and goes to the gateways on every platform. |
+| `platforms` | array of [Platform](enums.md#platform) | no | The platforms the product is sold on. Omit for all of them. |
+| `paymentMethods` | array of [PaymentMethod](enums.md#paymentmethod) | no | Restrict gateway purchases of the product to these payment methods. Only gateways that offer one of them are chosen, and the gateway is told to offer only these. Omit to allow every method the gateway supports. |
+| `appStore` | [StoreProduct](#storeproduct) | no | The product in App Store Connect. Required to sell on iOS. |
+| `googlePlay` | [StoreProduct](#storeproduct) | no | The product in Play Console. Required to sell on Android when the policy is `store` or `user_choice`. |
+| `plan` | [ProductPlan](#productplan) | no | Extra plan fields for gateway subscriptions, such as `maxAmount`. |
+
+### PlatformPolicy
+
+Where purchases on each platform may be taken.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ios` | `"store"` | yes | iOS: App Store only. |
+| `android` | [ChannelPolicy](enums.md#channelpolicy) | yes | Android: `store` (Google Play only), `user_choice` (Google Play with its choice screen offering a gateway, reported to Google) or `gateways` (apps distributed outside Google Play). |
+| `web` | `"gateways"` | yes | Web: payment gateways only. |
+
+### PurchaseOption
+
+One way the customer can pay for the session.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `channel` | [SalesChannel](enums.md#saleschannel) | yes | `store` for an app store, `gateway` for a payment gateway. |
+| `provider` | [Provider](enums.md#provider) | yes | The provider that holds the purchase. |
+| `checkout` | [CheckoutInstruction](#checkoutinstruction) | yes | What the browser or device must do to pay. |
+| `handle` | string | yes | The id the provider returned when the purchase was created: the id to expect back from the checkout. For a store it is the account token. |
+| `routing` | [RoutingDecision](#routingdecision) | no | Why this gateway was chosen. Present on gateway options. |
+| `hostedUrl` | string (uri) | no | A page that performs this option's checkout step, for a client that cannot run the browser helper (the Android alternative path opens it in a browser tab). Present on gateway options when the service serves a hosted checkout. |
+
+### PurchaseAttempt
+
+One gateway tried while creating the purchase.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | [Provider](enums.md#provider) | yes | The gateway that was tried. |
+| `outcome` | [AttemptOutcome](enums.md#attemptoutcome) | yes | Whether the gateway created the order or mandate. |
+| `at` | string (date-time) | yes | When the attempt was made. |
+| `errorCode` | string | no | The error code of a failed attempt. |
+| `message` | string | no | The error message of a failed attempt. |
+
+### PurchaseSession
+
+A purchase in progress or done: where the customer may pay and how it ended.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | The session id. Unguessable: whoever holds it can complete the session. |
+| `platform` | [Platform](enums.md#platform) | yes | The platform the customer buys on. |
+| `product` | string | yes | The key of the product. |
+| `policy` | [ChannelPolicy](enums.md#channelpolicy) | yes | The channel policy the session was resolved with: `store`, `user_choice` or `gateways`. |
+| `status` | [SessionStatus](enums.md#sessionstatus) | yes | Where the session is. |
+| `customerRef` | string | yes | Your id for the customer. |
+| `reference` | string; 1 to 25 characters, pattern `^[A-Za-z0-9_-]+$` | yes | Your own id for the purchase: at most 25 characters of letters, digits, `_` and `-`, the tightest limit among the gateways. Retrying a start with the same reference and customer returns the same session. |
+| `returnUrl` | string (uri) | no | Where the customer is sent when the purchase is done: the `returnUrl` given to `start`. |
+| `options` | array of [PurchaseOption](#purchaseoption) | yes | How the customer can pay. A `user_choice` session has the Google Play option first and the gateway option once the customer chose the alternative. |
+| `attempts` | array of [PurchaseAttempt](#purchaseattempt) | yes | Every gateway tried while creating the gateway option, in order. |
+| `externalTransactionToken` | string | no | Set when the customer chose the alternative payment on Google's screen. |
+| `createdAt` | string (date-time) | yes | When the session was created. |
+| `expiresAt` | string (date-time) | yes | When an unpaid session expires. |
+| `completedAt` | string (date-time) | no | When the session completed. |
+| `subscriptionId` | string | no | The provider's subscription id, once the purchase is confirmed. |
+| `paymentId` | string | no | The provider's payment id, once the purchase is confirmed. |
+| `provider` | [Provider](enums.md#provider) | no | The provider the purchase was confirmed at. |
+
+### EntitlementItem
+
+One purchase the customer owns or owned.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `product` | string | yes | The key of the product. |
+| `kind` | [ProductKind](enums.md#productkind) | yes | `subscription` or `one_time`. |
+| `provider` | [Provider](enums.md#provider) | yes | The provider that holds the purchase. |
+| `channel` | [SalesChannel](enums.md#saleschannel) | yes | `store` or `gateway`. |
+| `platform` | [Platform](enums.md#platform) | yes | The platform the customer bought on. |
+| `subscriptionId` | string | no | The provider's subscription id. |
+| `paymentId` | string | no | The provider's payment id. |
+| `status` | [EntitlementStatus](enums.md#entitlementstatus) | yes | What the customer has. |
+| `active` | boolean | yes | True when the item gives access now. |
+| `cancelAtPeriodEnd` | boolean | no | True when the subscription ends at the end of the current period. |
+| `currentPeriodEnd` | string (date-time) | no | End of the current paid period, where known. |
+| `updatedAt` | string (date-time) | yes | When the item last changed. |
+
+### Entitlements
+
+What a customer owns, across app stores and gateways.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `customerRef` | string | yes | Your id for the customer. |
+| `active` | boolean | yes | True when at least one item gives access now. |
+| `items` | array of [EntitlementItem](#entitlementitem) | yes | Every purchase of the customer, newest change first, including ended ones. |
+
+### StartPurchaseInput
+
+Everything needed to start a purchase.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `platform` | [Platform](enums.md#platform) | yes | The platform the customer buys on. |
+| `product` | string; not empty | yes | The key of the product. |
+| `customer` | [Customer](#customer) | yes | The paying customer. `state` is required when the platform policy is `user_choice`, because the purchase is then reported to Google. |
+| `customerRef` | string; 1 to 128 characters | yes | Your id for the customer: entitlements are kept under it. |
+| `reference` | string; 1 to 25 characters, pattern `^[A-Za-z0-9_-]+$` | no | Your own id for the purchase: at most 25 characters of letters, digits, `_` and `-`, the tightest limit among the gateways. Retrying a start with the same reference and customer returns the same session. |
+| `returnUrl` | string (uri) | no | Where a gateway sends the customer after paying. |
+
+### ChooseAlternativeInput
+
+The customer's choice of the alternative payment on Google's screen.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `externalTransactionToken` | string; not empty | yes | The token Google gave the app when the customer chose the alternative on its choice screen. |
+
+### CompletePurchaseInput
+
+The result of a checkout, to complete a purchase session with.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | [Provider](enums.md#provider) | yes | The provider the customer paid at. |
+| `result` | [CheckoutResult](#checkoutresult) | yes | What the provider handed back to the browser or device, untouched. |
+
+### FlushOptions
+
+Options for sending queued reports.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `limit` | integer; 1 to 500 | no | Most reports to send in this flush. Defaults to 50. |
+
+### FlushEntry
+
+What a flush did with one report.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | The report id. |
+| `kind` | [ReportKind](enums.md#reportkind) | yes | A transaction or a refund. |
+| `outcome` | [FlushOutcome](enums.md#flushoutcome) | no | What the flush did with the report. Absent for an overdue report this flush did not try. |
+| `attempts` | integer; at least 0 | yes | Attempts made so far, including this one. |
+| `dueBy` | string (date-time) | yes | When Google must have the report. |
+| `overdue` | boolean | yes | True when the report was not sent by `dueBy`. |
+| `errorCode` | string | no | The error code of a failed attempt. |
+| `errorMessage` | string | no | The error message of a failed attempt. |
+
+### FlushResult
+
+The outcome of sending queued reports to Google.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sent` | integer; at least 0 | yes | Reports Google accepted in this flush. |
+| `retrying` | integer; at least 0 | yes | Reports whose attempt failed and that stay queued with a backoff. |
+| `blocked` | integer; at least 0 | yes | Reports waiting for an earlier report to be sent. |
+| `rejected` | integer; at least 0 | yes | Reports Google refused as invalid. They are not retried. |
+| `skipped` | integer; at least 0 | yes | Reports left queued because no reporter is configured. |
+| `entries` | array of [FlushEntry](#flushentry) | yes | One entry per report this flush looked at. |
+| `overdue` | array of [FlushEntry](#flushentry) | yes | Every queued report past its `dueBy`, whether or not this flush tried it. Page someone when this is not empty. |
+
 ### ErrorResponse
 
 The body of every error response.
@@ -619,6 +895,14 @@ Acknowledgement of a webhook the service verified.
 The gateway's webhook body, exactly as the gateway sent it.
 
 Type: object.
+
+### RoutingReceipt
+
+Acknowledgement of an outcome the router recorded.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `recorded` | boolean | yes | True when the router counted the outcome. |
 
 ### TickRequest
 

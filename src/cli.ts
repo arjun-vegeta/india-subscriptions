@@ -63,6 +63,8 @@ Environment (serve):
     ${EnvVar.RazorpayKeyId} ${EnvVar.RazorpayKeySecret} [${EnvVar.RazorpayWebhookSecret}]
     ${EnvVar.CashfreeClientId} ${EnvVar.CashfreeClientSecret} ${EnvVar.CashfreeEnvironment} [${EnvVar.CashfreeWebhookSecret}]
     ${EnvVar.PayuKey} ${EnvVar.PayuSalt} ${EnvVar.PayuEnvironment} [${EnvVar.PayuSuccessUrl} ${EnvVar.PayuFailureUrl}]
+    (PhonePe, Paytm, and the app stores APP_STORE_* and GOOGLE_PLAY_*: see .env.example)
+  ${EnvVar.PurchasesFile}, ${EnvVar.PurchaseStoreFile}, ${EnvVar.PublicBaseUrl}   purchase sessions, entitlements, hosted checkout (off without the files)
   ${EnvVar.SchedulerStoreFile}, ${EnvVar.SchedulerTickSeconds}   billing scheduler (off without a store file)
   ${EnvVar.EventsWebhookUrl}, ${EnvVar.EventsWebhookSecret}   forward gateway events, signed
 `;

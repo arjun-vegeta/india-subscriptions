@@ -44,6 +44,7 @@ The service adds three codes of its own, and shares `INTERNAL_ERROR` with the li
 |---|---|
 | 200 | Success |
 | 201 | Created |
+| 303 | Redirects the customer to the return URL of the purchase |
 | 400 | The request is malformed or fails validation |
 | 401 | Missing or wrong API key, or a webhook signature that does not verify |
 | 404 | Unknown path, gateway not configured, or the object does not exist |

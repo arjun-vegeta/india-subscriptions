@@ -15,18 +15,27 @@ import {
 } from './events-webhook.js';
 import type { FetchLike } from './http.js';
 import type { SubscriptionProvider } from './provider.js';
+import { appStore } from './providers/appstore/index.js';
 import { cashfree } from './providers/cashfree/index.js';
+import { googlePlay } from './providers/googleplay/index.js';
 import { payu } from './providers/payu/index.js';
 import { paytm } from './providers/paytm/index.js';
 import { phonepe } from './providers/phonepe/index.js';
 import { razorpay } from './providers/razorpay/index.js';
+import { Purchases } from './purchase/purchases.js';
+import { FlushOutcome } from './purchase/constants.js';
+import type { FlushResult } from './purchase/schemas.js';
 import { BillingScheduler } from './scheduler/scheduler.js';
 import type { TickResult } from './scheduler/schemas.js';
+import { FilePurchaseStore } from './purchase-file-store.js';
 import { FileSchedulerStore } from './scheduler-file-store.js';
+import { ApiPath, PathParam } from './server/constants.js';
+import { loadPurchasesFile } from './service-purchases.js';
 import { createNodeServer, listen, type RunningServer } from './server/node.js';
 import type { EventsHook } from './server/routes.js';
 import {
   GATEWAY_ORDER,
+  STORE_ORDER,
   EnvVar,
   parseServiceEnv,
   type EnvironmentVariables,
@@ -79,6 +88,10 @@ export interface Service {
   /** Present when `SCHEDULER_STORE_FILE` is set. */
   readonly scheduler?: BillingScheduler;
   readonly store?: FileSchedulerStore;
+  /** Present when `PURCHASES_FILE` is set: purchase sessions, entitlements and the Google report queue (`client.purchases`). */
+  readonly purchases?: Purchases;
+  /** Present when `PURCHASE_STORE_FILE` is set. */
+  readonly purchaseStore?: FilePurchaseStore;
   /** Present when `EVENTS_WEBHOOK_URL` is set: forwards gateway webhook events. */
   readonly onEvents?: EventsHook;
   /** Present when both `EVENTS_WEBHOOK_URL` and `SCHEDULER_STORE_FILE` are set: forwards scheduler events. */
@@ -121,6 +134,10 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
   if (payuConfig) providers.push(payu(payuConfig, providerOptions));
   if (phonepeConfig) providers.push(phonepe(phonepeConfig, providerOptions));
   if (paytmConfig) providers.push(paytm(paytmConfig, providerOptions));
+  const appStoreConfig = config.stores[Provider.AppStore];
+  const googlePlayConfig = config.stores[Provider.GooglePlay];
+  if (appStoreConfig) providers.push(appStore(appStoreConfig, providerOptions));
+  if (googlePlayConfig) providers.push(googlePlay(googlePlayConfig, providerOptions));
 
   const eventsWebhook = config.eventsWebhook;
   const schedulerEvents = eventsWebhook && config.schedulerStoreFile
@@ -146,12 +163,49 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
     });
   }
 
+  let purchaseStore: FilePurchaseStore | undefined;
   let client: Subscriptions;
   try {
-    client = createSubscriptions({ providers, scheduler });
+    const purchasesConfig = config.purchasesFile
+      ? await loadPurchasesFile(config.purchasesFile, {
+          capabilities: providers.map((provider) => provider.capabilities),
+          hasReporter: googlePlayConfig !== undefined,
+          publicBaseUrl: config.publicBaseUrl,
+        })
+      : undefined;
+    if (purchasesConfig && config.purchaseStoreFile) purchaseStore = await FilePurchaseStore.open(config.purchaseStoreFile);
+    const base = config.publicBaseUrl;
+    client = createSubscriptions({
+      providers,
+      scheduler,
+      routing: {
+        ...(purchasesConfig?.routing ? { strategy: purchasesConfig.routing } : {}),
+        onStatsError: (error) => logger.warn(`routing statistics unavailable: ${describeError(error)}`),
+      },
+      ...(purchasesConfig && purchaseStore
+        ? {
+            purchases: {
+              catalog: purchasesConfig.catalog,
+              policy: purchasesConfig.policy,
+              store: purchaseStore,
+              onIssue: (issue) =>
+                logger.warn(
+                  `purchases: ${issue.issue}: ${issue.message}${issue.error === undefined ? '' : ` (${describeError(issue.error)})`}`,
+                ),
+              ...(base
+                ? {
+                    gatewayReturnUrl: (sessionId: string) => checkoutUrl(base, sessionId, ApiPath.CheckoutReturn),
+                    hostedCheckoutUrl: (sessionId: string) => checkoutUrl(base, sessionId, ApiPath.Checkout),
+                  }
+                : {}),
+            },
+          }
+        : {}),
+    });
   } catch (error) {
     await schedulerEvents?.close();
     await store?.close();
+    await purchaseStore?.close();
     throw error;
   }
 
@@ -162,6 +216,8 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
     client,
     scheduler,
     store,
+    purchases: client.purchases,
+    purchaseStore,
     onEvents,
     schedulerEvents,
     createServer: () =>
@@ -175,8 +231,14 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
     close: async () => {
       await schedulerEvents?.close();
       await store?.close();
+      await purchaseStore?.close();
     },
   };
+}
+
+/** `{base}/checkout/{sessionId}` (or `.../return`): the hosted checkout of a session, built on the service's public URL. */
+function checkoutUrl(base: string, sessionId: string, template: string): string {
+  return `${base}${template.replace(`{${PathParam.SessionId}}`, encodeURIComponent(sessionId))}`;
 }
 
 /**
@@ -210,9 +272,11 @@ function schedulerConsequence(enabled: readonly Provider[], client: Subscription
 
 function describeService(config: ServiceConfig, client: Subscriptions, listenUrl: string): string[] {
   const enabled = GATEWAY_ORDER.filter((provider) => config.gateways[provider]);
+  const stores = STORE_ORDER.filter((provider) => config.stores[provider]);
   const lines = [
     `${PACKAGE_NAME} ${PACKAGE_VERSION}`,
-    `gateways enabled: ${enabled.join(', ')}`,
+    `gateways enabled: ${enabled.length > 0 ? enabled.join(', ') : 'none'}`,
+    ...(stores.length > 0 ? [`app stores enabled: ${stores.join(', ')}`] : []),
     `listening on ${listenUrl}`,
   ];
   if (config.schedulerStoreFile) {
@@ -221,6 +285,7 @@ function describeService(config: ServiceConfig, client: Subscriptions, listenUrl
     const consequence = schedulerConsequence(enabled, client);
     lines.push(`billing scheduler: OFF (${EnvVar.SchedulerStoreFile} is not set; ${consequence})`);
   }
+  lines.push(describePurchases(config, client));
   lines.push(
     config.apiKey
       ? 'authentication: API key required (bearer token)'
@@ -234,12 +299,26 @@ function describeService(config: ServiceConfig, client: Subscriptions, listenUrl
   return lines;
 }
 
+function describePurchases(config: ServiceConfig, client: Subscriptions): string {
+  if (!client.purchases || !config.purchasesFile) {
+    return `purchases: OFF (${EnvVar.PurchasesFile} is not set: the purchase and entitlement routes answer with a configuration error)`;
+  }
+  const hosted = config.publicBaseUrl
+    ? `hosted checkout on ${originOf(config.publicBaseUrl)}`
+    : `hosted checkout OFF (${EnvVar.PublicBaseUrl} is not set)`;
+  const reports = client.providers.includes(Provider.GooglePlay) ? 'Google reports flushed on every tick' : 'no Google reports';
+  return `purchases: on (file ${config.purchasesFile}, state ${config.purchaseStoreFile}, ${hosted}, ${reports}, tick every ${config.tickSeconds}s)`;
+}
+
 // ---------------------------------------------------------------------------
 // Tick loop
 // ---------------------------------------------------------------------------
 
 export interface TickLoopOptions {
-  scheduler: Pick<BillingScheduler, 'tick'>;
+  /** Runs the billing scheduler on every tick. */
+  scheduler?: Pick<BillingScheduler, 'tick'>;
+  /** Sends the queued Google reports on every tick (`purchases.flush`). */
+  purchases?: Pick<Purchases, 'flush'>;
   intervalMs: number;
   logger?: Logger;
 }
@@ -249,14 +328,17 @@ export interface TickLoop {
   start(): void;
   /** Stops scheduling and waits for a tick in flight to finish. */
   stop(): Promise<void>;
-  /** One tick now. Resolves `undefined` (and logs) when it failed or another tick is still running. */
+  /**
+   * One tick now: the scheduler tick, then the report flush, each when configured and each independent of the other's
+   * failure. Resolves the scheduler's result, `undefined` (and logs) when it failed, is not configured, or another tick is
+   * still running.
+   */
   runOnce(): Promise<TickResult | undefined>;
 }
 
 /**
- * Calls `scheduler.tick()` on an interval, never overlapping itself: a tick
- * that is still running makes the next interval skip. A failing tick is logged,
- * never thrown, and the loop carries on.
+ * Calls `scheduler.tick()` and `purchases.flush()` on an interval, never overlapping itself: a tick that is still
+ * running makes the next interval skip. A failing tick or flush is logged, never thrown, and the loop carries on.
  */
 export function createTickLoop(options: TickLoopOptions): TickLoop {
   const logger = options.logger ?? consoleLogger;
@@ -265,14 +347,23 @@ export function createTickLoop(options: TickLoopOptions): TickLoop {
   let stopped = false;
 
   async function tickOnce(): Promise<TickResult | undefined> {
-    try {
-      const result = await options.scheduler.tick();
-      logTick(logger, result);
-      return result;
-    } catch (error) {
-      logger.error(`scheduler tick failed: ${describeError(error)}`);
-      return undefined;
+    let result: TickResult | undefined;
+    if (options.scheduler) {
+      try {
+        result = await options.scheduler.tick();
+        logTick(logger, result);
+      } catch (error) {
+        logger.error(`scheduler tick failed: ${describeError(error)}`);
+      }
     }
+    if (options.purchases) {
+      try {
+        logFlush(logger, await options.purchases.flush());
+      } catch (error) {
+        logger.error(`purchase report flush failed: ${describeError(error)}`);
+      }
+    }
+    return result;
   }
 
   function runOnce(): Promise<TickResult | undefined> {
@@ -314,6 +405,26 @@ function logTick(logger: Logger, result: TickResult): void {
   );
   for (const error of result.errors.slice(0, MAX_LOGGED_TICK_ERRORS)) {
     logger.warn(`scheduler tick: ${error.scheduleId}: ${error.code}: ${error.message}`);
+  }
+}
+
+/**
+ * One line of counts when anything happened or anything is late, and one warning per rejected or overdue report. Only ids,
+ * kinds and codes: never what a report says (amounts, the customer's state, the transaction token) and never Google's
+ * error text, which may quote the request.
+ */
+function logFlush(logger: Logger, result: FlushResult): void {
+  const busy = result.sent + result.retrying + result.blocked + result.rejected + result.skipped + result.overdue.length > 0;
+  if (!busy) return;
+  logger.info(
+    `purchase reports: sent=${result.sent} retrying=${result.retrying} blocked=${result.blocked} ` +
+      `rejected=${result.rejected} skipped=${result.skipped} overdue=${result.overdue.length}`,
+  );
+  for (const entry of result.entries.filter((candidate) => candidate.outcome === FlushOutcome.Rejected).slice(0, MAX_LOGGED_TICK_ERRORS)) {
+    logger.warn(`purchase report ${entry.id} (${entry.kind}) was rejected: ${entry.errorCode ?? 'no code'}; it will not be retried`);
+  }
+  for (const entry of result.overdue.slice(0, MAX_LOGGED_TICK_ERRORS)) {
+    logger.warn(`purchase report ${entry.id} (${entry.kind}) is overdue since ${entry.dueBy} after ${entry.attempts} attempts`);
   }
 }
 
@@ -363,9 +474,17 @@ export async function runServe(options: ServeOptions = {}): Promise<RunningServi
     throw error;
   }
 
-  const loop = service.scheduler
-    ? createTickLoop({ scheduler: service.scheduler, intervalMs: service.config.tickSeconds * MILLIS_PER_SECOND, logger })
-    : undefined;
+  // The reports owed to Google are flushed on the same tick; without the Google Play provider none are ever queued.
+  const flushes = service.purchases !== undefined && service.client.providers.includes(Provider.GooglePlay);
+  const loop =
+    service.scheduler || flushes
+      ? createTickLoop({
+          scheduler: service.scheduler,
+          purchases: flushes ? service.purchases : undefined,
+          intervalMs: service.config.tickSeconds * MILLIS_PER_SECOND,
+          logger,
+        })
+      : undefined;
 
   const handlers = new Map<NodeJS.Signals, () => void>();
   let stopping: Promise<void> | undefined;

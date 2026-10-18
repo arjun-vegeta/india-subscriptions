@@ -39,6 +39,7 @@ import {
   HTTP_STATUS_DESCRIPTIONS,
   SERVER_ERROR_HTTP_STATUS,
   AuthMode,
+  ResponseContent,
   ServerErrorCode,
   type HttpStatus,
 } from '../src/server/constants.js';
@@ -407,6 +408,7 @@ const AUTH_LABEL: Record<AuthMode, string> = {
   [AuthMode.None]: 'none',
   [AuthMode.Bearer]: 'API key (`Authorization: Bearer ...`)',
   [AuthMode.Signature]: 'none: the gateway\'s signature over the raw body',
+  [AuthMode.Capability]: 'none: the unguessable session id in the path',
 };
 
 function httpApiPage(pages: Pages): string {
@@ -446,7 +448,13 @@ function httpApiPage(pages: Pages): string {
         ]);
       }
       for (const query of route.query) rows.push([`Query ${code(query.name)}`, query.description]);
-      const success = `${route.response.status}: ${route.response.array ? 'array of ' : ''}${refLink(route.response.schema, HTTP_PAGE, pages)}`;
+      const success = `${route.response.status}: ${
+        route.response.schema === undefined
+          ? route.response.content === ResponseContent.Redirect
+            ? 'a redirect to the return URL of the purchase'
+            : 'an HTML page'
+          : `${route.response.array ? 'array of ' : ''}${refLink(route.response.schema, HTTP_PAGE, pages)}`
+      }`;
       rows.push(['Success', success]);
       const failures = Object.keys(asObject(operation.responses))
         .filter((status) => status !== String(route.response.status))
@@ -765,6 +773,27 @@ const ENV_SAMPLES: Record<(typeof EnvVar)[keyof typeof EnvVar], string> = {
   [EnvVar.PaytmTransactionStatusBaseUrl]: 'https://securegw-stage.paytmpayments.in',
   [EnvVar.PaytmRefundBaseUrl]: 'https://securegw-stage.paytmpayments.in',
   [EnvVar.PaytmCheckoutBaseUrl]: 'https://securestage.paytmpayments.com',
+  [EnvVar.AppStoreBundleId]: 'com.example.app',
+  [EnvVar.AppStoreIssuerId]: '57246542-96fe-1a63-e053-0824d011072a',
+  [EnvVar.AppStoreKeyId]: 'ABC123DEFG',
+  [EnvVar.AppStorePrivateKey]: 'dummy-private-key',
+  [EnvVar.AppStoreEnvironment]: Environment.Test,
+  [EnvVar.AppStoreAppAppleId]: '1234567890',
+  [EnvVar.AppStoreOfferKeyId]: 'HIJ456KLMN',
+  [EnvVar.AppStoreOfferPrivateKey]: 'dummy-offer-private-key',
+  [EnvVar.GooglePlayPackageName]: 'com.example.app',
+  [EnvVar.GooglePlayClientEmail]: 'billing@example-project.iam.gserviceaccount.com',
+  [EnvVar.GooglePlayPrivateKey]: 'dummy-private-key',
+  [EnvVar.GooglePlayPrivateKeyId]: 'dummy-key-id',
+  [EnvVar.GooglePlayEnvironment]: Environment.Test,
+  [EnvVar.GooglePlayPushAudience]: 'https://billing.example.com/v1/google_play/webhooks',
+  [EnvVar.GooglePlayPushServiceAccountEmail]: 'pubsub-push@example-project.iam.gserviceaccount.com',
+  [EnvVar.GooglePlayAcceptUnauthenticatedWebhooks]: 'false',
+  [EnvVar.GooglePlayRevokeOnRefund]: 'true',
+  [EnvVar.GooglePlayConsumableProductIds]: 'coins_100,coins_500',
+  [EnvVar.PublicBaseUrl]: 'https://billing.example.com',
+  [EnvVar.PurchasesFile]: '/etc/india-subscriptions/purchases.json',
+  [EnvVar.PurchaseStoreFile]: '/var/lib/india-subscriptions/purchases-state.json',
   [EnvVar.SchedulerStoreFile]: '/var/lib/india-subscriptions/scheduler.json',
   [EnvVar.SchedulerTickSeconds]: '300',
   [EnvVar.EventsWebhookUrl]: 'https://app.example.com/billing-events',
@@ -780,12 +809,15 @@ function envGroup(name: EnvName): string {
   if (name.startsWith('PAYU_')) return 'PayU';
   if (name.startsWith('PHONEPE_')) return 'PhonePe';
   if (name.startsWith('PAYTM_')) return 'Paytm';
+  if (name.startsWith('APP_STORE_')) return 'App Store';
+  if (name.startsWith('GOOGLE_PLAY_')) return 'Google Play';
+  if (name === EnvVar.PublicBaseUrl || name === EnvVar.PurchasesFile || name === EnvVar.PurchaseStoreFile) return 'Purchases';
   if (name.startsWith('SCHEDULER_')) return 'Billing scheduler';
   if (name.startsWith('EVENTS_WEBHOOK_')) return 'Events webhook';
   return 'Service';
 }
 
-const ENV_GROUPS = ['Service', 'Razorpay', 'Cashfree', 'PayU', 'PhonePe', 'Paytm', 'Billing scheduler', 'Events webhook'];
+const ENV_GROUPS = ['Service', 'Razorpay', 'Cashfree', 'PayU', 'PhonePe', 'Paytm', 'App Store', 'Google Play', 'Purchases', 'Billing scheduler', 'Events webhook'];
 
 function messageOf(action: () => unknown): string | undefined {
   try {

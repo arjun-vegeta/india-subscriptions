@@ -4,7 +4,12 @@
  * drift from the behaviour. Every route maps to one `Subscriptions` method.
  */
 import { z } from 'zod';
-import { ErrorCode, HttpMethod, type Provider as ProviderName } from '../constants.js';
+import { ErrorCode, HeaderName, HttpMethod, type Provider as ProviderName } from '../constants.js';
+import type { Purchases } from '../purchase/purchases.js';
+import { SubscriptionError } from '../errors.js';
+import { SESSION_ID_PREFIX } from '../purchase/constants.js';
+import type { ChooseAlternativeInput, CompletePurchaseInput, FlushOptions, StartPurchaseInput } from '../purchase/schemas.js';
+import type { RouteOutcome, RouteRequest } from '../routing/schemas.js';
 import type { Subscriptions } from '../client.js';
 import { parseInput } from '../errors.js';
 import { SchemaName, namedSchema } from '../schema-registry.js';
@@ -13,17 +18,21 @@ import {
   ProviderSchema,
   type CancelSubscriptionOptions,
   type CreateChargeInput,
+  type CreatePaymentInput,
   type CreatePlanInput,
   type CreateSubscriptionInput,
   type NotifyChargeInput,
   type PauseSubscriptionOptions,
   type RefundInput,
+  type RefundPaymentInput,
   type ResumeSubscriptionOptions,
   type SubscriptionEvent,
   type UpdateSubscriptionInput,
   type VerifyCheckoutInput,
+  type VerifyPaymentInput,
   type WebhookRequest,
 } from '../schemas.js';
+import { checkoutNotFound, gatherReturnFields, handleCheckoutReturn, renderCheckout } from './checkout.js';
 import {
   ApiPath,
   AuthMode,
@@ -32,6 +41,7 @@ import {
   OperationId,
   PathParam,
   QueryParam,
+  ResponseContent,
   ServerErrorCode,
   ServerSchemaName,
   Tag,
@@ -90,6 +100,13 @@ export const WebhookReceiptSchema = z
   .describe('Acknowledgement of a webhook the service verified.');
 export type WebhookReceipt = z.infer<typeof WebhookReceiptSchema>;
 
+export const RoutingReceiptSchema = z
+  .object({
+    recorded: z.boolean().describe('True when the router counted the outcome.'),
+  })
+  .describe('Acknowledgement of an outcome the router recorded.');
+export type RoutingReceipt = z.infer<typeof RoutingReceiptSchema>;
+
 export const WebhookPayloadSchema = z
   .record(z.string(), z.unknown())
   .describe('The gateway\'s webhook body, exactly as the gateway sent it.');
@@ -116,6 +133,7 @@ export const SERVER_SCHEMAS = {
   [ServerSchemaName.HealthStatus]: HealthStatusSchema,
   [ServerSchemaName.WebhookReceipt]: WebhookReceiptSchema,
   [ServerSchemaName.WebhookPayload]: WebhookPayloadSchema,
+  [ServerSchemaName.RoutingReceipt]: RoutingReceiptSchema,
   [ServerSchemaName.TickRequest]: TickRequestSchema,
   [ServerSchemaName.OpenApiDocument]: OpenApiDocumentSchema,
 } as const;
@@ -170,13 +188,18 @@ export interface RouteDefinition {
   auth: AuthMode;
   /** True when serving the request calls a payment gateway (adds the gateway failure responses to the docs). */
   gateway: boolean;
+  /** Statuses this route answers with beyond the ones its shape implies (for example 422 `NO_ROUTE`). */
+  errors: HttpStatus[];
   query: QueryParamDefinition[];
   requestBody?: RequestBodyDefinition;
   response: {
-    schema: ResponseSchemaName;
+    /** The JSON body. Absent for a page or a redirect. */
+    schema?: ResponseSchemaName;
     /** The body is an array of `schema`. */
     array: boolean;
     status: HttpStatus;
+    /** What the response is: JSON (the default), an HTML page or a redirect. A handler of the last two returns the `Response` itself. */
+    content: ResponseContent;
   };
   handler: (context: RouteContext) => unknown;
 }
@@ -199,6 +222,15 @@ interface BodyTypes {
   [SchemaName.RefundInput]: RefundInput;
   [SchemaName.VerifyCheckoutInput]: VerifyCheckoutInput;
   [SchemaName.WebhookRequest]: WebhookRequest;
+  [SchemaName.CreatePaymentInput]: CreatePaymentInput;
+  [SchemaName.VerifyPaymentInput]: VerifyPaymentInput;
+  [SchemaName.RefundPaymentInput]: RefundPaymentInput;
+  [SchemaName.RouteRequest]: RouteRequest;
+  [SchemaName.RouteOutcome]: RouteOutcome;
+  [SchemaName.StartPurchaseInput]: StartPurchaseInput;
+  [SchemaName.ChooseAlternativeInput]: ChooseAlternativeInput;
+  [SchemaName.CompletePurchaseInput]: CompletePurchaseInput;
+  [SchemaName.FlushOptions]: FlushOptions;
   [ServerSchemaName.TickRequest]: TickRequest;
   [ServerSchemaName.WebhookPayload]: string;
 }
@@ -214,9 +246,10 @@ interface RouteInit<N extends BodyName | undefined, TProvider extends ProviderNa
   description: string;
   auth?: AuthMode;
   gateway?: boolean;
+  errors?: HttpStatus[];
   query?: QueryParamDefinition[];
   body?: { schema: N; required?: boolean; raw?: boolean };
-  response: { schema: ResponseSchemaName; array?: boolean; status?: HttpStatus };
+  response: { schema?: ResponseSchemaName; array?: boolean; status?: HttpStatus; content?: ResponseContent };
   handler: (context: RouteContext<BodyOf<N>, TProvider>) => unknown;
 }
 
@@ -238,6 +271,7 @@ function build<N extends BodyName | undefined, TProvider extends ProviderName | 
     description: init.description,
     auth: init.auth ?? AuthMode.Bearer,
     gateway: init.gateway ?? false,
+    errors: init.errors ?? [],
     query: init.query ?? [],
     requestBody: init.body
       ? { schema: init.body.schema as BodyName, required: init.body.required ?? true, raw: init.body.raw ?? false }
@@ -246,6 +280,7 @@ function build<N extends BodyName | undefined, TProvider extends ProviderName | 
       schema: init.response.schema,
       array: init.response.array ?? false,
       status: init.response.status ?? HttpStatus.Ok,
+      content: init.response.content ?? ResponseContent.Json,
     },
     handler: (context) => {
       if (requireProvider && context.provider === undefined) {
@@ -293,6 +328,51 @@ export function headersToRecord(headers: Headers): Record<string, string> {
 }
 
 const GATEWAY_NOTE = ' Calls the gateway.';
+
+/** The purchase module, or the configuration error that says how to switch it on. */
+function purchasesOf(client: Subscriptions): Purchases {
+  if (!client.purchases) {
+    throw new SubscriptionError(
+      ErrorCode.Config,
+      'Purchases are not configured on this service: set PURCHASES_FILE (the catalog) and PURCHASE_STORE_FILE',
+    );
+  }
+  return client.purchases;
+}
+
+const PURCHASES_NOTE = ' Needs purchases configured on the service (PURCHASES_FILE), else answers with a configuration error.';
+
+/** The longest session id looked up: ids are `ps_` and 32 characters. */
+const MAX_SESSION_ID_LENGTH = 64;
+const SESSION_ID_CHARACTERS = /^[A-Za-z0-9_-]+$/;
+
+/** A session id that could be one of ours; anything else is not worth a lookup. */
+function sessionIdOf(context: { params: Readonly<Record<string, string>> }): string | undefined {
+  const id = context.params[PathParam.SessionId];
+  return id !== undefined && id.startsWith(SESSION_ID_PREFIX) && id.length <= MAX_SESSION_ID_LENGTH && SESSION_ID_CHARACTERS.test(id)
+    ? id
+    : undefined;
+}
+
+async function showCheckout(context: RouteContext): Promise<Response> {
+  const id = sessionIdOf(context);
+  const purchases = context.client.purchases;
+  if (id === undefined || purchases === undefined) return checkoutNotFound();
+  try {
+    return renderCheckout(await purchases.get(id));
+  } catch (error) {
+    if (error instanceof SubscriptionError && error.code === ErrorCode.NotFound) return checkoutNotFound();
+    throw error;
+  }
+}
+
+async function returnFromCheckout(context: RouteContext, body: string): Promise<Response> {
+  const id = sessionIdOf(context);
+  const purchases = context.client.purchases;
+  if (id === undefined || purchases === undefined) return checkoutNotFound();
+  const fields = gatherReturnFields(context.query, body, context.request.headers.get(HeaderName.ContentType));
+  return handleCheckoutReturn(purchases, id, fields);
+}
 
 export const routes: readonly RouteDefinition[] = [
   globalRoute({
@@ -579,6 +659,222 @@ export const routes: readonly RouteDefinition[] = [
       }
       return { received: events.length };
     },
+  }),
+
+  providerRoute({
+    operationId: OperationId.CreatePayment,
+    method: HttpMethod.Post,
+    path: ApiPath.Payments,
+    tag: Tag.Payments,
+    summary: 'Create a one-time payment',
+    description:
+      'Creates the payment (an order) and returns it with `checkout` instructions for the customer to pay. At an app store ' +
+      `this makes no purchase: it returns the account token the purchase on the device must carry.${GATEWAY_NOTE}`,
+    gateway: true,
+    body: { schema: SchemaName.CreatePaymentInput },
+    response: { schema: SchemaName.Payment, status: HttpStatus.Created },
+    handler: ({ client, provider, body }) => client.payments.create(provider, body),
+  }),
+  providerRoute({
+    operationId: OperationId.GetPayment,
+    method: HttpMethod.Get,
+    path: ApiPath.Payment,
+    tag: Tag.Payments,
+    summary: 'Get a payment',
+    description: `Fetches a one-time payment with its current status: the source of truth, whatever the browser reported.${GATEWAY_NOTE}`,
+    gateway: true,
+    response: { schema: SchemaName.Payment },
+    handler: (context) => context.client.payments.get(context.provider, pathParam(context, PathParam.PaymentId)),
+  }),
+  providerRoute({
+    operationId: OperationId.VerifyPayment,
+    method: HttpMethod.Post,
+    path: ApiPath.PaymentVerify,
+    tag: Tag.Payments,
+    summary: 'Verify a payment result',
+    description:
+      'Verifies what the gateway (or the store, on a device) returned after the customer paid. Pass the result untouched as ' +
+      '`result`, and the payment id your server stored as `expectedPaymentId`: a genuine result that belongs to a different ' +
+      `payment is then rejected like a forged one.${GATEWAY_NOTE}`,
+    gateway: true,
+    body: { schema: SchemaName.VerifyPaymentInput },
+    response: { schema: SchemaName.PaymentVerification },
+    handler: ({ client, provider, body }) =>
+      client.payments.verify(provider, body.result, body.expectedPaymentId === undefined ? {} : { expectedPaymentId: body.expectedPaymentId }),
+  }),
+  providerRoute({
+    operationId: OperationId.CreatePaymentRefund,
+    method: HttpMethod.Post,
+    path: ApiPath.PaymentRefunds,
+    tag: Tag.Payments,
+    summary: 'Refund a payment',
+    description: `Refunds a one-time payment in full or in part.${GATEWAY_NOTE}`,
+    gateway: true,
+    body: { schema: SchemaName.RefundPaymentInput },
+    response: { schema: SchemaName.Refund, status: HttpStatus.Created },
+    handler: ({ client, provider, body }) => client.payments.refund(provider, body),
+  }),
+
+  globalRoute({
+    operationId: OperationId.DecideRoute,
+    method: HttpMethod.Post,
+    path: ApiPath.RoutingDecide,
+    tag: Tag.Routing,
+    summary: 'Decide a route',
+    description:
+      'Chooses the best configured gateway for a subscription or a one-time payment, and explains the choice: every gateway ' +
+      'comes back with its exclusions or its score. Answers 422 `NO_ROUTE` when no gateway can take the request. Nothing is ' +
+      'created at a gateway.',
+    errors: [HttpStatus.Unprocessable],
+    body: { schema: SchemaName.RouteRequest },
+    response: { schema: SchemaName.RoutingDecision },
+    handler: ({ client, body }) => client.router.route(body),
+  }),
+  globalRoute({
+    operationId: OperationId.RecordRouteOutcome,
+    method: HttpMethod.Post,
+    path: ApiPath.RoutingOutcomes,
+    tag: Tag.Routing,
+    summary: 'Record a routing outcome',
+    description:
+      'Tells the router how a gateway did (success, failure, or unavailable), so its success rates and circuit breaker follow ' +
+      'what you see. Purchase sessions record their own outcomes: use this for payments you create through the explicit ' +
+      'gateway routes.',
+    body: { schema: SchemaName.RouteOutcome },
+    response: { schema: ServerSchemaName.RoutingReceipt },
+    handler: async ({ client, body }): Promise<RoutingReceipt> => {
+      if (!client.providers.includes(body.provider)) {
+        throw new SubscriptionError(ErrorCode.NotFound, `Provider ${body.provider} is not configured on this service`);
+      }
+      await client.router.record(body);
+      return { recorded: true };
+    },
+  }),
+
+  globalRoute({
+    operationId: OperationId.StartPurchase,
+    method: HttpMethod.Post,
+    path: ApiPath.Purchases,
+    tag: Tag.Purchases,
+    summary: 'Start a purchase',
+    description:
+      'Decides where the purchase may go on the customer\'s platform (the App Store on iOS; Google Play, Google Play with ' +
+      'user choice billing, or the gateways on Android; the gateways on the web), creates it there and returns the session ' +
+      'with the ways to pay. Repeating the call with the same `reference` returns the same session. Answers 409 when the ' +
+      `customer already owns the product.${GATEWAY_NOTE}${PURCHASES_NOTE}`,
+    gateway: true,
+    body: { schema: SchemaName.StartPurchaseInput },
+    response: { schema: SchemaName.PurchaseSession, status: HttpStatus.Created },
+    handler: ({ client, body }) => purchasesOf(client).start(body),
+  }),
+  globalRoute({
+    operationId: OperationId.FlushPurchaseReports,
+    method: HttpMethod.Post,
+    path: ApiPath.PurchasesFlush,
+    tag: Tag.Purchases,
+    summary: 'Send the queued Google reports',
+    description:
+      'Sends the purchases, renewals and refunds made through Google Play user choice billing that Google has not been told ' +
+      'about yet. The service does this on every tick by itself; call it to do it now. `overdue` lists the reports past ' +
+      `their 24 hour deadline: page someone when it is not empty.${GATEWAY_NOTE}${PURCHASES_NOTE}`,
+    gateway: true,
+    body: { schema: SchemaName.FlushOptions, required: false },
+    response: { schema: SchemaName.FlushResult },
+    handler: ({ client, body }) => purchasesOf(client).flush(body),
+  }),
+  globalRoute({
+    operationId: OperationId.GetPurchase,
+    method: HttpMethod.Get,
+    path: ApiPath.Purchase,
+    tag: Tag.Purchases,
+    summary: 'Get a purchase session',
+    description: `The session with its current status.${PURCHASES_NOTE}`,
+    response: { schema: SchemaName.PurchaseSession },
+    handler: (context) => purchasesOf(context.client).get(pathParam(context, PathParam.SessionId)),
+  }),
+  globalRoute({
+    operationId: OperationId.ChooseAlternative,
+    method: HttpMethod.Post,
+    path: ApiPath.PurchaseAlternative,
+    tag: Tag.Purchases,
+    summary: 'Choose the alternative payment',
+    description:
+      'The customer picked the alternative payment on Google\'s choice screen (Android sessions with the `user_choice` ' +
+      'policy). Creates the purchase at the best gateway and adds it to the session as a second option, with a `hostedUrl` ' +
+      `to open in a browser tab. Repeating it with the same token returns the same option.${GATEWAY_NOTE}${PURCHASES_NOTE}`,
+    gateway: true,
+    body: { schema: SchemaName.ChooseAlternativeInput },
+    response: { schema: SchemaName.PurchaseSession },
+    handler: (context) => purchasesOf(context.client).chooseAlternative(pathParam(context, PathParam.SessionId), context.body),
+  }),
+  globalRoute({
+    operationId: OperationId.CompletePurchase,
+    method: HttpMethod.Post,
+    path: ApiPath.PurchaseComplete,
+    tag: Tag.Purchases,
+    summary: 'Complete a purchase',
+    description:
+      'Verifies what the checkout handed back (the store\'s transaction from the device, or a gateway\'s result) against the ' +
+      'order the session created, and records the entitlement. A result for another order is rejected with `SIGNATURE_INVALID` ' +
+      `and the session stays as it was.${GATEWAY_NOTE}${PURCHASES_NOTE}`,
+    gateway: true,
+    body: { schema: SchemaName.CompletePurchaseInput },
+    response: { schema: SchemaName.PurchaseSession },
+    handler: (context) => purchasesOf(context.client).complete(pathParam(context, PathParam.SessionId), context.body),
+  }),
+  globalRoute({
+    operationId: OperationId.GetEntitlements,
+    method: HttpMethod.Get,
+    path: ApiPath.Entitlements,
+    tag: Tag.Purchases,
+    summary: 'Get what a customer owns',
+    description: `Every purchase of the customer across app stores and gateways; \`active\` is true when one gives access now.${PURCHASES_NOTE}`,
+    response: { schema: SchemaName.Entitlements },
+    handler: (context) => purchasesOf(context.client).entitlements(pathParam(context, PathParam.CustomerRef)),
+  }),
+
+  globalRoute({
+    operationId: OperationId.ShowHostedCheckout,
+    method: HttpMethod.Get,
+    path: ApiPath.Checkout,
+    tag: Tag.HostedCheckout,
+    summary: 'Hosted checkout page',
+    description:
+      'An HTML page that performs the checkout step of the session\'s gateway option (a redirect, a form post, Razorpay ' +
+      'Standard Checkout or cashfree.js) for a client that cannot run the browser helper. Needs no API key: the session id is ' +
+      'the credential. Answers 404, with no detail, for an unknown or expired session. Served with a strict ' +
+      'Content-Security-Policy and holds no secret.',
+    auth: AuthMode.Capability,
+    response: { content: ResponseContent.Html },
+    handler: showCheckout,
+  }),
+  globalRoute({
+    operationId: OperationId.ReturnFromHostedCheckout,
+    method: HttpMethod.Get,
+    path: ApiPath.CheckoutReturn,
+    tag: Tag.HostedCheckout,
+    summary: 'Hosted checkout return (query)',
+    description:
+      'Where a gateway, or the hosted page\'s own script, sends the customer back with the result in the query. The fields are ' +
+      'never trusted: the purchase is completed by asking the gateway, and the customer is redirected to the `returnUrl` of the ' +
+      'session with `session` and `status` appended, whatever the outcome. Needs no API key.',
+    auth: AuthMode.Capability,
+    response: { status: HttpStatus.SeeOther, content: ResponseContent.Redirect },
+    handler: (context) => returnFromCheckout(context, ''),
+  }),
+  globalRoute({
+    operationId: OperationId.PostReturnFromHostedCheckout,
+    method: HttpMethod.Post,
+    path: ApiPath.CheckoutReturn,
+    tag: Tag.HostedCheckout,
+    summary: 'Hosted checkout return (form)',
+    description:
+      'The same as the query form, for a gateway that posts the result as form fields (PayU, Paytm, Razorpay\'s callback). ' +
+      'The fields of the query and of the form are both read. Needs no API key.',
+    auth: AuthMode.Capability,
+    body: { schema: ServerSchemaName.WebhookPayload, raw: true, required: false },
+    response: { status: HttpStatus.SeeOther, content: ResponseContent.Redirect },
+    handler: (context) => returnFromCheckout(context, context.body),
   }),
 
   globalRoute({

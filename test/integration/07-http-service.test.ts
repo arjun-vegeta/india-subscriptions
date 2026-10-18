@@ -50,7 +50,7 @@ function api(client: Subscriptions, onEvents?: Parameters<typeof createHandler>[
     }
     const response = await handler(new Request(`${BASE}${path}`, { method, headers, body }));
     const text = await response.text();
-    return { status: response.status, text, json: text ? (JSON.parse(text) as any) : undefined };
+    return { status: response.status, text, json: text && !text.startsWith('<') ? (JSON.parse(text) as any) : undefined };
   };
 }
 
@@ -142,10 +142,12 @@ describe('HTTP service, Razorpay', () => {
     const { subs } = wire(razorpayProvider(gateway.fetch, clock), clock, gateway.calls);
     const call = api(subs);
     for (const route of routes) {
-      const path = route.path.replace('{provider}', 'razorpay').replace('{subscriptionId}', SUB).replace('{planId}', 'p').replace('{chargeId}', 'c');
+      const path = route.path.replace('{provider}', 'razorpay').replace('{subscriptionId}', SUB).replace(/\{\w+\}/g, 'x');
       const reply = await call(route.method, path, { auth: false, ...(route.requestBody ? { json: {} } : {}) });
       if (route.auth === AuthMode.Bearer) expect(reply.status, `${route.method} ${route.path}`).toBe(HttpStatus.Unauthorized);
       if (route.auth === AuthMode.None) expect(reply.status, `${route.method} ${route.path}`).toBe(HttpStatus.Ok);
+      // The hosted checkout answers pages, and never asks for the key: an unknown session is a 404, not a 401.
+      if (route.auth === AuthMode.Capability) expect(reply.status, `${route.method} ${route.path}`).toBe(HttpStatus.NotFound);
     }
   });
 });

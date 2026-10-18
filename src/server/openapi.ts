@@ -22,6 +22,8 @@ import {
 import {
   AuthMode,
   BEARER_SCHEME,
+  HTML_MEDIA_TYPE,
+  ResponseContent,
   DEFAULT_API_DESCRIPTION,
   DEFAULT_API_TITLE,
   DEFAULT_API_VERSION,
@@ -31,6 +33,7 @@ import {
   PathParam,
   SCHEMA_REF_PREFIX,
   SECURITY_SCHEME_NAME,
+  ServerHeader,
   ServerSchemaName,
   TAG_DESCRIPTIONS,
   Tag,
@@ -66,6 +69,9 @@ const PATH_PARAM_DESCRIPTIONS: Record<PathParam, string> = {
   [PathParam.PlanId]: 'The plan id, as returned when the plan was created.',
   [PathParam.SubscriptionId]: 'The subscription id returned when it was created or its checkout was verified.',
   [PathParam.ChargeId]: 'The charge id, as returned by the gateway or when the charge was raised.',
+  [PathParam.PaymentId]: 'The payment id returned when it was created or its checkout result was verified.',
+  [PathParam.SessionId]: 'The purchase session id, as returned when the purchase was started. Unguessable: it is the credential of the hosted checkout.',
+  [PathParam.CustomerRef]: 'Your id for the customer: the `customerRef` the purchases were started with.',
 };
 
 const PATH_PLACEHOLDER = /\{([^}]+)\}/g;
@@ -185,11 +191,18 @@ function jsonContent(schema: JsonObject): JsonObject {
 
 function errorStatuses(route: RouteDefinition): HttpStatus[] {
   const hasProvider = route.path.includes(`{${PathParam.Provider}}`);
-  const statuses = new Set<HttpStatus>();
+  const statuses = new Set<HttpStatus>(route.errors);
   if (route.auth === AuthMode.None) return [];
+  if (route.auth === AuthMode.Capability) {
+    // A page that holds the credential in its path: not found (the same page for every cause), or a failure of the service.
+    statuses.add(HttpStatus.NotFound);
+    if (route.requestBody) statuses.add(HttpStatus.PayloadTooLarge);
+    statuses.add(HttpStatus.InternalServerError);
+    return [...statuses].sort((a, b) => a - b);
+  }
   if (hasProvider || route.requestBody || route.query.length > 0) statuses.add(HttpStatus.BadRequest);
   statuses.add(HttpStatus.Unauthorized);
-  if (hasProvider || route.gateway) statuses.add(HttpStatus.NotFound);
+  if (hasProvider || route.gateway || route.path.includes('{')) statuses.add(HttpStatus.NotFound);
   if (route.requestBody) statuses.add(HttpStatus.PayloadTooLarge);
   statuses.add(HttpStatus.InternalServerError);
   if (route.gateway) {
@@ -207,18 +220,34 @@ function errorStatuses(route: RouteDefinition): HttpStatus[] {
   return [...statuses].sort((a, b) => a - b);
 }
 
+/** The documented success response: JSON of the route's schema, an HTML page, or a redirect with its `Location`. */
+function successResponse(route: RouteDefinition): JsonObject {
+  const description = HTTP_STATUS_DESCRIPTIONS[route.response.status];
+  switch (route.response.content) {
+    case ResponseContent.Html:
+      return { description, content: { [HTML_MEDIA_TYPE]: { schema: { type: 'string' } } } };
+    case ResponseContent.Redirect:
+      return {
+        description,
+        headers: { [ServerHeader.Location]: { description: 'The `returnUrl` of the purchase, with `session` and `status` appended.', schema: { type: 'string' } } },
+      };
+    default: {
+      if (route.response.schema === undefined) throw new Error(`Route ${route.operationId} has a JSON response without a schema`);
+      const success: JsonObject = ref(route.response.schema);
+      return { description, content: jsonContent(route.response.array ? { type: 'array', items: success } : success) };
+    }
+  }
+}
+
 function operation(route: RouteDefinition): JsonObject {
-  const success: JsonObject = ref(route.response.schema);
   const responses: Record<string, JsonObject> = {
-    [String(route.response.status)]: {
-      description: HTTP_STATUS_DESCRIPTIONS[route.response.status],
-      content: jsonContent(route.response.array ? { type: 'array', items: success } : success),
-    },
+    [String(route.response.status)]: successResponse(route),
   };
   for (const status of errorStatuses(route)) {
+    const page = route.auth === AuthMode.Capability && status === HttpStatus.NotFound;
     responses[String(status)] = {
       description: HTTP_STATUS_DESCRIPTIONS[status],
-      content: jsonContent(ref(ServerSchemaName.ErrorResponse)),
+      content: page ? { [HTML_MEDIA_TYPE]: { schema: { type: 'string' } } } : jsonContent(ref(ServerSchemaName.ErrorResponse)),
     };
   }
 

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import * as s from './schemas.js';
+import * as routing from './routing/schemas.js';
+import * as purchase from './purchase/schemas.js';
 
 /**
  * Names under which the unified schemas are published to other languages
@@ -67,6 +69,37 @@ export const SchemaName = {
   ExternalTransactionReport: 'ExternalTransactionReport',
   ExternalTransactionRefund: 'ExternalTransactionRefund',
   ExternalTransactionRecord: 'ExternalTransactionRecord',
+  RouteExclusion: 'RouteExclusion',
+  RouteOutcomeKind: 'RouteOutcomeKind',
+  RouteOutcomeResult: 'RouteOutcomeResult',
+  CircuitState: 'CircuitState',
+  RouteNeeds: 'RouteNeeds',
+  RouteRequest: 'RouteRequest',
+  RouteFactors: 'RouteFactors',
+  RouteCandidate: 'RouteCandidate',
+  RoutingDecision: 'RoutingDecision',
+  RouteOutcome: 'RouteOutcome',
+  RoutingStrategy: 'RoutingStrategy',
+  SessionStatus: 'SessionStatus',
+  EntitlementStatus: 'EntitlementStatus',
+  ReportKind: 'ReportKind',
+  ReportStatus: 'ReportStatus',
+  FlushOutcome: 'FlushOutcome',
+  AttemptOutcome: 'AttemptOutcome',
+  ProductPlan: 'ProductPlan',
+  Product: 'Product',
+  PlatformPolicy: 'PlatformPolicy',
+  PurchaseOption: 'PurchaseOption',
+  PurchaseAttempt: 'PurchaseAttempt',
+  PurchaseSession: 'PurchaseSession',
+  EntitlementItem: 'EntitlementItem',
+  Entitlements: 'Entitlements',
+  StartPurchaseInput: 'StartPurchaseInput',
+  ChooseAlternativeInput: 'ChooseAlternativeInput',
+  CompletePurchaseInput: 'CompletePurchaseInput',
+  FlushOptions: 'FlushOptions',
+  FlushEntry: 'FlushEntry',
+  FlushResult: 'FlushResult',
 } as const;
 export type SchemaName = (typeof SchemaName)[keyof typeof SchemaName];
 
@@ -134,6 +167,37 @@ const NAMED: Record<SchemaName, z.ZodType> = {
   [SchemaName.ExternalTransactionReport]: s.ExternalTransactionReportSchema,
   [SchemaName.ExternalTransactionRefund]: s.ExternalTransactionRefundSchema,
   [SchemaName.ExternalTransactionRecord]: s.ExternalTransactionRecordSchema,
+  [SchemaName.RouteExclusion]: routing.RouteExclusionSchema,
+  [SchemaName.RouteOutcomeKind]: routing.RouteOutcomeKindSchema,
+  [SchemaName.RouteOutcomeResult]: routing.RouteOutcomeResultSchema,
+  [SchemaName.CircuitState]: routing.CircuitStateSchema,
+  [SchemaName.RouteNeeds]: routing.RouteNeedsSchema,
+  [SchemaName.RouteRequest]: routing.RouteRequestSchema,
+  [SchemaName.RouteFactors]: routing.RouteFactorsSchema,
+  [SchemaName.RouteCandidate]: routing.RouteCandidateSchema,
+  [SchemaName.RoutingDecision]: routing.RoutingDecisionSchema,
+  [SchemaName.RouteOutcome]: routing.RouteOutcomeSchema,
+  [SchemaName.RoutingStrategy]: routing.RoutingStrategySchema,
+  [SchemaName.SessionStatus]: purchase.SessionStatusSchema,
+  [SchemaName.EntitlementStatus]: purchase.EntitlementStatusSchema,
+  [SchemaName.ReportKind]: purchase.ReportKindSchema,
+  [SchemaName.ReportStatus]: purchase.ReportStatusSchema,
+  [SchemaName.FlushOutcome]: purchase.FlushOutcomeSchema,
+  [SchemaName.AttemptOutcome]: purchase.AttemptOutcomeSchema,
+  [SchemaName.ProductPlan]: purchase.ProductPlanSchema,
+  [SchemaName.Product]: purchase.ProductSchema,
+  [SchemaName.PlatformPolicy]: purchase.PlatformPolicySchema,
+  [SchemaName.PurchaseOption]: purchase.PurchaseOptionSchema,
+  [SchemaName.PurchaseAttempt]: purchase.PurchaseAttemptSchema,
+  [SchemaName.PurchaseSession]: purchase.PurchaseSessionSchema,
+  [SchemaName.EntitlementItem]: purchase.EntitlementItemSchema,
+  [SchemaName.Entitlements]: purchase.EntitlementsSchema,
+  [SchemaName.StartPurchaseInput]: purchase.StartPurchaseInputSchema,
+  [SchemaName.ChooseAlternativeInput]: purchase.ChooseAlternativeInputSchema,
+  [SchemaName.CompletePurchaseInput]: purchase.CompletePurchaseInputSchema,
+  [SchemaName.FlushOptions]: purchase.FlushOptionsSchema,
+  [SchemaName.FlushEntry]: purchase.FlushEntrySchema,
+  [SchemaName.FlushResult]: purchase.FlushResultSchema,
 };
 
 for (const [id, schema] of Object.entries(NAMED)) {
