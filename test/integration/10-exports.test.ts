@@ -100,3 +100,48 @@ describe('types the scheduler options need', () => {
     expect(settings.store).toBeDefined();
   });
 });
+
+describe('app stores, routing and purchases', () => {
+  it('the app stores are exported like the gateways: factory, provider class, config schema, constants namespace', () => {
+    for (const name of ['appStore', 'AppStoreProvider', 'AppStoreConfigSchema', 'AppStoreApi', 'googlePlay', 'GooglePlayProvider', 'GooglePlayConfigSchema', 'GooglePlayApi']) {
+      expect(Object.keys(main), name).toContain(name);
+    }
+    expect(typeof main.appStore).toBe('function');
+    expect(typeof main.googlePlay).toBe('function');
+    expect(main.AppStoreApi.AppStoreResultKey.SignedTransaction).toBe('signedTransaction');
+    expect(main.GooglePlayApi.GooglePlayResultKey.PurchaseToken).toBe('purchaseToken');
+    expect(main.Provider.AppStore).toBe('app_store');
+    expect(main.Provider.GooglePlay).toBe('google_play');
+  });
+
+  it('the routing module is exported whole: the router, the statistics store, its constants and schemas', () => {
+    for (const name of ['Router', 'MemoryRoutingStatsStore', 'RouteExclusion', 'RouteOutcomeKind', 'RouteOutcomeResult', 'CircuitState', 'RouteRequestSchema', 'RoutingDecisionSchema', 'RoutingStrategySchema', 'statsBucketStart']) {
+      expect(Object.keys(main), name).toContain(name);
+    }
+    expect(main.RouteExclusion.Unhealthy).toBe('unhealthy');
+  });
+
+  it('the purchase module is exported: sessions, policy, entitlements, the report queue, with its constants', () => {
+    for (const name of ['Purchases', 'MemoryPurchaseStore', 'SessionStatus', 'EntitlementStatus', 'ReportKind', 'ReportStatus', 'FlushOutcome', 'ConfigIssue', 'PurchaseIssue', 'ProductSchema', 'PlatformPolicySchema', 'PurchaseSessionSchema', 'EntitlementsSchema', 'StartPurchaseInputSchema', 'FlushResultSchema', 'assertCatalog', 'resolvePolicy', 'splitTax', 'PurchaseApi']) {
+      expect(Object.keys(main), name).toContain(name);
+    }
+    expect(main.SessionStatus.Completed).toBe('completed');
+    // Two constants the scheduler already names stay the scheduler's, and the purchase module's are in the namespace.
+    expect(main.PurchaseApi.DEFAULT_LOCK_TTL_MS).toBeGreaterThan(0);
+    expect(main.PurchaseApi.DEFAULT_SESSION_TTL_MS).toBe(24 * 3_600_000);
+  });
+
+  it('the durable purchase store is in the server entry, not the main one', () => {
+    expect(typeof server.FilePurchaseStore).toBe('function');
+    expect(Object.keys(main)).not.toContain('FilePurchaseStore');
+  });
+
+  it('the facade has the router and the purchases, and every route schema is published under a stable name', () => {
+    const subs = main.createSubscriptions({ providers: [main.razorpay({ keyId: 'k', keySecret: 's' })], purchases: { catalog: [{ key: 'coins', kind: 'one_time', name: 'Coins', amount: 100 }], store: new main.MemoryPurchaseStore() } });
+    expect(subs.router).toBeInstanceOf(main.Router);
+    expect(subs.purchases).toBeInstanceOf(main.Purchases);
+    for (const name of ['Product', 'PlatformPolicy', 'PurchaseSession', 'Entitlements', 'StartPurchaseInput', 'CompletePurchaseInput', 'FlushResult', 'RouteRequest', 'RoutingDecision', 'RouteOutcome', 'RoutingStrategy']) {
+      expect(Object.values(main.SchemaName), name).toContain(name);
+    }
+  });
+});

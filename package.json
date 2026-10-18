@@ -1,7 +1,7 @@
 {
   "name": "india-subscriptions",
   "version": "0.1.0",
-  "description": "One headless API for subscriptions on Indian payment gateways (Razorpay, Cashfree, PayU): plans, trials, mandates, recurring charges and webhooks. Bring your own gateway keys.",
+  "description": "One headless API for subscriptions and payments on Indian payment gateways (Razorpay, Cashfree, PayU, PhonePe, Paytm) and app stores (Apple App Store, Google Play): one-time payments, mandates, recurring charges, a gateway router, purchase sessions with entitlements, and webhooks. Bring your own keys.",
   "license": "MIT",
   "type": "module",
   "sideEffects": [
@@ -84,6 +84,14 @@
     "razorpay",
     "cashfree",
     "payu",
+    "phonepe",
+    "paytm",
+    "app-store",
+    "google-play",
+    "in-app-purchase",
+    "user-choice-billing",
+    "payment-routing",
+    "entitlements",
     "india",
     "payments"
   ],
