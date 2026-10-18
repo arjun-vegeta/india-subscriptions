@@ -1,0 +1,48 @@
+{
+  "id": "ps_newer",
+  "platform": "visionos",
+  "product": "pro_monthly",
+  "policy": "bundle",
+  "status": "on_hold",
+  "customerRef": "cust_1",
+  "reference": "ref_1",
+  "newTopLevelField": { "anything": [1, 2, 3] },
+  "options": [
+    {
+      "channel": "wallet",
+      "provider": "razorpay",
+      "checkout": { "kind": "razorpay_checkout", "keyId": "rzp_test_x", "subscriptionId": "sub_123" },
+      "handle": "sub_123",
+      "hostedUrl": "https://pay.example.com/checkout/ps_newer",
+      "routing": {
+        "provider": "razorpay",
+        "ranked": ["razorpay", "cashfree"],
+        "candidates": [{ "provider": "razorpay", "eligible": true, "exclusions": [], "score": 0.91 }]
+      }
+    },
+    {
+      "channel": "store",
+      "provider": "google_play",
+      "checkout": {
+        "kind": "google_play_billing",
+        "productKind": "subscription",
+        "productId": "pro.monthly",
+        "obfuscatedAccountId": "abc",
+        "userChoiceBilling": false
+      },
+      "handle": "abc"
+    },
+    {
+      "channel": "store",
+      "provider": "app_store",
+      "checkout": { "kind": "quantum_checkout", "qubits": 3 },
+      "handle": "q"
+    }
+  ],
+  "attempts": [
+    { "provider": "razorpay", "outcome": "created", "at": "2026-11-22T10:30:00Z" },
+    { "provider": "cashfree", "outcome": "paused", "at": "2026-11-22T10:30:01.250Z", "errorCode": "PROVIDER_UNAVAILABLE", "message": "down" }
+  ],
+  "createdAt": "2026-11-22T10:30:00.000Z",
+  "expiresAt": "2026-11-23T10:30:00.000Z"
+}

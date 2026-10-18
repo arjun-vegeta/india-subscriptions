@@ -1,0 +1,31 @@
+{
+  "id": "ps_3f6c1d0e8a7b4c2d9e5f1a2b3c4d5e6f",
+  "platform": "ios",
+  "product": "pro_monthly",
+  "policy": "store",
+  "status": "open",
+  "customerRef": "cust_1",
+  "reference": "ref_1",
+  "options": [
+    {
+      "channel": "store",
+      "provider": "app_store",
+      "checkout": {
+        "kind": "apple_storekit",
+        "productId": "in.example.pro.monthly",
+        "appAccountToken": "6f1c2f4e-5b6a-4a52-9a43-0f2d7d7c9a10",
+        "promotionalOffer": {
+          "offerId": "winback_50",
+          "keyId": "ABC123DEFG",
+          "nonce": "0b6b3e0e-6b4d-4a2c-8f55-2f1d3a5b7c90",
+          "timestamp": 1795343400000,
+          "signature": "MEUCIQDexample+signature/Zm9vYmFy"
+        }
+      },
+      "handle": "6f1c2f4e-5b6a-4a52-9a43-0f2d7d7c9a10"
+    }
+  ],
+  "attempts": [],
+  "createdAt": "2026-11-22T10:30:00.000Z",
+  "expiresAt": "2026-11-23T10:30:00.000Z"
+}

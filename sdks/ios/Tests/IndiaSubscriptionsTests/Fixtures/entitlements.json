@@ -1,0 +1,40 @@
+{
+  "customerRef": "cust_1",
+  "active": true,
+  "items": [
+    {
+      "product": "pro_monthly",
+      "kind": "subscription",
+      "provider": "app_store",
+      "channel": "store",
+      "platform": "ios",
+      "subscriptionId": "2000000123456789",
+      "status": "active",
+      "active": true,
+      "cancelAtPeriodEnd": false,
+      "currentPeriodEnd": "2026-12-22T10:30:00.000Z",
+      "updatedAt": "2026-11-22T10:30:00.000Z"
+    },
+    {
+      "product": "coins_100",
+      "kind": "one_time",
+      "provider": "razorpay",
+      "channel": "gateway",
+      "platform": "web",
+      "paymentId": "pay_9",
+      "status": "refunded",
+      "active": false,
+      "updatedAt": "2026-11-20T08:00:00.000Z"
+    },
+    {
+      "product": "pro_monthly",
+      "kind": "subscription",
+      "provider": "cashfree",
+      "channel": "gateway",
+      "platform": "web",
+      "status": "in_dunning",
+      "active": false,
+      "updatedAt": "2026-11-19T08:00:00.000Z"
+    }
+  ]
+}

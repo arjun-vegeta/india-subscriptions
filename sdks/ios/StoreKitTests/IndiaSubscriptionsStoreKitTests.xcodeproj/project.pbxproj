@@ -1,0 +1,250 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		24DC624609BDDB3FF09CD2DA /* HostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E341978539A281F82F8D3582 /* HostApp.swift */; };
+		6C76A8F73435AD6A820C7BFD /* StoreKitFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE1F94BF53FE8A3452001B6B /* StoreKitFlowTests.swift */; };
+		8CE123BCF937BF5BF19FFB9D /* FakeBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 615B32CA9C75837B9A7356AF /* FakeBackend.swift */; };
+		615FEF2AD9EFB89E000AC392 /* Products.storekit in Resources */ = {isa = PBXBuildFile; fileRef = DCEB5DC7A28A14ED04CFC6BD /* Products.storekit */; };
+		34E88748B574E1F4CB1F20DA /* IndiaSubscriptions in Frameworks */ = {isa = PBXBuildFile; productRef = 95F91EFA189DA60320F57D9F /* IndiaSubscriptions */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		431387EB7262E1CFC79B125E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F2BEAC489AE2471F4280DFF0;
+			remoteInfo = StoreKitTestHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		F9E7426252A61E3EE1606CDF /* StoreKitTestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StoreKitTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F37C8522B3B7B68E4E16C23B /* IndiaSubscriptionsStoreKitTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IndiaSubscriptionsStoreKitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E341978539A281F82F8D3582 /* HostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostApp.swift; sourceTree = "<group>"; };
+		BE1F94BF53FE8A3452001B6B /* StoreKitFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreKitFlowTests.swift; sourceTree = "<group>"; };
+		615B32CA9C75837B9A7356AF /* FakeBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeBackend.swift; sourceTree = "<group>"; };
+		DCEB5DC7A28A14ED04CFC6BD /* Products.storekit */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Products.storekit; sourceTree = "<group>"; };
+		6DFD8DA77D742E01CFF8AE3F /* IndiaSubscriptions */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = IndiaSubscriptions; path = ..; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		67CB8DBD1572777EE578782D /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		D861267FB8539033A6754987 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (34E88748B574E1F4CB1F20DA /* IndiaSubscriptions in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		2B731CEFC6751AAE0EC69B98 = {isa = PBXGroup; children = (2D39662E457D60357C1656FC /* Host */, 9628FFAECF05013841852CB5 /* Tests */, 6DFD8DA77D742E01CFF8AE3F /* IndiaSubscriptions */, 86024CAD1E83101D97359D73 /* Products */,); sourceTree = "<group>"; };
+		86024CAD1E83101D97359D73 /* Products */ = {isa = PBXGroup; children = (F9E7426252A61E3EE1606CDF /* StoreKitTestHost.app */, F37C8522B3B7B68E4E16C23B /* IndiaSubscriptionsStoreKitTests.xctest */,); name = Products; sourceTree = "<group>"; };
+		2D39662E457D60357C1656FC /* Host */ = {isa = PBXGroup; children = (E341978539A281F82F8D3582 /* HostApp.swift */,); path = Host; sourceTree = "<group>"; };
+		9628FFAECF05013841852CB5 /* Tests */ = {isa = PBXGroup; children = (BE1F94BF53FE8A3452001B6B /* StoreKitFlowTests.swift */, 615B32CA9C75837B9A7356AF /* FakeBackend.swift */, DCEB5DC7A28A14ED04CFC6BD /* Products.storekit */, ); path = Tests; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F2BEAC489AE2471F4280DFF0 /* StoreKitTestHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 686906A0E5185933092E64C8 /* Build configuration list for PBXNativeTarget "StoreKitTestHost" */;
+			buildPhases = (EB792B7B1DF0943D4979C1CC /* Sources */, 67CB8DBD1572777EE578782D /* Frameworks */, E5CAE51439DD5E78F4406500 /* Resources */,);
+			buildRules = ();
+			dependencies = ();
+			name = StoreKitTestHost;
+			productName = StoreKitTestHost;
+			productReference = F9E7426252A61E3EE1606CDF /* StoreKitTestHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+		124C588D1E4E0F457FAD7DFF /* IndiaSubscriptionsStoreKitTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B696DBE8CDDFF6692544C3CB /* Build configuration list for PBXNativeTarget "IndiaSubscriptionsStoreKitTests" */;
+			buildPhases = (FE9D0589A9F80F3B08957CB2 /* Sources */, D861267FB8539033A6754987 /* Frameworks */, E8C3336ACA794505640C60BB /* Resources */,);
+			buildRules = ();
+			dependencies = (2254342BECCEAFBD04538E0A /* PBXTargetDependency */,);
+			name = IndiaSubscriptionsStoreKitTests;
+			packageProductDependencies = (95F91EFA189DA60320F57D9F /* IndiaSubscriptions */,);
+			productName = IndiaSubscriptionsStoreKitTests;
+			productReference = F37C8522B3B7B68E4E16C23B /* IndiaSubscriptionsStoreKitTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		46F86FAA6BBF9AC94A7E4595 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2610;
+				LastUpgradeCheck = 2610;
+			};
+			buildConfigurationList = 6274E0C0E588DD8101015FC3 /* Build configuration list for PBXProject "IndiaSubscriptionsStoreKitTests" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base,);
+			mainGroup = 2B731CEFC6751AAE0EC69B98;
+			packageReferences = (A46A1BCE0B67C45BEC8F435B /* XCLocalSwiftPackageReference ".." */,);
+			productRefGroup = 86024CAD1E83101D97359D73 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (F2BEAC489AE2471F4280DFF0 /* StoreKitTestHost */, 124C588D1E4E0F457FAD7DFF /* IndiaSubscriptionsStoreKitTests */,);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E5CAE51439DD5E78F4406500 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		E8C3336ACA794505640C60BB /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (615FEF2AD9EFB89E000AC392 /* Products.storekit in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		EB792B7B1DF0943D4979C1CC /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (24DC624609BDDB3FF09CD2DA /* HostApp.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
+		FE9D0589A9F80F3B08957CB2 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (6C76A8F73435AD6A820C7BFD /* StoreKitFlowTests.swift in Sources */, 8CE123BCF937BF5BF19FFB9D /* FakeBackend.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		2254342BECCEAFBD04538E0A /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = F2BEAC489AE2471F4280DFF0 /* StoreKitTestHost */; targetProxy = 431387EB7262E1CFC79B125E /* PBXContainerItemProxy */; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		06125DCB1954C4F7EEE69894 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				MTL_FAST_MATH = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+			};
+			name = Debug;
+		};
+		4B2DC9BE5F00237FD19A4DB4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = in.example.StoreKitTestHost;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				MARKETING_VERSION = 1.0;
+				CURRENT_PROJECT_VERSION = 1;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		B1F05F06510EE3683971BC0B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = in.example.IndiaSubscriptionsStoreKitTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StoreKitTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/StoreKitTestHost";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				MARKETING_VERSION = 1.0;
+				CURRENT_PROJECT_VERSION = 1;
+			};
+			name = Debug;
+		};
+		AACF5BDB2BC481EB947517D5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				MTL_FAST_MATH = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		913955F6278A92B06767309D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = in.example.StoreKitTestHost;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				MARKETING_VERSION = 1.0;
+				CURRENT_PROJECT_VERSION = 1;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+		D7748B0D11C986601399B73D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = in.example.IndiaSubscriptionsStoreKitTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StoreKitTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/StoreKitTestHost";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				MARKETING_VERSION = 1.0;
+				CURRENT_PROJECT_VERSION = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		6274E0C0E588DD8101015FC3 /* Build configuration list for PBXProject "IndiaSubscriptionsStoreKitTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (06125DCB1954C4F7EEE69894 /* Debug */, AACF5BDB2BC481EB947517D5 /* Release */,);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		686906A0E5185933092E64C8 /* Build configuration list for PBXNativeTarget "StoreKitTestHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (4B2DC9BE5F00237FD19A4DB4 /* Debug */, 913955F6278A92B06767309D /* Release */,);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B696DBE8CDDFF6692544C3CB /* Build configuration list for PBXNativeTarget "IndiaSubscriptionsStoreKitTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (B1F05F06510EE3683971BC0B /* Debug */, D7748B0D11C986601399B73D /* Release */,);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A46A1BCE0B67C45BEC8F435B /* XCLocalSwiftPackageReference ".." */ = {isa = XCLocalSwiftPackageReference; relativePath = ..; };
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		95F91EFA189DA60320F57D9F /* IndiaSubscriptions */ = {isa = XCSwiftPackageProductDependency; productName = IndiaSubscriptions; };
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+}

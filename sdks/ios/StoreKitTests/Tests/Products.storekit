@@ -1,0 +1,95 @@
+{
+  "identifier" : "9D2E5C41",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "99",
+      "familyShareable" : false,
+      "internalID" : "6740000001",
+      "localizations" : [
+        {
+          "description" : "One hundred coins",
+          "displayName" : "100 coins",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "in.example.coins100",
+      "referenceName" : "100 coins",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "4999",
+      "familyShareable" : false,
+      "internalID" : "6740000002",
+      "localizations" : [
+        {
+          "description" : "Pay once, keep forever",
+          "displayName" : "Lifetime",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "in.example.lifetime",
+      "referenceName" : "Lifetime",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_compatibilityTimeRate" : {
+      "1" : 1
+    },
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_IN",
+    "_storefront" : "IND",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "21500001",
+      "localizations" : [
+
+      ],
+      "name" : "Pro",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "590",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6740000003",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Everything in Pro",
+              "displayName" : "Pro monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "in.example.pro.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Pro monthly",
+          "subscriptionGroupID" : "21500001",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}
