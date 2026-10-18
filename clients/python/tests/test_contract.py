@@ -46,6 +46,27 @@ def load_spec() -> Dict[str, Any]:
 
 SPEC = load_spec()
 
+# The service routes this client has no method for: one-time payments, routing, purchases and entitlements, and the
+# hosted checkout (public pages for a browser, served outside the /v1 API). Remove an id here when the client gets its method.
+UNWRAPPED_OPERATIONS = {
+    "createPayment",
+    "getPayment",
+    "verifyPayment",
+    "createPaymentRefund",
+    "decideRoute",
+    "recordRouteOutcome",
+    "startPurchase",
+    "getPurchase",
+    "chooseAlternative",
+    "completePurchase",
+    "getEntitlements",
+    "flushPurchaseReports",
+    "showHostedCheckout",
+    "returnFromHostedCheckout",
+    "postReturnFromHostedCheckout",
+}
+HOSTED_CHECKOUT_PREFIX = "/checkout/"
+
 
 def spec_operations() -> Dict[str, Tuple[HttpMethod, str, Dict[str, Any]]]:
     found: Dict[str, Tuple[HttpMethod, str, Dict[str, Any]]] = {}
@@ -66,11 +87,12 @@ def spec_requires_bearer(operation: Dict[str, Any]) -> bool:
 
 def test_the_spec_is_the_one_this_client_was_written_for() -> None:
     assert SPEC["openapi"].startswith("3.1")
-    assert all(path.startswith(API_PREFIX + "/") for path in SPEC["paths"])
+    assert all(path.startswith((API_PREFIX + "/", HOSTED_CHECKOUT_PREFIX)) for path in SPEC["paths"])
 
 
 def test_every_operation_id_in_the_spec_is_known_to_the_client() -> None:
-    assert set(SPEC_OPERATIONS) == {operation.value for operation in OperationId}
+    assert set(SPEC_OPERATIONS) - UNWRAPPED_OPERATIONS == {operation.value for operation in OperationId}
+    assert UNWRAPPED_OPERATIONS <= set(SPEC_OPERATIONS)
 
 
 def test_every_operation_has_a_route_and_a_client_method() -> None:

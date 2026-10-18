@@ -30,6 +30,8 @@ import type { TickResult } from './scheduler/schemas.js';
 import { FilePurchaseStore } from './purchase-file-store.js';
 import { FileSchedulerStore } from './scheduler-file-store.js';
 import { ApiPath, PathParam } from './server/constants.js';
+import { RETURN_URL_MAX_LENGTH } from './providers/payu/constants.js';
+import { SESSION_ID_PREFIX, SESSION_ID_RANDOM_BYTES } from './purchase/constants.js';
 import { loadPurchasesFile } from './service-purchases.js';
 import { createNodeServer, listen, type RunningServer } from './server/node.js';
 import type { EventsHook } from './server/routes.js';
@@ -163,6 +165,8 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
     });
   }
 
+  warnAboutReturnUrlLimits(config);
+
   let purchaseStore: FilePurchaseStore | undefined;
   let client: Subscriptions;
   try {
@@ -234,6 +238,21 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
       await purchaseStore?.close();
     },
   };
+}
+
+/**
+ * PayU accepts return URLs (`surl`, `furl`) of at most 50 characters. The hosted checkout's return URL holds an unguessable
+ * session id (`ps_` and 32 characters), so it never fits: a purchase routed to PayU while `PUBLIC_BASE_URL` is set is
+ * refused by PayU's own limit, and a refusal of the request does not fall through to the next gateway. Say so at startup.
+ */
+function warnAboutReturnUrlLimits(config: ServiceConfig): void {
+  if (!config.gateways[Provider.PayU] || !config.purchasesFile || !config.publicBaseUrl) return;
+  const sample = checkoutUrl(config.publicBaseUrl, `${SESSION_ID_PREFIX}${'x'.repeat(Math.ceil((SESSION_ID_RANDOM_BYTES * 4) / 3))}`, ApiPath.CheckoutReturn);
+  if (sample.length <= RETURN_URL_MAX_LENGTH) return;
+  config.warnings.push(
+    `payu accepts return URLs of at most ${RETURN_URL_MAX_LENGTH} characters and the hosted checkout's return URL is ${sample.length}: ` +
+      `a purchase routed to payu is refused by PayU. Leave payu out of a deployment that serves purchases through ${EnvVar.PublicBaseUrl}.`,
+  );
 }
 
 /** `{base}/checkout/{sessionId}` (or `.../return`): the hosted checkout of a session, built on the service's public URL. */

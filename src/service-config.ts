@@ -784,16 +784,14 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
   }
 
   // Purchases: the configuration file and its durable store go together; the public URL is what the hosted checkout is built on.
-  const purchasesFile = base?.[EnvVar.PurchasesFile];
-  const purchaseStoreFile = base?.[EnvVar.PurchaseStoreFile];
-  if (service.success) {
-    if (purchasesFile && !purchaseStoreFile) {
-      problems.push(
-        `${EnvVar.PurchaseStoreFile}: is required when ${EnvVar.PurchasesFile} is set (sessions, entitlements and the report queue must survive a restart)`,
-      );
-    } else if (purchaseStoreFile && !purchasesFile) {
-      problems.push(`${EnvVar.PurchasesFile}: is required when ${EnvVar.PurchaseStoreFile} is set`);
-    }
+  const purchasesFile = values[EnvVar.PurchasesFile];
+  const purchaseStoreFile = values[EnvVar.PurchaseStoreFile];
+  if (purchasesFile && !purchaseStoreFile) {
+    problems.push(
+      `${EnvVar.PurchaseStoreFile}: is required when ${EnvVar.PurchasesFile} is set (sessions, entitlements and the report queue must survive a restart)`,
+    );
+  } else if (purchaseStoreFile && !purchasesFile) {
+    problems.push(`${EnvVar.PurchasesFile}: is required when ${EnvVar.PurchaseStoreFile} is set`);
   }
   const publicBaseUrl = base?.[EnvVar.PublicBaseUrl]?.replace(/\/+$/, '');
   if (purchasesFile && purchaseStoreFile) {

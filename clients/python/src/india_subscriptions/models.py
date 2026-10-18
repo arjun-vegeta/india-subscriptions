@@ -1363,6 +1363,943 @@ class ExternalTransactionRecord(BaseModel):
     """
 
 
+class RouteExclusion(str, Enum):
+    """
+    Why a gateway was ruled out: `wrong_product_kind` (no one-time payments), `missing_capability` (a `needs` flag it cannot meet), `payment_method_unsupported` (no overlap with the customer's methods), `excluded_by_merchant` (listed in `exclude`), `unhealthy` (circuit breaker open), `above_max_amount` and `below_min_amount` (the merchant's per-gateway amount bounds).
+    """
+
+    WRONG_PRODUCT_KIND = 'wrong_product_kind'
+    MISSING_CAPABILITY = 'missing_capability'
+    PAYMENT_METHOD_UNSUPPORTED = 'payment_method_unsupported'
+    EXCLUDED_BY_MERCHANT = 'excluded_by_merchant'
+    UNHEALTHY = 'unhealthy'
+    ABOVE_MAX_AMOUNT = 'above_max_amount'
+    BELOW_MIN_AMOUNT = 'below_min_amount'
+
+
+class RouteOutcomeKind(str, Enum):
+    """
+    What an outcome is about: `authorization` (a customer authorising a mandate), `charge` (a recurring debit), `payment` (a one-time payment) or `request` (any other call to the gateway).
+    """
+
+    AUTHORIZATION = 'authorization'
+    CHARGE = 'charge'
+    PAYMENT = 'payment'
+    REQUEST = 'request'
+
+
+class RouteOutcomeResult(str, Enum):
+    """
+    `success`, `failure` (the gateway answered and the attempt did not succeed, such as a declined card) or `unavailable` (the gateway could not be reached or errored out; this feeds the circuit breaker).
+    """
+
+    SUCCESS = 'success'
+    FAILURE = 'failure'
+    UNAVAILABLE = 'unavailable'
+
+
+class CircuitState(str, Enum):
+    """
+    A gateway's circuit breaker: `closed` (normal), `open` (excluded until the cooldown passes) or `half_open` (a candidate again; one `unavailable` result reopens it, one `success` closes it).
+    """
+
+    CLOSED = 'closed'
+    OPEN = 'open'
+    HALF_OPEN = 'half_open'
+
+
+class RouteNeeds(BaseModel):
+    """
+    Capabilities the purchase depends on. A flag set to `true` excludes every gateway whose capability of the same name is off; `false` or absent means the capability is not needed.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    trial: Optional[bool] = None
+    """
+    The gateway must support free trials.
+    """
+    upfront_amount: Annotated[Optional[bool], Field(alias='upfrontAmount')] = None
+    """
+    The gateway must be able to collect an upfront amount with the authorisation.
+    """
+    quantity: Optional[bool] = None
+    """
+    The gateway must be able to bill several units of a plan.
+    """
+    pause: Optional[bool] = None
+    """
+    The gateway must be able to pause a subscription.
+    """
+    cancel_at_period_end: Annotated[
+        Optional[bool], Field(alias='cancelAtPeriodEnd')
+    ] = None
+    """
+    The gateway must be able to cancel a subscription at the end of the paid period.
+    """
+    change_plan: Annotated[Optional[bool], Field(alias='changePlan')] = None
+    """
+    The gateway must be able to move a subscription to another plan.
+    """
+    refunds: Optional[bool] = None
+    """
+    The gateway must be able to refund charges and payments.
+    """
+
+
+class RouteRequest(BaseModel):
+    """
+    What is about to be sold, and what the gateway must be able to do for it.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    kind: ProductKind
+    """
+    Whether the purchase is a subscription or a one-time payment.
+    """
+    amount: Annotated[int, Field(gt=0)]
+    """
+    The amount in paise: the amount of every cycle for a subscription, the payment amount for a one-time payment. Checked against the merchant's per-gateway bounds and used to price fees.
+    """
+    interval: Optional[BillingInterval] = None
+    """
+    How often a subscription bills. Accepted so a request can describe the whole plan; no gateway capability depends on it today, so it does not change the decision. Ignored for one-time payments.
+    """
+    payment_methods: Annotated[
+        Optional[list[PaymentMethod]], Field(alias='paymentMethods', min_length=1)
+    ] = None
+    """
+    The payment methods the customer can use. A gateway is a candidate only if it offers at least one of them (its mandate methods for a subscription, its one-time methods for a one-time payment). Absent: any method.
+    """
+    needs: Optional[RouteNeeds] = None
+    """
+    Capabilities the purchase depends on.
+    """
+    exclude: Optional[list[Provider]] = None
+    """
+    Providers that must not be chosen, for example one that just failed this customer.
+    """
+    prefer: Optional[Provider] = None
+    """
+    A provider to favour, for example the gateway the customer already has a mandate with. It earns a score bonus but is never chosen if a hard filter excludes it.
+    """
+
+
+class RouteFactors(BaseModel):
+    """
+    The inputs behind a candidate's score.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    success_rate: Annotated[
+        Optional[float], Field(alias='successRate', ge=0.0, le=1.0)
+    ] = None
+    """
+    The success rate used in the score, from 0 to 1: successes over all observations in the window, with missing observations below the minimum sample count filled in with the prior rate.
+    """
+    samples: Annotated[Optional[int], Field(ge=0)] = None
+    """
+    How many observations in the window the success rate is based on.
+    """
+    cost: Annotated[Optional[float], Field(ge=0.0)] = None
+    """
+    The gateway's estimated fee for this amount, in paise (fractional when it is the mean over several payment methods). Priced from the strategy's `costs`, or its `defaultCost` for a gateway without an entry.
+    """
+    priority: Annotated[Optional[float], Field(ge=0.0, le=1.0)] = None
+    """
+    The priority factor from 0 to 1: 1 for the first provider in the merchant's priority list, 0 for one that is not listed.
+    """
+    healthy: Optional[bool] = None
+    """
+    `true` when the circuit is closed, `false` when it is half-open and the gateway is on probation.
+    """
+
+
+class RouteCandidate(BaseModel):
+    """
+    One gateway considered for a request, with the reason it was excluded or the score it earned.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The gateway.
+    """
+    eligible: bool
+    """
+    `true` when no hard filter excluded the gateway.
+    """
+    exclusions: list[RouteExclusion]
+    """
+    Every hard filter that excluded the gateway; empty when it is eligible.
+    """
+    details: Optional[list[str]] = None
+    """
+    A readable sentence for each entry of `exclusions`, in the same order. Absent when the gateway is eligible.
+    """
+    score: Optional[float] = None
+    """
+    The score of an eligible gateway; higher is better. Absent when excluded.
+    """
+    factors: Optional[RouteFactors] = None
+    """
+    The inputs behind the score. Absent when excluded.
+    """
+
+
+class RoutingDecision(BaseModel):
+    """
+    The router's answer, with the reasoning behind it.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The best gateway for the request: the first of `ranked`.
+    """
+    ranked: Annotated[list[Provider], Field(min_length=1)]
+    """
+    Every eligible gateway, best first. Try them in this order when one fails to create the purchase.
+    """
+    candidates: list[RouteCandidate]
+    """
+    Every gateway that was considered: the eligible ones in rank order, then the excluded ones by name.
+    """
+
+
+class RouteOutcome(BaseModel):
+    """
+    How one attempt at a gateway ended; report it to `Router.record` so routing learns.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The gateway the attempt went to.
+    """
+    kind: RouteOutcomeKind
+    """
+    What the attempt was: an authorisation, a charge, a payment or another request.
+    """
+    result: RouteOutcomeResult
+    """
+    How it ended: `success`, `failure` or `unavailable`.
+    """
+    payment_method: Annotated[Optional[PaymentMethod], Field(alias='paymentMethod')] = (
+        None
+    )
+    """
+    The payment method used, when known. It is recorded in addition to the gateway-wide figures.
+    """
+    at: Optional[AwareDatetime] = None
+    """
+    When the attempt ended. Defaults to the router's clock.
+    """
+
+
+class Weights(BaseModel):
+    """
+    How much each factor counts. The score is the weighted sum of the factors plus the `prefer` bonus.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    success_rate: Annotated[float, Field(alias='successRate', ge=0.0)]
+    """
+    Weight of the success rate (0 to 1). Default 1.
+    """
+    cost: Annotated[float, Field(ge=0.0)]
+    """
+    Weight of the share of the amount kept after the gateway's fee (0 to 1). Default 1.
+    """
+    priority: Annotated[float, Field(ge=0.0)]
+    """
+    Weight of the priority factor (0 to 1). Default 0.02.
+    """
+    prefer: Annotated[float, Field(ge=0.0)]
+    """
+    Bonus added to the gateway named in the request's `prefer`. Default 0.05.
+    """
+
+
+class Kinds(BaseModel):
+    """
+    Which recorded outcome kinds make up the success rate, per product kind.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    subscription: Annotated[list[RouteOutcomeKind], Field(min_length=1)]
+    """
+    Outcome kinds that count for a subscription. Default: `authorization` and `charge`.
+    """
+    one_time: Annotated[list[RouteOutcomeKind], Field(min_length=1)]
+    """
+    Outcome kinds that count for a one-time payment. Default: `payment`.
+    """
+
+
+class SuccessRate(BaseModel):
+    """
+    How the observed success rate is computed.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    window_hours: Annotated[int, Field(alias='windowHours', gt=0)]
+    """
+    How many hours of statistics to look at. Statistics are kept in whole UTC hours, so the window is rounded out to the hour. Default 24.
+    """
+    min_samples: Annotated[int, Field(alias='minSamples', ge=0)]
+    """
+    Observations needed before the observed rate counts fully. Below it, the missing observations are filled in with `priorRate`. Default 20.
+    """
+    prior_rate: Annotated[float, Field(alias='priorRate', ge=0.0, le=1.0)]
+    """
+    The success rate assumed when nothing is known (0 to 1). Default 0.9.
+    """
+    kinds: Kinds
+    """
+    Which recorded outcome kinds make up the success rate, per product kind.
+    """
+
+
+class Methods(BaseModel):
+    """
+    A fee: a percentage of the amount plus a fixed amount.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    percent_bps: Annotated[int, Field(alias='percentBps', ge=0)]
+    """
+    The percentage part of the fee in basis points of the amount: 200 is 2%.
+    """
+    fixed_paise: Annotated[int, Field(alias='fixedPaise', ge=0)]
+    """
+    The fixed part of the fee in paise.
+    """
+
+
+class Costs(BaseModel):
+    """
+    What a gateway charges the merchant: a fee, optionally different per payment method.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    percent_bps: Annotated[int, Field(alias='percentBps', ge=0)]
+    """
+    The percentage part of the fee in basis points of the amount: 200 is 2%.
+    """
+    fixed_paise: Annotated[int, Field(alias='fixedPaise', ge=0)]
+    """
+    The fixed part of the fee in paise.
+    """
+    methods: Optional[dict[PaymentMethod, Methods]] = None
+    """
+    Fees that replace the gateway's own fee for a payment method (UPI is often cheaper than cards).
+    """
+
+
+class DefaultCost(BaseModel):
+    """
+    The fee assumed for a gateway that has no entry in `costs`. Default: free, so list every gateway once you list any.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    percent_bps: Annotated[int, Field(alias='percentBps', ge=0)]
+    """
+    The percentage part of the fee in basis points of the amount: 200 is 2%.
+    """
+    fixed_paise: Annotated[int, Field(alias='fixedPaise', ge=0)]
+    """
+    The fixed part of the fee in paise.
+    """
+
+
+class Limits(BaseModel):
+    """
+    The amounts the merchant is willing to route to a gateway. Applies to subscriptions and one-time payments alike.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    min_amount: Annotated[Optional[int], Field(alias='minAmount', gt=0)] = None
+    """
+    The smallest amount, in paise, the merchant sends to this gateway.
+    """
+    max_amount: Annotated[Optional[int], Field(alias='maxAmount', gt=0)] = None
+    """
+    The largest amount, in paise, the merchant sends to this gateway, for example the per-debit ceiling a mandate allows without extra authentication.
+    """
+
+
+class CircuitBreaker(BaseModel):
+    """
+    When a gateway that keeps being unavailable is taken out of rotation, and when it is let back in.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    failure_threshold: Annotated[int, Field(alias='failureThreshold', gt=0)]
+    """
+    Consecutive `unavailable` results that open the circuit. Default 5.
+    """
+    cooldown_ms: Annotated[int, Field(alias='cooldownMs', gt=0)]
+    """
+    Milliseconds an open circuit waits before it half-opens. Default 60000.
+    """
+
+
+class RoutingStrategy(BaseModel):
+    """
+    How the router decides: the weights of the score, the merchant's fees, priorities and limits, and the circuit breaker.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    weights: Weights
+    """
+    How much each factor counts. The score is the weighted sum of the factors plus the `prefer` bonus.
+    """
+    success_rate: Annotated[SuccessRate, Field(alias='successRate')]
+    """
+    How the observed success rate is computed.
+    """
+    costs: dict[Provider, Costs]
+    """
+    What each gateway charges the merchant. Absent for a gateway means `defaultCost` applies.
+    """
+    default_cost: Annotated[DefaultCost, Field(alias='defaultCost')]
+    """
+    The fee assumed for a gateway that has no entry in `costs`. Default: free, so list every gateway once you list any.
+    """
+    priority: list[Provider]
+    """
+    Merchant preference order, most preferred first. Also breaks ties between equal scores.
+    """
+    limits: dict[Provider, Limits]
+    """
+    Per-gateway bounds on the amount the merchant routes there.
+    """
+    circuit_breaker: Annotated[CircuitBreaker, Field(alias='circuitBreaker')]
+    """
+    When a gateway that keeps being unavailable is taken out of rotation, and when it is let back in.
+    """
+
+
+class SessionStatus(str, Enum):
+    """
+    `open` (the customer has not come back from checkout), `awaiting_payment` (paid or approved but not confirmed yet, or the gateway checkout of a user choice billing purchase is under way), `completed`, `failed` (a verification said not paid; a later payment still completes it) or `expired` (a payment confirmed afterwards still completes it).
+    """
+
+    OPEN = 'open'
+    AWAITING_PAYMENT = 'awaiting_payment'
+    COMPLETED = 'completed'
+    FAILED = 'failed'
+    EXPIRED = 'expired'
+
+
+class EntitlementStatus(str, Enum):
+    """
+    `active`, `trialing` and `past_due` give access; `paused`, `halted`, `cancelled`, `expired` and `refunded` do not. A subscription cancelled at the end of its period stays `active` with `cancelAtPeriodEnd` set until the period ends.
+    """
+
+    ACTIVE = 'active'
+    TRIALING = 'trialing'
+    PAST_DUE = 'past_due'
+    PAUSED = 'paused'
+    HALTED = 'halted'
+    CANCELLED = 'cancelled'
+    EXPIRED = 'expired'
+    REFUNDED = 'refunded'
+
+
+class ReportKind(str, Enum):
+    """
+    `transaction` reports a purchase, a free trial or a renewal to Google; `refund` reports a refund.
+    """
+
+    TRANSACTION = 'transaction'
+    REFUND = 'refund'
+
+
+class ReportStatus(str, Enum):
+    """
+    `queued` (waiting to be sent), `sent` (Google accepted it) or `rejected` (Google refused it as invalid; never retried).
+    """
+
+    QUEUED = 'queued'
+    SENT = 'sent'
+    REJECTED = 'rejected'
+
+
+class FlushOutcome(str, Enum):
+    """
+    What a flush did with a report: `sent`, `retrying` (failed, tried again after a backoff), `blocked` (waiting for the report it refers to), `rejected` (invalid, never retried) or `no_reporter` (nothing configured to send with).
+    """
+
+    SENT = 'sent'
+    RETRYING = 'retrying'
+    BLOCKED = 'blocked'
+    REJECTED = 'rejected'
+    NO_REPORTER = 'no_reporter'
+
+
+class AttemptOutcome(str, Enum):
+    """
+    `created` or `failed`.
+    """
+
+    CREATED = 'created'
+    FAILED = 'failed'
+
+
+class ProductPlan(BaseModel):
+    """
+    Extra plan fields passed to a gateway when a subscription of the product is created. The name, amount and interval come from the product.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    description: Annotated[Optional[str], Field(max_length=500)] = None
+    """
+    Plan description.
+    """
+    scheduling: Optional[SchedulingMode] = None
+    """
+    Who raises each charge. Defaults to the gateway's native mode.
+    """
+    max_amount: Annotated[Optional[int], Field(alias='maxAmount', gt=0)] = None
+    """
+    Ceiling the mandate allows per debit, in paise. Defaults to the product `amount`.
+    """
+    max_cycles: Annotated[Optional[int], Field(alias='maxCycles', gt=0)] = None
+    """
+    Number of cycles after which the plan ends. Omit for open-ended.
+    """
+    metadata: Optional[dict[str, str]] = None
+    """
+    Free-form key/value pairs stored with the plan.
+    """
+
+
+class Product(BaseModel):
+    """
+    A product you sell, with its price and where it lives in each store.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    key: Annotated[str, Field(max_length=60, min_length=1)]
+    """
+    Your product key. Purchases, sessions and entitlements refer to it.
+    """
+    kind: ProductKind
+    """
+    `subscription` or `one_time`.
+    """
+    name: Annotated[str, Field(max_length=100, min_length=1)]
+    """
+    Product name, shown to the customer by the gateways.
+    """
+    amount: Annotated[int, Field(gt=0)]
+    """
+    Price on gateways in paise, tax included.
+    """
+    interval: Optional[BillingInterval] = None
+    """
+    How often a subscription bills. Required for subscriptions.
+    """
+    trial_days: Annotated[Optional[int], Field(alias='trialDays', gt=0)] = None
+    """
+    Free trial length in days on gateways (only gateways that support trials are chosen). Stores use their own offers.
+    """
+    tax_rate_bps: Annotated[Optional[int], Field(alias='taxRateBps', ge=0)] = None
+    """
+    Tax included in `amount`, in basis points (1800 is 18%). Required for products sold through Google Play user choice billing: reports to Google split the charge into a pre-tax amount and tax.
+    """
+    physical_goods: Annotated[Optional[bool], Field(alias='physicalGoods')] = None
+    """
+    True: the product is never sold through app store billing and goes to the gateways on every platform.
+    """
+    platforms: Annotated[Optional[list[Platform]], Field(min_length=1)] = None
+    """
+    The platforms the product is sold on. Omit for all of them.
+    """
+    payment_methods: Annotated[
+        Optional[list[PaymentMethod]], Field(alias='paymentMethods', min_length=1)
+    ] = None
+    """
+    Restrict gateway purchases of the product to these payment methods. Only gateways that offer one of them are chosen, and the gateway is told to offer only these. Omit to allow every method the gateway supports.
+    """
+    app_store: Annotated[Optional[StoreProduct], Field(alias='appStore')] = None
+    """
+    The product in App Store Connect. Required to sell on iOS.
+    """
+    google_play: Annotated[Optional[StoreProduct], Field(alias='googlePlay')] = None
+    """
+    The product in Play Console. Required to sell on Android when the policy is `store` or `user_choice`.
+    """
+    plan: Optional[ProductPlan] = None
+    """
+    Extra plan fields for gateway subscriptions, such as `maxAmount`.
+    """
+
+
+class PlatformPolicy(BaseModel):
+    """
+    Where purchases on each platform may be taken.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    ios: Literal['store']
+    """
+    iOS: App Store only.
+    """
+    android: ChannelPolicy
+    """
+    Android: `store` (Google Play only), `user_choice` (Google Play with its choice screen offering a gateway, reported to Google) or `gateways` (apps distributed outside Google Play).
+    """
+    web: Literal['gateways']
+    """
+    Web: payment gateways only.
+    """
+
+
+class PurchaseAttempt(BaseModel):
+    """
+    One gateway tried while creating the purchase.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The gateway that was tried.
+    """
+    outcome: AttemptOutcome
+    """
+    Whether the gateway created the order or mandate.
+    """
+    at: AwareDatetime
+    """
+    When the attempt was made.
+    """
+    error_code: Annotated[Optional[str], Field(alias='errorCode')] = None
+    """
+    The error code of a failed attempt.
+    """
+    message: Optional[str] = None
+    """
+    The error message of a failed attempt.
+    """
+
+
+class EntitlementItem(BaseModel):
+    """
+    One purchase the customer owns or owned.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    product: str
+    """
+    The key of the product.
+    """
+    kind: ProductKind
+    """
+    `subscription` or `one_time`.
+    """
+    provider: Provider
+    """
+    The provider that holds the purchase.
+    """
+    channel: SalesChannel
+    """
+    `store` or `gateway`.
+    """
+    platform: Platform
+    """
+    The platform the customer bought on.
+    """
+    subscription_id: Annotated[Optional[str], Field(alias='subscriptionId')] = None
+    """
+    The provider's subscription id.
+    """
+    payment_id: Annotated[Optional[str], Field(alias='paymentId')] = None
+    """
+    The provider's payment id.
+    """
+    status: EntitlementStatus
+    """
+    What the customer has.
+    """
+    active: bool
+    """
+    True when the item gives access now.
+    """
+    cancel_at_period_end: Annotated[
+        Optional[bool], Field(alias='cancelAtPeriodEnd')
+    ] = None
+    """
+    True when the subscription ends at the end of the current period.
+    """
+    current_period_end: Annotated[
+        Optional[AwareDatetime], Field(alias='currentPeriodEnd')
+    ] = None
+    """
+    End of the current paid period, where known.
+    """
+    updated_at: Annotated[AwareDatetime, Field(alias='updatedAt')]
+    """
+    When the item last changed.
+    """
+
+
+class Entitlements(BaseModel):
+    """
+    What a customer owns, across app stores and gateways.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    customer_ref: Annotated[str, Field(alias='customerRef')]
+    """
+    Your id for the customer.
+    """
+    active: bool
+    """
+    True when at least one item gives access now.
+    """
+    items: list[EntitlementItem]
+    """
+    Every purchase of the customer, newest change first, including ended ones.
+    """
+
+
+class StartPurchaseInput(BaseModel):
+    """
+    Everything needed to start a purchase.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    platform: Platform
+    """
+    The platform the customer buys on.
+    """
+    product: Annotated[str, Field(min_length=1)]
+    """
+    The key of the product.
+    """
+    customer: Customer
+    """
+    The paying customer. `state` is required when the platform policy is `user_choice`, because the purchase is then reported to Google.
+    """
+    customer_ref: Annotated[
+        str, Field(alias='customerRef', max_length=128, min_length=1)
+    ]
+    """
+    Your id for the customer: entitlements are kept under it.
+    """
+    reference: Annotated[
+        Optional[str], Field(max_length=25, min_length=1, pattern='^[A-Za-z0-9_-]+$')
+    ] = None
+    """
+    Your own id for the purchase: at most 25 characters of letters, digits, `_` and `-`, the tightest limit among the gateways. Retrying a start with the same reference and customer returns the same session.
+    """
+    return_url: Annotated[Optional[AnyUrl], Field(alias='returnUrl')] = None
+    """
+    Where a gateway sends the customer after paying.
+    """
+
+
+class ChooseAlternativeInput(BaseModel):
+    """
+    The customer's choice of the alternative payment on Google's screen.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    external_transaction_token: Annotated[
+        str, Field(alias='externalTransactionToken', min_length=1)
+    ]
+    """
+    The token Google gave the app when the customer chose the alternative on its choice screen.
+    """
+
+
+class CompletePurchaseInput(BaseModel):
+    """
+    The result of a checkout, to complete a purchase session with.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    provider: Provider
+    """
+    The provider the customer paid at.
+    """
+    result: dict[str, Any]
+    """
+    What the provider handed back to the browser or device, untouched.
+    """
+
+
+class FlushOptions(BaseModel):
+    """
+    Options for sending queued reports.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    limit: Annotated[Optional[int], Field(ge=1, le=500)] = None
+    """
+    Most reports to send in this flush. Defaults to 50.
+    """
+
+
+class FlushEntry(BaseModel):
+    """
+    What a flush did with one report.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    id: str
+    """
+    The report id.
+    """
+    kind: ReportKind
+    """
+    A transaction or a refund.
+    """
+    outcome: Optional[FlushOutcome] = None
+    """
+    What the flush did with the report. Absent for an overdue report this flush did not try.
+    """
+    attempts: Annotated[int, Field(ge=0)]
+    """
+    Attempts made so far, including this one.
+    """
+    due_by: Annotated[AwareDatetime, Field(alias='dueBy')]
+    """
+    When Google must have the report.
+    """
+    overdue: bool
+    """
+    True when the report was not sent by `dueBy`.
+    """
+    error_code: Annotated[Optional[str], Field(alias='errorCode')] = None
+    """
+    The error code of a failed attempt.
+    """
+    error_message: Annotated[Optional[str], Field(alias='errorMessage')] = None
+    """
+    The error message of a failed attempt.
+    """
+
+
+class FlushResult(BaseModel):
+    """
+    The outcome of sending queued reports to Google.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    sent: Annotated[int, Field(ge=0)]
+    """
+    Reports Google accepted in this flush.
+    """
+    retrying: Annotated[int, Field(ge=0)]
+    """
+    Reports whose attempt failed and that stay queued with a backoff.
+    """
+    blocked: Annotated[int, Field(ge=0)]
+    """
+    Reports waiting for an earlier report to be sent.
+    """
+    rejected: Annotated[int, Field(ge=0)]
+    """
+    Reports Google refused as invalid. They are not retried.
+    """
+    skipped: Annotated[int, Field(ge=0)]
+    """
+    Reports left queued because no reporter is configured.
+    """
+    entries: list[FlushEntry]
+    """
+    One entry per report this flush looked at.
+    """
+    overdue: list[FlushEntry]
+    """
+    Every queued report past its `dueBy`, whether or not this flush tried it. Page someone when this is not empty.
+    """
+
+
 class ErrorCode(str, Enum):
     """
     A stable error code: one of the library's `ErrorCode`s or one of the service's own (`UNAUTHORIZED`, `METHOD_NOT_ALLOWED`, `PAYLOAD_TOO_LARGE`). Branch on this, never on the message.
@@ -1416,6 +2353,21 @@ class WebhookPayload(RootModel[dict[str, Any]]):
     root: dict[str, Any]
     """
     The gateway's webhook body, exactly as the gateway sent it.
+    """
+
+
+class RoutingReceipt(BaseModel):
+    """
+    Acknowledgement of an outcome the router recorded.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    recorded: bool
+    """
+    True when the router counted the outcome.
     """
 
 
@@ -2057,6 +3009,134 @@ class PaymentVerification(BaseModel):
     raw: Optional[Any] = None
     """
     The verified provider data, untouched. Absent when there is none.
+    """
+
+
+class PurchaseOption(BaseModel):
+    """
+    One way the customer can pay for the session.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    channel: SalesChannel
+    """
+    `store` for an app store, `gateway` for a payment gateway.
+    """
+    provider: Provider
+    """
+    The provider that holds the purchase.
+    """
+    checkout: Annotated[
+        Union[
+            RedirectCheckout,
+            FormPostCheckout,
+            RazorpayCheckout,
+            CashfreeCheckout,
+            AppleStoreKitCheckout,
+            GooglePlayBillingCheckout,
+        ],
+        Field(discriminator='kind'),
+    ]
+    """
+    What the browser or device must do to pay.
+    """
+    handle: str
+    """
+    The id the provider returned when the purchase was created: the id to expect back from the checkout. For a store it is the account token.
+    """
+    routing: Optional[RoutingDecision] = None
+    """
+    Why this gateway was chosen. Present on gateway options.
+    """
+    hosted_url: Annotated[Optional[AnyUrl], Field(alias='hostedUrl')] = None
+    """
+    A page that performs this option's checkout step, for a client that cannot run the browser helper (the Android alternative path opens it in a browser tab). Present on gateway options when the service serves a hosted checkout.
+    """
+
+
+class PurchaseSession(BaseModel):
+    """
+    A purchase in progress or done: where the customer may pay and how it ended.
+    """
+
+    model_config = ConfigDict(
+        extra='ignore',
+        populate_by_name=True,
+    )
+    id: str
+    """
+    The session id. Unguessable: whoever holds it can complete the session.
+    """
+    platform: Platform
+    """
+    The platform the customer buys on.
+    """
+    product: str
+    """
+    The key of the product.
+    """
+    policy: ChannelPolicy
+    """
+    The channel policy the session was resolved with: `store`, `user_choice` or `gateways`.
+    """
+    status: SessionStatus
+    """
+    Where the session is.
+    """
+    customer_ref: Annotated[str, Field(alias='customerRef')]
+    """
+    Your id for the customer.
+    """
+    reference: Annotated[
+        str, Field(max_length=25, min_length=1, pattern='^[A-Za-z0-9_-]+$')
+    ]
+    """
+    Your own id for the purchase: at most 25 characters of letters, digits, `_` and `-`, the tightest limit among the gateways. Retrying a start with the same reference and customer returns the same session.
+    """
+    return_url: Annotated[Optional[AnyUrl], Field(alias='returnUrl')] = None
+    """
+    Where the customer is sent when the purchase is done: the `returnUrl` given to `start`.
+    """
+    options: list[PurchaseOption]
+    """
+    How the customer can pay. A `user_choice` session has the Google Play option first and the gateway option once the customer chose the alternative.
+    """
+    attempts: list[PurchaseAttempt]
+    """
+    Every gateway tried while creating the gateway option, in order.
+    """
+    external_transaction_token: Annotated[
+        Optional[str], Field(alias='externalTransactionToken')
+    ] = None
+    """
+    Set when the customer chose the alternative payment on Google's screen.
+    """
+    created_at: Annotated[AwareDatetime, Field(alias='createdAt')]
+    """
+    When the session was created.
+    """
+    expires_at: Annotated[AwareDatetime, Field(alias='expiresAt')]
+    """
+    When an unpaid session expires.
+    """
+    completed_at: Annotated[Optional[AwareDatetime], Field(alias='completedAt')] = None
+    """
+    When the session completed.
+    """
+    subscription_id: Annotated[Optional[str], Field(alias='subscriptionId')] = None
+    """
+    The provider's subscription id, once the purchase is confirmed.
+    """
+    payment_id: Annotated[Optional[str], Field(alias='paymentId')] = None
+    """
+    The provider's payment id, once the purchase is confirmed.
+    """
+    provider: Optional[Provider] = None
+    """
+    The provider the purchase was confirmed at.
     """
 
 
