@@ -41,6 +41,7 @@ import {
   EntitlementStatus,
   FALLBACK_ERROR_CODES,
   FlushOutcome,
+  REFUSAL_ERROR_CODES,
   GOOGLE_PLAY_CONSUMABLE_RESULT_KEY,
   LockScope,
   MAX_OVERDUE_LISTED,
@@ -121,9 +122,11 @@ export interface PurchasesOptions {
   lock?: { ttlMs?: number; waitMs?: number; pollMs?: number };
   /**
    * When set, gateways are given this URL as their return URL and the caller's `returnUrl` stays on the session as the
-   * final destination (the hosted checkout sends the customer there once the purchase is completed). Stores are unaffected.
+   * final destination (the hosted checkout sends the customer there once the purchase is completed). It is asked once
+   * per gateway tried, with the gateway, because a gateway may need a different address (PayU's limit is 50 characters).
+   * Stores are unaffected.
    */
-  gatewayReturnUrl?: (sessionId: string) => string;
+  gatewayReturnUrl?: (sessionId: string, provider: ProviderName) => string;
   /** When set, every gateway option carries `hostedUrl`: a page that performs the option's checkout step. Stores are unaffected. */
   hostedCheckoutUrl?: (sessionId: string) => string;
   /** Called with problems that cannot be raised to the caller. Log them. */
@@ -176,9 +179,11 @@ const LIVE_STATUSES: readonly SessionStatus[] = [SessionStatus.Open, SessionStat
  *   `expired`, and so does a success event. A session becomes `failed` only through `complete` (a verification that says
  *   not paid), never from one failure event: gateways let the customer retry on the same order.
  * - On a gateway create that fails with `PROVIDER_UNAVAILABLE`, `RATE_LIMITED`, `NETWORK`, `TIMEOUT`, `AUTH`,
- *   `PROVIDER_ERROR` or `OUTCOME_UNKNOWN` the next gateway of the router's `ranked` list is tried; any other error
- *   (`VALIDATION`, `CONFLICT`, ...) is raised at once. Each attempt is passed to `router.record` and kept in the
- *   session's `attempts`.
+ *   `PROVIDER_ERROR` or `OUTCOME_UNKNOWN` (the gateway could not take it) or with `VALIDATION` or `UNSUPPORTED` (it
+ *   refused the purchase's inputs and created nothing) the next gateway of the router's `ranked` list is tried; any other
+ *   error (`CONFLICT`, ...) is raised at once. When every gateway fails the error is `VALIDATION` if each of them refused
+ *   the inputs (the purchase itself is the problem) and `PROVIDER_UNAVAILABLE` otherwise. Each attempt is passed to
+ *   `router.record` (a refusal as a `failure`, never as `unavailable`) and kept in the session's `attempts`.
  * - A purchase made through Google's user choice screen is reported to Google: the first transaction (the paid charge
  *   the evidence shows; 0 for a free trial or when no charge has been paid yet, because only money that has moved is
  *   reported) when `complete` runs, each renewal and each refund when `handleEvents` sees them. Reports are written to the
@@ -205,7 +210,7 @@ export class Purchases {
   private readonly lockWaitMs: number;
   private readonly lockPollMs: number;
   private readonly onIssue: ((issue: IssueReport) => void) | undefined;
-  private readonly gatewayReturnUrl: ((sessionId: string) => string) | undefined;
+  private readonly gatewayReturnUrl: ((sessionId: string, provider: ProviderName) => string) | undefined;
   private readonly hostedCheckoutUrl: ((sessionId: string) => string) | undefined;
 
   constructor(options: PurchasesOptions) {
@@ -411,6 +416,19 @@ export class Purchases {
     const record = await this.load(sessionId);
     if (!this.isDue(record)) return toPublic(record);
     return this.withLock(`${LockScope.Session}:${sessionId}`, async () => toPublic(await this.expireIfDue(await this.load(sessionId))));
+  }
+
+  /**
+   * The session a gateway's return belongs to, or `undefined`: the session that has an option at `provider` whose `handle`
+   * is `id`, or that was confirmed at `provider` with that subscription or payment id. `id` is what the gateway hands back
+   * to the browser. A gateway that returns the merchant's own transaction id (PayU's `txnid`) hands back the `reference` the
+   * purchase was created with, which is the handle of the option it created. Like `get`, an unpaid session past its
+   * `expiresAt` is returned as `expired`. Never throws for an unknown id.
+   */
+  async findByGatewayId(provider: ProviderName, id: string): Promise<PurchaseSession | undefined> {
+    if (id === '') return undefined;
+    const record = await this.store.findSessionByHandle(provider, id);
+    return record ? this.get(record.id) : undefined;
   }
 
   /** What a customer owns, across stores and gateways. `active` is true when any item gives access now. */
@@ -722,8 +740,8 @@ export class Purchases {
       try {
         const created =
           product.kind === ProductKind.Subscription
-            ? await this.host.create(provider, this.subscriptionInput(record, product, this.gatewayReturn(record)))
-            : await this.host.payments.create(provider, this.paymentInput(record, product, this.gatewayReturn(record)));
+            ? await this.host.create(provider, this.subscriptionInput(record, product, this.gatewayReturn(record, provider)))
+            : await this.host.payments.create(provider, this.paymentInput(record, product, this.gatewayReturn(record, provider)));
         const checkout = requireCheckout(provider, created.checkout);
         attempts.push({ provider, outcome: AttemptOutcome.Created, at: this.now().toISOString() });
         await this.record(provider, RouteOutcomeKind.Request, RouteOutcomeResult.Success);
@@ -749,16 +767,18 @@ export class Purchases {
         last = error;
       }
     }
+    // When every gateway refused the inputs, the purchase itself is the problem, not the gateways.
+    const refused = failures.every((failure) => REFUSAL_ERROR_CODES.includes(failure.code as ErrorCode));
     throw new SubscriptionError(
-      ErrorCode.ProviderUnavailable,
+      refused ? ErrorCode.Validation : ErrorCode.ProviderUnavailable,
       `Every gateway tried failed to create the purchase: ${failures.map((f) => `${f.provider} (${f.code}: ${f.message})`).join('; ')}`,
       { raw: failures, cause: last },
     );
   }
 
   /** The return URL a gateway is given: the hook's, when set, else the caller's. */
-  private gatewayReturn(record: PurchaseSessionRecord): string | undefined {
-    return this.gatewayReturnUrl ? this.gatewayReturnUrl(record.id) : record.returnUrl;
+  private gatewayReturn(record: PurchaseSessionRecord, provider: ProviderName): string | undefined {
+    return this.gatewayReturnUrl ? this.gatewayReturnUrl(record.id, provider) : record.returnUrl;
   }
 
   private subscriptionInput(record: PurchaseSessionRecord, product: Product, returnUrl: string | undefined): CreateSubscriptionInput {

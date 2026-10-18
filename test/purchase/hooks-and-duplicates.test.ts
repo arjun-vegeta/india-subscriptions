@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PurchaseIssue, SessionStatus } from '../../src/purchase/index.js';
-import { COINS, CUSTOMER, CUSTOMER_REF, LIFETIME, MONTHLY, Outcome, Platform, Provider, harness, result, type Harness } from './helpers.js';
+import { COINS, CUSTOMER, CUSTOMER_REF, ErrorCode, LIFETIME, MONTHLY, Outcome, Platform, Provider, harness, result, type Harness } from './helpers.js';
 
 const start = (h: Harness, fields: Record<string, unknown> = {}) =>
   h.purchases.start({ platform: Platform.Web, product: MONTHLY.key, customer: CUSTOMER, customerRef: CUSTOMER_REF, ...fields } as never);
@@ -66,7 +66,7 @@ describe('a duplicate purchase detected when it is paid', () => {
 });
 
 describe('gatewayReturnUrl', () => {
-  const hooks = { gatewayReturnUrl: (id: string) => `https://svc.example/checkout/${id}/return` };
+  const hooks = { gatewayReturnUrl: (id: string, _provider: string) => `https://svc.example/checkout/${id}/return` };
 
   it('gives the gateway the hook\'s URL and keeps the caller\'s on the session', async () => {
     const h = harness({ purchases: hooks });
@@ -128,5 +128,46 @@ describe('hostedCheckoutUrl', () => {
   it('is absent without the hook', async () => {
     const h = harness();
     expect((await start(h)).options[0]).not.toHaveProperty('hostedUrl');
+  });
+});
+
+describe('gatewayReturnUrl is asked per gateway tried', () => {
+  it('with the gateway, so a gateway can have its own address, and again for the next gateway after a refusal', async () => {
+    const asked: Array<[string, string]> = [];
+    const h = harness({
+      purchases: {
+        gatewayReturnUrl: (id: string, provider: string) => {
+          asked.push([id, provider]);
+          return provider === Provider.Razorpay ? 'https://svc.example/short' : `https://svc.example/checkout/${id}/return`;
+        },
+      },
+    });
+    h.host.failCreates(Provider.Razorpay, ErrorCode.Validation);
+    const session = await start(h);
+    expect(asked).toEqual([
+      [session.id, Provider.Razorpay],
+      [session.id, Provider.Cashfree],
+    ]);
+    expect((h.host.callsOf('create', Provider.Razorpay)[0]?.input as { returnUrl: string }).returnUrl).toBe('https://svc.example/short');
+    expect((h.host.callsOf('create', Provider.Cashfree)[0]?.input as { returnUrl: string }).returnUrl).toBe(`https://svc.example/checkout/${session.id}/return`);
+  });
+});
+
+describe('findByGatewayId', () => {
+  it('finds the session by the handle of an option at that provider, and by nothing else', async () => {
+    const h = harness();
+    const session = await start(h);
+    const handle = session.options[0]!.handle;
+    expect((await h.purchases.findByGatewayId(Provider.Razorpay, handle))?.id).toBe(session.id);
+    expect(await h.purchases.findByGatewayId(Provider.Cashfree, handle)).toBeUndefined();
+    expect(await h.purchases.findByGatewayId(Provider.Razorpay, 'nope')).toBeUndefined();
+    expect(await h.purchases.findByGatewayId(Provider.Razorpay, '')).toBeUndefined();
+  });
+
+  it('finds a completed session by the id the gateway confirmed, and reports an overdue unpaid one as expired', async () => {
+    const h = harness({ purchases: { sessionTtlMs: 60_000 } });
+    const session = await start(h);
+    h.clock.advance(61_000);
+    expect((await h.purchases.findByGatewayId(Provider.Razorpay, session.options[0]!.handle))?.status).toBe('expired');
   });
 });

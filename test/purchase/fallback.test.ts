@@ -30,7 +30,7 @@ describe('gateway fallback on start', () => {
     ]);
   });
 
-  it.each([ErrorCode.Validation, ErrorCode.Conflict, ErrorCode.Unsupported, ErrorCode.NotFound, ErrorCode.UnexpectedResponse])(
+  it.each([ErrorCode.Conflict, ErrorCode.NotFound, ErrorCode.UnexpectedResponse])(
     '%s is raised at once and no other gateway is tried',
     async (code) => {
       const h = harness();
@@ -42,12 +42,81 @@ describe('gateway fallback on start', () => {
     },
   );
 
-  it('a gateway refusing an optional input is not a reason to try the next gateway', async () => {
+  it.each([ErrorCode.Validation, ErrorCode.Unsupported])(
+    'a gateway that refuses the purchase with %s created nothing: the next gateway takes it',
+    async (code) => {
+      const h = harness();
+      h.host.failCreates(Provider.Razorpay, code);
+      const session = await start(h);
+      expect(session.options[0]!.provider).toBe(Provider.Cashfree);
+      expect(session.attempts.map((a) => [a.provider, a.outcome, a.errorCode])).toEqual([
+        [Provider.Razorpay, AttemptOutcome.Failed, code],
+        [Provider.Cashfree, AttemptOutcome.Created, undefined],
+      ]);
+    },
+  );
+
+  it('a refusal of an optional input is skipped too: the product\'s payment methods leave only one gateway, which then refuses', async () => {
     const h = harness({ catalog: [{ ...LIFETIME, paymentMethods: ['wallet'] }] });
     h.host.failCreates(Provider.Cashfree, ErrorCode.Validation);
     const error = await rejection(start(h, { product: LIFETIME.key }));
     expect(error.code).toBe(ErrorCode.Validation);
     expect(h.host.callsOf('payments.create')).toHaveLength(1);
+  });
+
+  it('records a refusal as a failure, never as unavailable, so a gateway that keeps refusing one purchase is not taken out of rotation', async () => {
+    const h = harness();
+    const record = vi.spyOn(h.router, 'record');
+    h.host.failCreates(Provider.Razorpay, ErrorCode.Validation);
+    h.host.failCreates(Provider.Cashfree, ErrorCode.Unsupported);
+    await start(h);
+    expect(record.mock.calls.map(([outcome]) => [outcome.provider, outcome.kind, outcome.result])).toEqual([
+      [Provider.Razorpay, RouteOutcomeKind.Request, RouteOutcomeResult.Failure],
+      [Provider.Cashfree, RouteOutcomeKind.Request, RouteOutcomeResult.Failure],
+      [Provider.PhonePe, RouteOutcomeKind.Request, RouteOutcomeResult.Success],
+    ]);
+    for (let i = 0; i < 6; i += 1) {
+      h.host.failCreates(Provider.Razorpay, ErrorCode.Validation);
+      await start(h, { customerRef: `c${i}` });
+    }
+    const session = await start(h, { customerRef: 'c_after' });
+    expect(session.options[0]!.routing?.candidates.find((c) => c.provider === Provider.Razorpay)?.eligible).toBe(true);
+  });
+
+  it('when every gateway refuses the purchase the error is VALIDATION and lists each refusal', async () => {
+    const h = harness();
+    h.host.failCreates(Provider.Razorpay, ErrorCode.Validation);
+    h.host.failCreates(Provider.Cashfree, ErrorCode.Unsupported);
+    h.host.failCreates(Provider.PhonePe, ErrorCode.Validation);
+    const error = await rejection(start(h));
+    expect(error.code).toBe(ErrorCode.Validation);
+    expect(error.retryable).toBe(false);
+    expect(error.message).toMatch(/Every gateway tried failed/);
+    for (const gateway of [Provider.Razorpay, Provider.Cashfree, Provider.PhonePe]) expect(error.message).toContain(gateway);
+    expect(error.message).toContain('UNSUPPORTED');
+    expect((error.raw as Array<{ provider: string; code: string }>).map((f) => [f.provider, f.code])).toEqual([
+      [Provider.Razorpay, ErrorCode.Validation],
+      [Provider.Cashfree, ErrorCode.Unsupported],
+      [Provider.PhonePe, ErrorCode.Validation],
+    ]);
+  });
+
+  it('when a refusal and an outage are mixed the error stays PROVIDER_UNAVAILABLE', async () => {
+    const h = harness();
+    h.host.failCreates(Provider.Razorpay, ErrorCode.Validation);
+    h.host.failCreates(Provider.Cashfree, ErrorCode.ProviderUnavailable);
+    h.host.failCreates(Provider.PhonePe, ErrorCode.Validation);
+    const error = await rejection(start(h));
+    expect(error.code).toBe(ErrorCode.ProviderUnavailable);
+  });
+
+  it('a CONFLICT after a refusal still stops at once', async () => {
+    const h = harness();
+    h.host.failCreates(Provider.Razorpay, ErrorCode.Validation);
+    h.host.failCreates(Provider.Cashfree, ErrorCode.Conflict);
+    const error = await rejection(start(h));
+    expect(error.code).toBe(ErrorCode.Conflict);
+    expect(h.host.callsOf('create', Provider.PhonePe)).toHaveLength(0);
   });
 
   it('records every attempt with the router: unavailable for outages, failure for refusals, success for the one that worked', async () => {
@@ -67,7 +136,7 @@ describe('gateway fallback on start', () => {
   it('records a refusal that is raised at once as a failure', async () => {
     const h = harness();
     const record = vi.spyOn(h.router, 'record');
-    h.host.failCreates(Provider.Razorpay, ErrorCode.Validation);
+    h.host.failCreates(Provider.Razorpay, ErrorCode.Conflict);
     await rejection(start(h));
     expect(record).toHaveBeenCalledWith({ provider: Provider.Razorpay, kind: RouteOutcomeKind.Request, result: RouteOutcomeResult.Failure });
   });

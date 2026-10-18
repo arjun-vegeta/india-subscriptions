@@ -150,10 +150,16 @@ export const PurchaseIssue = {
 export type PurchaseIssue = (typeof PurchaseIssue)[keyof typeof PurchaseIssue];
 
 /**
+ * The codes with which a gateway refuses the inputs of a purchase (a field it cannot take, a feature it does not have).
+ * The create did nothing there, so the purchase can still be taken by another gateway.
+ */
+export const REFUSAL_ERROR_CODES: readonly ErrorCode[] = [ErrorCode.Validation, ErrorCode.Unsupported];
+
+/**
  * The error codes of a failed create at a gateway after which the next ranked gateway is tried: the gateway could not
- * take the request (or its answer is unknown), and nothing about the request itself is wrong. `VALIDATION` and
- * `CONFLICT` are deliberately absent: a refusal of the request, or of an optional input, is not a reason to try another
- * gateway. Neither is any other code.
+ * take the request (it is down, or its answer is unknown) or refused its inputs (`REFUSAL_ERROR_CODES`), and nothing was
+ * created. `CONFLICT` is deliberately absent: the request clashes with something that exists, which another gateway
+ * would not change. So is every other code.
  */
 export const FALLBACK_ERROR_CODES: readonly ErrorCode[] = [
   ErrorCode.ProviderUnavailable,
@@ -163,11 +169,16 @@ export const FALLBACK_ERROR_CODES: readonly ErrorCode[] = [
   ErrorCode.Auth,
   ErrorCode.ProviderError,
   ErrorCode.OutcomeUnknown,
+  ...REFUSAL_ERROR_CODES,
 ];
 
-/** The fallback codes that say the gateway could not be reached or is unusable, so they feed the circuit breaker. */
+/**
+ * The fallback codes that say the gateway could not be reached or is unusable, so they feed the circuit breaker. A
+ * refusal of inputs says nothing about the gateway being down, and neither does `PROVIDER_ERROR`: those are recorded as
+ * a `failure`.
+ */
 export const UNAVAILABLE_ERROR_CODES: readonly ErrorCode[] = FALLBACK_ERROR_CODES.filter(
-  (code) => code !== ErrorCode.ProviderError,
+  (code) => code !== ErrorCode.ProviderError && !REFUSAL_ERROR_CODES.includes(code),
 );
 
 // ---------------------------------------------------------------------------

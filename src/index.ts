@@ -137,6 +137,7 @@ export {
   FlushOutcome,
   LockScope,
   PurchaseIssue,
+  REFUSAL_ERROR_CODES,
   ReportKind,
   ReportStatus,
   SessionStatus,
