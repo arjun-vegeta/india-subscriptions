@@ -56,16 +56,66 @@ Work through the list for each gateway you will use. If a gateway behaves differ
 - [ ] Re-send a renew id and check Paytm refuses it. Try Paytm's own collection with a plain fixed plan.
 - [ ] With a card and with UPI, check whether Pre-Notify is needed and how early.
 
+### One-time payments
+
+Do this on each gateway you take payments on.
+
+- [ ] Create a payment of a small amount, pay it with a test method, `payments.verify` with `expectedPaymentId`, and `payments.get`. Check the status is `succeeded` and the amount is yours.
+- [ ] Verify a genuine result of one payment against the id of another: it must fail with `SIGNATURE_INVALID`.
+- [ ] Close the browser before returning, and check that the webhook (or a `payments.get` from your job) still completes the order.
+- [ ] Refund part of the payment with a `refundId`, repeat the same call, and check one refund results. Look at the refund event.
+- [ ] Check what the gateway refuses for your inputs: `expiresAt`, `paymentMethods`, `metadata` and the `reference` rules differ ([One-time payments](./one-time-payments.md#what-differs-per-gateway)).
+
 ### The browser helper
 
 - [ ] Open each checkout you use in a real browser, with your Content-Security-Policy on.
+
+## 2b. Routing
+
+- [ ] Your strategy lists every gateway in `costs` (a gateway without an entry costs nothing, and would win every close call) and in `priority`.
+- [ ] `limits` carries the per-debit ceiling each gateway's mandates allow without extra authentication (Rs 15,000 under the RBI e-mandate framework, with its exceptions).
+- [ ] Ask `subs.router.route` for each kind of purchase you sell and read the decision: the gateway you expected, and a plausible reason for each one excluded.
+- [ ] The statistics store is durable if you run more than one process or restart often. Success rates are shared through it; the circuit breaker is per process.
+- [ ] You handle `NO_ROUTE`.
+
+## 2c. The app stores and purchase sessions
+
+Skip what you do not sell. [Selling on iPhone, Android and the web](./purchases.md) describes each step.
+
+**Apple App Store**
+
+- [ ] The Paid Apps Agreement is active, the products are approved, and the catalog's `appStore.productId` values match App Store Connect.
+- [ ] `APP_STORE_ENVIRONMENT` is `live` with `APP_STORE_APP_APPLE_ID`; the Production Server URL is set with Version 2 and answers 200. See [Setting up the App Store](./setting-up-app-store.md).
+- [ ] Buy a product with a sandbox account first, then a real one. Check the entitlement, a renewal notification and a refund notification.
+- [ ] The iOS app has no button, link or text that steers customers to another way to pay.
+
+**Google Play**
+
+- [ ] The service account has its two permissions, the Pub/Sub push subscription has authentication on and matches `pushAudience` and `pushServiceAccountEmail`, and the test message arrived. See [Setting up Google Play](./setting-up-google-play.md).
+- [ ] Buy with a license tester, then a real account. Check the purchase is acknowledged, the entitlement, and a renewal and a refund notification.
+- [ ] A purchase interrupted before it reached your server is retried by the app until confirmed (Google refunds it after three days).
+
+**User choice billing**
+
+- [ ] You are enrolled, the app is enabled, and Google confirmed it by e-mail.
+- [ ] Every product sold on Android has `taxRateBps`, `customer.state` is collected, `PUBLIC_BASE_URL` is `https`, and the hosted checkout is reachable from a phone.
+- [ ] Choose the alternative with a license tester and check the first report reaches Google (`flush` sends it; a free trial reports an amount of 0). Check a renewal and a refund queue their reports.
+- [ ] `flush` runs on a schedule (the service does it on every tick) and `FlushResult.overdue` pages someone.
+
+**Sessions and entitlements**
+
+- [ ] The purchase store is durable (`PURCHASE_STORE_FILE`, or your own implementation of `PurchaseStore`), and there is one service instance.
+- [ ] Every provider's webhook goes through `subs.webhooks.handle`, so entitlements follow renewals, cancellations and refunds.
+- [ ] A second purchase of a product the customer owns is refused with `CONFLICT`, and `duplicate_purchase` raises an alert.
+- [ ] Your mobile backend holds the API key, authenticates the user and checks every session and customer against them. See [Mobile apps](./mobile-apps.md).
 
 ## 3. Webhooks
 
 - [ ] Register the production URL with the gateway and send a real test event.
 - [ ] Your route verifies the signature, stores the event, then answers 2xx, within 5 seconds.
 - [ ] You tested a bad signature and a duplicate delivery. See [Handling webhooks](./webhooks.md).
-- [ ] A job reconciles subscriptions with `subs.get` in case a webhook is missed.
+- [ ] A job reconciles subscriptions with `subs.get`, and payments with `subs.payments.get`, in case a webhook is missed.
+- [ ] If you use stores: Apple's notification URL and Google's push endpoint are set for production, and the routes are reachable without an API key and nowhere else.
 
 ## 4. Billing
 

@@ -38,6 +38,14 @@ export async function currentStatus(subscriptionId: string) {
 - **`OUTCOME_UNKNOWN`.** A request that moves money was sent and no answer came back. It may or may not have happened. **Do not repeat it.** Fetch the current state, then decide. See [Scheduling](./scheduling.md#what-an-unknown-outcome-means).
 - **`SIGNATURE_INVALID`.** A webhook or a checkout result did not verify, or it was genuine but belongs to a different subscription than the one you expected. Nothing from it is trusted. Answer 401 to a webhook.
 
+## Errors of routing and purchases
+
+- **`NO_ROUTE`.** No configured gateway can take this purchase: the router excluded every one of them (for example because none offers the payment method, none can do a trial, or the amount is above every limit you set). The message lists why each gateway was excluded; `subs.router.route` and `purchases.start` raise it. Configure another gateway, or relax the request. It is not retryable as it stands. Over HTTP it is a 422. See [Routing](../guides/routing.md#read-a-decision).
+- **`CONFLICT` from `purchases.start`.** The customer already owns the product, or another operation on the session is running. Read the entitlements before you decide. See [Selling on iPhone, Android and the web](../guides/purchases.md#one-product-once).
+- **`CONFIG` for a purchase configuration.** The catalog or platform policy cannot be served (a product without its store mapping, user choice billing without a gateway, a missing tax rate). It lists every problem at once, when `Purchases` is built or the service starts.
+- **`VALIDATION` at `start`.** The product is not sold on that platform, or user choice billing needs `customer.state`.
+- **`SIGNATURE_INVALID` at `complete`.** The result belongs to another order than the one the session created. The session stays as it was.
+
 ## All codes
 
 The [generated error reference](../reference/generated/errors.md) lists every code: what it means, what to do, whether it is retryable and the HTTP status the service uses.

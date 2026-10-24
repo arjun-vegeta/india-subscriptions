@@ -3,7 +3,7 @@
  * `india-subscriptions`, and driven with scripted gateway responses (test/helpers/mock-fetch.ts). Only the web framework is
  * faked (Express), because it is not installed; Next.js route handlers use the standard Request and Response and run as they are.
  */
-import { createHmac } from 'node:crypto';
+import { createHmac, generateKeyPairSync } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +16,9 @@ import { ErrorCode, HttpMethod, Provider } from '../../src/constants.js';
 import { signEventsBody } from '../../src/events-webhook.js';
 import { RazorpayEndpoint } from '../../src/providers/razorpay/constants.js';
 import { mockFetch, type MockRoute } from '../helpers/mock-fetch.js';
+import { SERVICE_PRIVATE_PEM } from '../googleplay/helpers.js';
+import { REFUND_CREATED, ORDER_CREATED } from '../razorpay/one-time-fixtures.js';
+import { RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET as STORE_WEBHOOK_SECRET, orderCallback, storeFakes, subscriptionCallback } from '../integration/store-fakes.js';
 import { SampleLoader, fakeExpress, type FakeExpress } from './fakes.js';
 import { PLAN, REFUND, SUBSCRIPTION } from './fixtures.js';
 import { ROOT, allBlocks, type Block } from './lib.js';
@@ -340,14 +343,19 @@ describe('The curl commands (executed against the real request handler)', () => 
     const mock = install([
       { method: HttpMethod.Post, url: `${RZP}/v1/plans`, json: PLAN },
       { method: HttpMethod.Post, url: `${RZP}/v1/subscriptions`, json: SUBSCRIPTION },
+      { method: HttpMethod.Post, url: `${RZP}/v1/orders`, json: JSON.parse(ORDER_CREATED) },
     ]);
     const key = 'docs_service_api_key_value';
     const subs = Main.createSubscriptions({
       providers: [Main.razorpay({ keyId: 'rzp_test_docs', keySecret: KEY_SECRET, webhookSecret: WEBHOOK_SECRET }, { fetch: mock.fetch })],
+      purchases: {
+        catalog: [{ key: 'ebook', kind: Main.ProductKind.OneTime, name: 'E-book', amount: 49900 }],
+        store: new Main.MemoryPurchaseStore(),
+      },
     });
     const handler = Server.createHandler({ client: subs, apiKey: key });
     const curls = allBlocks().filter((candidate) => candidate.lang === 'bash' && candidate.code.trim().startsWith('curl'));
-    expect(curls.length).toBeGreaterThanOrEqual(3);
+    expect(curls.length).toBeGreaterThanOrEqual(6);
     for (const curl of curls) {
       const command = curl.code.replace(/\\\n\s*/g, ' ');
       const url = /(https?:\/\/[^\s"']+)/.exec(command)?.[1] ?? '';
@@ -364,6 +372,18 @@ describe('The curl commands (executed against the real request handler)', () => 
       if (url.endsWith('/subscriptions')) {
         expect(response.status, where).toBe(201);
         expect(JSON.parse(text)).toMatchObject({ provider: Provider.Razorpay, checkout: { kind: 'razorpay_checkout' } });
+      }
+      if (url.endsWith('/routing/decide')) {
+        expect(response.status, where).toBe(200);
+        expect(JSON.parse(text)).toMatchObject({ provider: Provider.Razorpay, ranked: [Provider.Razorpay] });
+      }
+      if (url.endsWith('/v1/purchases')) {
+        expect(response.status, where).toBe(201);
+        expect(JSON.parse(text)).toMatchObject({ platform: 'web', product: 'ebook', policy: 'gateways', customerRef: 'user_42', status: 'open' });
+      }
+      if (url.endsWith('/entitlements/user_42')) {
+        expect(response.status, where).toBe(200);
+        expect(JSON.parse(text)).toEqual({ customerRef: 'user_42', active: false, items: [] });
       }
     }
     executed.push('curl-commands');
@@ -399,5 +419,174 @@ describe('The gateway configuration samples (executed)', () => {
       expect(gateway.name).toBe(page);
     }
     executed.push('gateway-configuration');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// One-time payments, routing and purchases
+// ---------------------------------------------------------------------------
+
+/** Environment for the guides' samples, which read their keys the way a deployment does. */
+function purchaseEnvironment(): void {
+  process.env.RAZORPAY_KEY_ID = 'rzp_test_docs';
+  process.env.RAZORPAY_KEY_SECRET = RAZORPAY_KEY_SECRET;
+  process.env.RAZORPAY_WEBHOOK_SECRET = STORE_WEBHOOK_SECRET;
+  process.env.CASHFREE_CLIENT_ID = 'cf_id';
+  process.env.CASHFREE_CLIENT_SECRET = 'cf_secret';
+  const ec = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  process.env.APP_STORE_ISSUER_ID = 'issuer';
+  process.env.APP_STORE_KEY_ID = 'KEYID';
+  process.env.APP_STORE_PRIVATE_KEY = ec;
+  process.env.GOOGLE_PLAY_CLIENT_EMAIL = 'billing@example-project.iam.gserviceaccount.com';
+  process.env.GOOGLE_PLAY_PRIVATE_KEY = SERVICE_PRIVATE_PEM;
+}
+
+describe('One-time payments (executed)', () => {
+  it('creates an order, verifies a result against the stored id, reads the payment and refunds part of it', async () => {
+    purchaseEnvironment();
+    const fakes = storeFakes();
+    const refundCalls: string[] = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      if (new URL(url).pathname.endsWith('/refund')) {
+        refundCalls.push(String(init?.body));
+        return new Response(REFUND_CREATED, { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return fakes.fetch(url, init);
+    }) as typeof fetch;
+    const { loader: sampleLoader } = loader(projectFiles());
+    const { startPayment } = sampleLoader.load('payments-create.ts') as {
+      startPayment: (order: string, amount: number, customer: Main.Customer) => Promise<{ paymentId: string; checkout?: { kind: string } }>;
+    };
+    const { confirmPayment } = sampleLoader.load('payments-verify.ts') as {
+      confirmPayment: (provider: Main.Provider, stored: string, result: Record<string, string>) => Promise<boolean>;
+    };
+    const { refundPartOfPayment } = sampleLoader.load('payments-refund.ts') as { refundPartOfPayment: (paymentId: string) => Promise<string> };
+
+    const customer = { name: 'Asha Rao', email: 'asha@example.com', phone: '9876543210' };
+    const created = await startPayment('order-1001', 49900, customer);
+    expect(created.checkout).toMatchObject({ kind: 'razorpay_checkout', orderId: created.paymentId, amount: 49900 });
+
+    expect(await confirmPayment(Provider.Razorpay, created.paymentId, orderCallback(created.paymentId))).toBe(true);
+    // A genuine result for another order is refused, like a forged one.
+    const other = await startPayment('order-1002', 49900, customer);
+    expect(await confirmPayment(Provider.Razorpay, created.paymentId, orderCallback(other.paymentId))).toBe(false);
+    expect(await confirmPayment(Provider.Razorpay, created.paymentId, { ...orderCallback(created.paymentId), razorpay_signature: 'forged' })).toBe(false);
+
+    expect(await refundPartOfPayment(created.paymentId)).toBeDefined();
+    expect(JSON.parse(refundCalls[0] as string)).toMatchObject({ amount: 10000 });
+    executed.push('one-time-payments');
+  });
+});
+
+describe('Routing (executed)', () => {
+  it('reads a decision, and routes around a gateway whose circuit is open', async () => {
+    purchaseEnvironment();
+    const { loader: sampleLoader } = loader(projectFiles());
+    const { chooseForSubscription } = sampleLoader.load('routing-decide.ts') as { chooseForSubscription: (amount: number) => Promise<string> };
+    expect(await chooseForSubscription(49900)).toBe(Provider.Razorpay);
+
+    const { explain } = sampleLoader.load('routing-explain.ts') as { explain: (amount: number) => Promise<string[]> };
+    const lines = await explain(49900);
+    expect(lines).toHaveLength(2);
+    expect(lines.every((line) => line.includes('score'))).toBe(true);
+
+    const { canSell } = sampleLoader.load('routing-no-route.ts') as { canSell: (amount: number) => Promise<boolean> };
+    expect(await canSell(49900)).toBe(true);
+    // Cashfree is limited to Rs 15,000 a debit in the sample strategy; Razorpay has no limit, so there is still a route.
+    expect(await canSell(5_000_000)).toBe(true);
+
+    const { decideAfterAnOutage } = sampleLoader.load('routing-test.ts') as { decideAfterAnOutage: () => Promise<string> };
+    expect(await decideAfterAnOutage()).toBe(Provider.Cashfree);
+    executed.push('routing');
+  });
+});
+
+describe('Purchase sessions (executed)', () => {
+  const TOKEN = 'external-transaction-token-from-the-device';
+  const customer = { name: 'Asha Rao', email: 'asha@example.com', phone: '9876543210', state: 'Karnataka' };
+
+  it('starts a purchase on an iPhone without calling Apple', async () => {
+    const { loader: sampleLoader } = loader(projectFiles());
+    const { startOnAnIphone } = sampleLoader.load('purchases-test.ts') as { startOnAnIphone: () => Promise<string | undefined> };
+    expect(await startOnAnIphone()).toBe('apple_storekit');
+    executed.push('purchase-iphone-start');
+  });
+
+  it('runs an Android user choice purchase end to end through the guide\'s own code', async () => {
+    purchaseEnvironment();
+    const fakes = storeFakes();
+    globalThis.fetch = fakes.fetch as unknown as typeof fetch;
+    const { loader: sampleLoader } = loader(projectFiles());
+    const start = sampleLoader.load('purchases-start.ts') as {
+      startPurchase: (platform: string, product: string, customerRef: string, customer: Main.Customer) => Promise<Main.PurchaseSession>;
+    };
+    const alternative = sampleLoader.load('purchases-alternative.ts') as {
+      customerPickedTheAlternative: (sessionId: string, token: string) => Promise<string | undefined>;
+    };
+    const complete = sampleLoader.load('purchases-complete.ts') as {
+      completePurchase: (sessionId: string, provider: Main.Provider, result: Record<string, string>) => Promise<{ status: string; subscriptionId?: string }>;
+    };
+    const entitlements = sampleLoader.load('purchases-entitlements.ts') as { hasAccess: (customerRef: string, product: string) => Promise<boolean> };
+    const flush = sampleLoader.load('purchases-flush.ts') as { sendReports: () => Promise<void> };
+
+    const session = await start.startPurchase(Main.Platform.Android, 'pro-monthly', 'cust_1', customer);
+    expect(session).toMatchObject({ policy: 'user_choice', status: 'open' });
+    expect(session.options[0]).toMatchObject({ channel: 'store', provider: Provider.GooglePlay, checkout: { userChoiceBilling: true } });
+    expect(fakes.razorpay).toEqual([]);
+
+    const hostedUrl = await alternative.customerPickedTheAlternative(session.id, TOKEN);
+    expect(hostedUrl).toBe(`https://billing.example.com/checkout/${session.id}`);
+    expect(fakes.razorpay).toEqual(['POST /v1/plans', 'POST /v1/subscriptions']);
+    const chosen = await (sampleLoader.load('billing-purchases.ts') as { purchasesOf: () => Main.Purchases }).purchasesOf().get(session.id);
+    const gateway = chosen.options.find((option) => option.channel === 'gateway');
+    expect(gateway?.provider).toBe(Provider.Razorpay);
+
+    const done = await complete.completePurchase(session.id, Provider.Razorpay, subscriptionCallback(gateway?.handle as string));
+    expect(done.status).toBe('completed');
+    expect(await entitlements.hasAccess('cust_1', 'pro-monthly')).toBe(true);
+    expect(await entitlements.hasAccess('cust_1', 'coins-100')).toBe(false);
+
+    // One product, once: a second start of the same product is refused.
+    await expect(start.startPurchase(Main.Platform.Web, 'pro-monthly', 'cust_1', customer)).rejects.toMatchObject({ code: ErrorCode.Conflict });
+
+    expect(fakes.google).toEqual([]);
+    await flush.sendReports();
+    expect(fakes.google).toHaveLength(1);
+    expect(fakes.google[0]?.json).toMatchObject({
+      recurringTransaction: { externalTransactionToken: TOKEN },
+      userTaxAddress: { regionCode: 'IN', administrativeArea: 'KARNATAKA' },
+    });
+    expect(logs.some((line) => line.startsWith('sent 1'))).toBe(true);
+    executed.push('purchase-android-user-choice');
+  });
+
+  it('forwards the five calls from a mobile backend, forcing the customer and refusing other users\' sessions', async () => {
+    purchaseEnvironment();
+    process.env.BILLING_SERVICE_URL = 'http://billing.test';
+    process.env.INDIA_SUBSCRIPTIONS_API_KEY = 'docs_mobile_api_key_value';
+    const fakes = storeFakes();
+    const { loader: sampleLoader } = loader(projectFiles());
+    const { purchasesOf, subs } = sampleLoader.load('billing-purchases.ts') as { purchasesOf: () => Main.Purchases; subs: Main.Subscriptions };
+    expect(purchasesOf()).toBe(subs.purchases);
+    const handler = Server.createHandler({ client: subs, apiKey: 'docs_mobile_api_key_value' });
+    globalThis.fetch = (async (url: string, init?: RequestInit) =>
+      url.startsWith('http://billing.test') ? handler(new Request(url, init)) : fakes.fetch(url, init)) as typeof fetch;
+    const { handleBillingRequest } = sampleLoader.load('mobile-backend.ts') as { handleBillingRequest: (request: Request, userId: string) => Promise<Response> };
+    const call = (method: string, path: string, user: string, body?: unknown) =>
+      handleBillingRequest(new Request(`https://api.example.com/billing${path}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), user);
+
+    const started = await call('POST', '/v1/purchases', 'user_7', { platform: 'ios', product: 'pro-monthly', customer: { email: 'a@example.com' }, customerRef: 'someone_else' });
+    expect(started.status).toBe(201);
+    const session = (await started.json()) as Main.PurchaseSession;
+    expect(session).toMatchObject({ customerRef: 'user_7', policy: 'store' });
+    expect(session.options[0]?.checkout).toMatchObject({ kind: 'apple_storekit' });
+
+    expect((await call('GET', `/v1/purchases/${session.id}`, 'user_7')).status).toBe(200);
+    expect((await call('GET', `/v1/purchases/${session.id}`, 'user_8')).status).toBe(404);
+    expect((await call('POST', `/v1/purchases/${session.id}/complete`, 'user_8', { provider: 'app_store', result: {} })).status).toBe(404);
+    expect(await (await call('GET', '/v1/entitlements/user_7', 'user_7')).json()).toEqual({ customerRef: 'user_7', active: false, items: [] });
+    expect((await call('GET', '/v1/entitlements/user_7', 'user_8')).status).toBe(404);
+    executed.push('mobile-backend');
   });
 });

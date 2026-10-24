@@ -27,11 +27,11 @@ A **gateway event** is a gateway webhook that was verified and normalised. Every
 | `subscription.cancelled` | Ended (by you, the customer or the bank). | End access. |
 | `subscription.completed` | All cycles were collected. | End access or offer a renewal. |
 | `subscription.expired` | The authorisation or the mandate lapsed. | Offer a new subscription. |
-| `payment.succeeded`, `payment.failed` | A one-time payment succeeded or failed. `paymentId` and `payment` carry it. | Fulfil the order, or tell the customer. |
+| `payment.succeeded`, `payment.failed` | A one-time payment succeeded or failed. `paymentId` and `payment` carry it. For a gateway that lets the customer retry, `payment.failed` describes one attempt. | Fulfil the order, or tell the customer. Read the payment before you give up. |
 | `refund.succeeded`, `refund.failed` | A refund finished or failed. | Update your records. |
 | `unknown` | A verified event this library does not normalise. | Inspect `raw`, or ignore it. |
 
-Which gateway sends which event is on each gateway's page ([Razorpay](../gateways/razorpay.md#webhooks), [Cashfree](../gateways/cashfree.md#webhooks), [PayU](../gateways/payu.md#webhooks), [PhonePe](../gateways/phonepe.md#webhooks), [Paytm](../gateways/paytm.md#webhooks)). Not every gateway can produce every type: PayU's webhooks, for instance, carry no subscription id for a debit, so a debit is attributed to a cycle by the scheduler instead.
+Which provider sends which event is on each provider's page ([Razorpay](../gateways/razorpay.md#webhooks), [Cashfree](../gateways/cashfree.md#webhooks), [PayU](../gateways/payu.md#webhooks), [PhonePe](../gateways/phonepe.md#webhooks), [Paytm](../gateways/paytm.md#webhooks), [Apple App Store](../gateways/app-store.md#notifications), [Google Play](../gateways/google-play.md#webhooks)). The app stores use the same event types: an App Store renewal or a Google Play renewal is `subscription.charged`, and a refund or a voided purchase is `refund.succeeded`. Not every gateway can produce every type: PayU's webhooks, for instance, carry no subscription id for a debit, so a debit is attributed to a cycle by the scheduler instead.
 
 ## Scheduler events
 
@@ -54,7 +54,7 @@ Each carries the schedule id, the gateway, the subscription id, the status of th
 
 ## De-duplication and ordering
 
-- **Delivery is at least once.** Gateways redeliver; the service retries; the scheduler may emit the same change twice after a crash between saving and emitting. Every event has a stable `id`: record the ids you have processed and ignore repeats. Razorpay's `id` is the `x-razorpay-event-id` header. Cashfree sends none, so the library builds one from the event type, the entity id, its status and the event time. PayU's is built from the payment id and status, and PhonePe's from the event name and the ids in the payload. A scheduler event's id is `sevt_` plus a hash of its content.
+- **Delivery is at least once.** Gateways redeliver; the service retries; the scheduler may emit the same change twice after a crash between saving and emitting. Every event has a stable `id`: record the ids you have processed and ignore repeats. Razorpay's `id` is the `x-razorpay-event-id` header, Apple's is the `notificationUUID`, and Google Play's is the Pub/Sub `messageId`. Cashfree sends none, so the library builds one from the event type, the entity id, its status and the event time. PayU's is built from the payment id and status, and PhonePe's from the event name and the ids in the payload. A scheduler event's id is `sevt_` plus a hash of its content.
 - **Order is not guaranteed.** Do not assume `subscription.charged` arrives before `subscription.updated`. Make each handler idempotent and, when it matters, read the current state with `subs.get`.
 - **Webhooks can be missed.** Gateways stop retrying after a while, and Cashfree does not replay at all. A nightly job that reads active subscriptions with `subs.get` is a cheap safeguard.
 
@@ -62,7 +62,7 @@ Each carries the schedule id, the gateway, the subscription id, the status of th
 
 | You are using | Gateway events | Scheduler events |
 |---|---|---|
-| The library, in Node | The return value of `subs.webhooks.handle` | The `onEvent` option of the scheduler |
+| The library, in Node | The return value of `subs.webhooks.handle`, which also feeds purchase sessions and [entitlements](./entitlements.md) | The `onEvent` option of the scheduler |
 | The HTTP service | Your events webhook (`kind: "gateway"`) | Your events webhook (`kind: "scheduler"`) |
 
 [Handling webhooks](../guides/webhooks.md) shows the code.

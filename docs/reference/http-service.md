@@ -8,8 +8,8 @@ The service as a Fetch API handler. It runs on Node, Bun, Deno, Cloudflare Worke
 
 | Option | Meaning |
 |---|---|
-| `client` | The `Subscriptions` the routes call. Configure the gateways and the scheduler on it. |
-| `apiKey` | Clients must send `Authorization: Bearer <apiKey>` on every route except health, the OpenAPI document and the gateway webhook routes. Compared through digests, so neither the value nor its length is observable through timing. |
+| `client` | The `Subscriptions` the routes call. Configure the providers, the scheduler, the router and (for the purchase and entitlement routes) `purchases` on it. |
+| `apiKey` | Clients must send `Authorization: Bearer <apiKey>` on every route except health, the OpenAPI document, the provider webhook routes and the hosted checkout routes (`/checkout/...`, whose credential is the session id in the path). Compared through digests, so neither the value nor its length is observable through timing. |
 | `allowUnauthenticated` | Serve the protected routes without a key. Must be asked for explicitly: without it, a missing `apiKey` throws `CONFIG`. |
 | `onEvents(provider, events)` | Called with the verified, normalised events of every webhook received at `POST /v1/{provider}/webhooks`. If it throws, the gateway gets a 500 and retries. |
 | `basePath` | A mount prefix such as `/billing`. |
@@ -26,10 +26,14 @@ The service as a Fetch API handler. It runs on Node, Bun, Deno, Cloudflare Worke
 | `runServe({ env?, allowUnauthenticated?, handleSignals?, logger?, fetch? })` | Builds the service from environment variables, starts listening and the tick loop, prints the startup report. Returns `{ service, server, url, port, stop(), stopped }`. |
 | `buildService(env, options)` | Everything `serve` needs, built but not listening. |
 | `parseServiceEnv(env, { allowUnauthenticated? })` | Validates an environment into a `ServiceConfig`. Throws one `CONFIG` error listing every problem. |
-| `createTickLoop({ scheduler, intervalMs, logger })` | Ticks on an interval, never overlapping itself. A failing tick is logged, not thrown. |
+| `createTickLoop({ scheduler, purchases, intervalMs, logger })` | Ticks the scheduler and flushes the Google reports on an interval, never overlapping itself. A failing tick or flush is logged, not thrown. |
 | `FileSchedulerStore` | The durable one-file scheduler store. `FileSchedulerStore.open(path)`. Single instance only. |
+| `FilePurchaseStore` | The durable one-file store of purchase sessions, entitlements and the Google report queue. `FilePurchaseStore.open(path)`. Single instance only. |
+| `loadPurchasesFile(path, options)` | Reads and validates the purchases file: one `CONFIG` error lists every problem. |
+| `PurchasesFileKey` | The three keys of the file: `catalog`, `policy`, `routing`. |
 | `buildOpenApiDocument({ title?, version?, serverUrl? })` | The OpenAPI 3.1 document. |
 | `routes` | The route table the dispatcher and the OpenAPI document are both built from. |
+| `ReturnParam`, `returnLocation`, `gatherReturnFields`, `escapeHtml`, `jsonForScript` | The pieces of the hosted checkout: the `session` and `status` parameters added to the return URL, and the helpers that read a return and escape page data. |
 | `EnvVar`, `DEFAULT_HOST`, `DEFAULT_PORT`, `DEFAULT_TICK_SECONDS` | The variable names and defaults. |
 
 ## The command line

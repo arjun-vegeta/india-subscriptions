@@ -1,25 +1,41 @@
 # india-subscriptions
 
-One headless API over **recurring payments on Indian payment gateways**. You create a plan and a subscription, the customer authorises a mandate in the gateway's checkout, and from then on charges, retries, pauses, cancellations, refunds and webhooks all look the same whichever gateway sits underneath. You bring your own gateway keys: money moves directly between the gateway and you, and nothing passes through anyone else.
+One headless API over **subscriptions and payments on Indian payment gateways and app stores**. You create a plan and a subscription, the customer authorises a mandate in the gateway's checkout, and from then on charges, retries, pauses, cancellations, refunds and webhooks all look the same whichever gateway sits underneath. One-time payments use the same shapes. A router picks the best gateway for a new purchase, and purchase sessions sell one catalog on iPhone, Android and the web, with the Apple App Store and Google Play as providers. You bring your own keys: money moves directly between the gateway or store and you, and nothing passes through anyone else.
 
-After reading this page you will know what the library is, whether it fits, how far to trust it today, and where to go next. A developer who has never seen it should be able to ship a ₹499 a month subscription with a 14-day free trial in an afternoon by following [Your first subscription](./getting-started/first-subscription.md).
+After reading this page you will know what the library is, whether it fits, and where to go next. A developer who has never seen it should be able to ship a ₹499 a month subscription with a 14-day free trial in an afternoon by following [Your first subscription](./getting-started/first-subscription.md).
 
 ## Who it is for
 
 - **Node and TypeScript developers.** Import the package. Every input and output is a typed Zod schema, and every status, event and error is an exported constant.
 - **Everyone else.** Run `npx india-subscriptions serve` next to your application and call it over HTTP, with a client generated from its OpenAPI document. A Python client with Pydantic models is included. See [Using it from any language](./getting-started/any-language.md).
 
-It does not route a new payment to the best gateway, take one-time payments, or provide native mobile SDKs. It handles the recurring part only.
+- **Mobile developers.** An iOS SDK (Swift) drives StoreKit and your backend; an Android app drives Play Billing and the hosted checkout page through the same five calls. See [Mobile apps](./guides/mobile-apps.md).
 
-## Gateways
+It does not hold your money, move an existing mandate to another gateway, or draw any user interface for payments: customers pay in the gateway's or the store's own screens. There is no Android SDK yet.
 
-| Gateway | Who raises each debit |
+## What it does
+
+| You want to | Read |
 |---|---|
-| [Razorpay](./gateways/razorpay.md) | Razorpay |
-| [Cashfree](./gateways/cashfree.md) | Cashfree (periodic plans) or this library (on-demand plans) |
-| [PayU](./gateways/payu.md) | This library |
-| [PhonePe](./gateways/phonepe.md) | This library |
-| [Paytm](./gateways/paytm.md) | This library by default, or Paytm for plain fixed plans |
+| Charge a customer every month | [Your first subscription](./getting-started/first-subscription.md) |
+| Take a single payment | [One-time payments](./guides/one-time-payments.md) |
+| Let the library choose the best gateway | [Routing](./guides/routing.md) |
+| Sell on iPhone, Android and the web with one catalog | [Selling on iPhone, Android and the web](./guides/purchases.md) |
+| Ask what a customer owns, across stores and gateways | [Entitlements](./concepts/entitlements.md) |
+
+## Gateways and stores
+
+| Provider | Kind | Who raises each recurring debit | One-time payments |
+|---|---|---|---|
+| [Razorpay](./gateways/razorpay.md) | Gateway | Razorpay | Yes |
+| [Cashfree](./gateways/cashfree.md) | Gateway | Cashfree (periodic plans) or this library (on-demand plans) | Yes |
+| [PayU](./gateways/payu.md) | Gateway | This library | Yes |
+| [PhonePe](./gateways/phonepe.md) | Gateway | This library | Yes |
+| [Paytm](./gateways/paytm.md) | Gateway | This library by default, or Paytm for plain fixed plans | Yes |
+| [Apple App Store](./gateways/app-store.md) | Store | Apple | Yes (consumables and non-consumables) |
+| [Google Play](./gateways/google-play.md) | Store | Google | Yes |
+
+A gateway is chosen by you or by the [router](./guides/routing.md). A store is where the product lives and the purchase starts on the device: [purchase sessions](./guides/purchases.md) use the App Store for iOS and Google Play for Android.
 
 ## Sixty seconds
 
@@ -69,10 +85,15 @@ That is the whole shape. The rest of the documentation is about doing it safely:
 | Understand mandates, UPI Autopay, eNACH and the Rs 15,000 rule | [How recurring payments work in India](./concepts/recurring-payments.md) |
 | See every status and what your app should do | [The subscription lifecycle](./concepts/lifecycle.md) |
 | Pick a gateway | [Razorpay](./gateways/razorpay.md), [Cashfree](./gateways/cashfree.md), [PayU](./gateways/payu.md), [PhonePe](./gateways/phonepe.md), [Paytm](./gateways/paytm.md) |
+| Take a one-time payment | [One-time payments](./guides/one-time-payments.md) |
+| Choose the best gateway for each purchase | [Routing](./guides/routing.md) |
+| Sell on iPhone, Android and the web | [Selling on iPhone, Android and the web](./guides/purchases.md) |
+| Set up the App Store or Google Play | [Setting up the App Store](./guides/setting-up-app-store.md), [Setting up Google Play](./guides/setting-up-google-play.md) |
+| Build a mobile app | [Mobile apps](./guides/mobile-apps.md) |
 | Run the billing scheduler | [Running the scheduler](./guides/scheduler.md) |
 | Look something up | [Reference](./reference/index.md) |
 | Add a gateway | [Adding a gateway](./contributing/adding-a-gateway.md) |
 
 ## How the documentation is kept honest
 
-The reference pages (every model, every route, every environment variable, every error code and the capability matrix) are generated from the code, and a test fails when they drift. The code samples are extracted from these pages, type-checked against the real entry points, and the main flows are executed against scripted gateway responses.
+The reference pages (every model, every route, every environment variable, every error code, the capability matrix, and the routing and purchase defaults) are generated from the code, and a test fails when they drift. The code samples are extracted from these pages, type-checked against the real entry points, and the main flows are executed against scripted gateway responses.

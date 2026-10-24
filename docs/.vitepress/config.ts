@@ -3,12 +3,12 @@ import { withMermaid } from 'vitepress-plugin-mermaid';
 
 // Links from a page to files outside docs/ (the README, CONTRIBUTING.md, .env.example, clients/, openapi/, scripts/) work
 // on GitHub but are not pages of this site, so the dead-link check skips them. test/docs/links.test.ts checks them.
-const OUTSIDE_DOCS = /^(\.\.\/)+(README\.md|CONTRIBUTING\.md|\.env\.example|clients\/|openapi\/|scripts\/|src\/|test\/)/;
+const OUTSIDE_DOCS = /^(\.\/)?(\.\.\/)+(README\.md|CONTRIBUTING\.md|\.env\.example|clients\/|openapi\/|scripts\/|sdks\/|src\/|test\/)/;
 
 export default withMermaid(
   defineConfig({
     title: 'india-subscriptions',
-    description: 'One headless API for subscriptions on Indian payment gateways.',
+    description: 'One headless API for subscriptions and payments on Indian payment gateways and app stores.',
     lang: 'en',
     cleanUrls: true,
     srcExclude: ['README.md', 'node_modules/**', 'examples/**'],
@@ -39,6 +39,7 @@ export default withMermaid(
             { text: 'Trials, delayed starts, upfront amounts', link: '/concepts/trials' },
             { text: 'Gateway and merchant scheduling', link: '/concepts/scheduling' },
             { text: 'Events', link: '/concepts/events' },
+            { text: 'Entitlements', link: '/concepts/entitlements' },
             { text: 'Money and time', link: '/concepts/money-and-time' },
             { text: 'Errors', link: '/concepts/errors' },
           ],
@@ -48,6 +49,12 @@ export default withMermaid(
           items: [
             { text: 'Checkout in the browser', link: '/guides/checkout' },
             { text: 'Handling webhooks', link: '/guides/webhooks' },
+            { text: 'One-time payments', link: '/guides/one-time-payments' },
+            { text: 'Routing', link: '/guides/routing' },
+            { text: 'Selling on iPhone, Android and the web', link: '/guides/purchases' },
+            { text: 'Setting up the App Store', link: '/guides/setting-up-app-store' },
+            { text: 'Setting up Google Play', link: '/guides/setting-up-google-play' },
+            { text: 'Mobile apps', link: '/guides/mobile-apps' },
             { text: 'Managing subscriptions', link: '/guides/managing-subscriptions' },
             { text: 'Running the scheduler', link: '/guides/scheduler' },
             { text: 'Running the HTTP service', link: '/guides/http-service' },
@@ -90,6 +97,8 @@ export default withMermaid(
             { text: 'Environment variables', link: '/reference/generated/environment' },
             { text: 'Errors', link: '/reference/generated/errors' },
             { text: 'Capability matrix', link: '/reference/generated/capabilities' },
+            { text: 'Routing', link: '/reference/generated/routing' },
+            { text: 'Purchases', link: '/reference/generated/purchases' },
           ],
         },
         {

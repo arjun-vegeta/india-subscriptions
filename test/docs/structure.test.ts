@@ -5,7 +5,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CheckoutKind, ErrorCode, EventType, SubscriptionStatus } from '../../src/constants.js';
+import { CheckoutKind, ErrorCode, EventType, PaymentStatus, Provider, SubscriptionStatus } from '../../src/constants.js';
+import { EntitlementStatus, SessionStatus } from '../../src/purchase/constants.js';
+import { RouteExclusion } from '../../src/routing/constants.js';
 import { SchedulerEventType } from '../../src/scheduler/constants.js';
 import { DOCS, ROOT, markdownFiles, pageName } from './lib.js';
 
@@ -26,7 +28,14 @@ const REQUIRED_PAGES = [
   'concepts/events.md',
   'concepts/money-and-time.md',
   'concepts/errors.md',
+  'concepts/entitlements.md',
   'guides/checkout.md',
+  'guides/one-time-payments.md',
+  'guides/routing.md',
+  'guides/purchases.md',
+  'guides/setting-up-app-store.md',
+  'guides/setting-up-google-play.md',
+  'guides/mobile-apps.md',
   'guides/webhooks.md',
   'guides/managing-subscriptions.md',
   'guides/scheduler.md',
@@ -54,6 +63,8 @@ const REQUIRED_PAGES = [
   'reference/generated/environment.md',
   'reference/generated/errors.md',
   'reference/generated/capabilities.md',
+  'reference/generated/routing.md',
+  'reference/generated/purchases.md',
   'contributing/architecture.md',
   'contributing/adding-a-gateway.md',
   'examples/postgres-scheduler-store.ts',
@@ -89,9 +100,37 @@ describe('prose agrees with the code', () => {
     for (const kind of Object.values(CheckoutKind)) expect(page, kind).toContain(`\`${kind}\``);
   });
 
+  it('documents every payment status, entitlement status, session status and route exclusion in the generated reference', () => {
+    const enums = readFileSync(join(DOCS, 'reference/generated/enums.md'), 'utf8');
+    for (const value of [...Object.values(PaymentStatus), ...Object.values(EntitlementStatus), ...Object.values(SessionStatus), ...Object.values(RouteExclusion)]) {
+      expect(enums, value).toContain(`\`${value}\``);
+    }
+    const entitlements = read('concepts/entitlements.md');
+    for (const status of Object.values(EntitlementStatus)) expect(entitlements, status).toContain(`| \`${status}\` |`);
+  });
+
+  it('has a page for every provider, and names every provider on the overview', () => {
+    const overview = read('index.md');
+    for (const provider of Object.values(Provider)) {
+      expect(existsSync(join(DOCS, 'gateways', `${provider.replaceAll('_', '-')}.md`)), provider).toBe(true);
+    }
+    expect(overview).toContain('gateways/app-store.md');
+    expect(overview).toContain('gateways/google-play.md');
+    expect(overview).not.toContain('does not route a new payment');
+  });
+
+  it('documents the three Android policies, the 24 hour reporting rule and the rules for India with their sources', () => {
+    const guide = read('guides/purchases.md');
+    for (const needle of ['`store`', '`user_choice`', '`gateways`', 'within 24 hours', 'developer.apple.com/app-store/review/guidelines', 'support.google.com/googleplay/android-developer/answer/13821247', 'rbi.org.in']) {
+      expect(guide, needle).toContain(needle);
+    }
+    expect(read('guides/mobile-apps.md')).toContain('never holds the service\'s API key');
+  });
+
   it('keeps the error vocabulary of the prose real', () => {
     const codes = Object.values(ErrorCode) as string[];
-    for (const mentioned of ['OUTCOME_UNKNOWN', 'SIGNATURE_INVALID', 'UNSUPPORTED', 'CONFLICT', 'CONFIG', 'VALIDATION']) expect(codes).toContain(mentioned);
+    for (const mentioned of ['OUTCOME_UNKNOWN', 'SIGNATURE_INVALID', 'UNSUPPORTED', 'CONFLICT', 'CONFIG', 'VALIDATION', 'NO_ROUTE']) expect(codes).toContain(mentioned);
+    expect(read('concepts/errors.md')).toContain('`NO_ROUTE`');
   });
 });
 

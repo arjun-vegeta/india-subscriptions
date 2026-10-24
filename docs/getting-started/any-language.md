@@ -7,7 +7,7 @@ The library is TypeScript. Applications in other languages run the **service**, 
 ```mermaid
 flowchart LR
   App["Your application (any language)"] -- "JSON over HTTP, API key" --> Svc["india-subscriptions serve"]
-  Svc -- "gateway APIs" --> GW["Razorpay, Cashfree, PayU, PhonePe, Paytm"]
+  Svc -- "gateway APIs" --> GW["Razorpay, Cashfree, PayU, PhonePe, Paytm, App Store, Google Play"]
   GW -- "webhooks (signed by the gateway)" --> Svc
   Svc -- "events webhook (signed by the service)" --> App
 ```
@@ -24,7 +24,7 @@ INDIA_SUBSCRIPTIONS_API_KEY=change-this-to-a-long-random-value \
   npx india-subscriptions serve
 ```
 
-A gateway is switched on by its variables. Leave a gateway's variables out entirely to switch it off. Setting some but not all of a gateway's required variables is an error, so a typo cannot silently disable a gateway. The startup report says which gateways are on, where it listens and whether the billing scheduler is running.
+A gateway or store is switched on by its variables. Leave its variables out entirely to switch it off. Setting some but not all of a gateway's required variables is an error, so a typo cannot silently disable a gateway. The startup report says which gateways are on, where it listens and whether the billing scheduler is running.
 
 ::: warning Network exposure
 Run the service next to your application, never on the public internet. The only routes that should be reachable from outside are the gateway webhook routes, `POST /v1/{provider}/webhooks`, which are authenticated by the gateway's own signature. See [Running the HTTP service](../guides/http-service.md).
@@ -120,7 +120,39 @@ with SubscriptionsClient("http://127.0.0.1:8787", api_key=os.environ["INDIA_SUBS
 
 A `OUTCOME_UNKNOWN` error means a request that moves money was sent and no answer came back. The client never retries a write; fetch the current state before deciding. The [Python client reference](../reference/python-client.md) lists every method.
 
-## 4. Webhooks and events
+## 4. Payments, routing and purchases
+
+The same service takes one-time payments, chooses gateways and sells on phones. Each is a plain JSON route behind the same API key.
+
+Ask the router which gateway it would use for a ₹499 one-time payment. Nothing is created at a gateway, and the answer lists every gateway with its score or the reasons it was excluded:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/routing/decide \
+  -H "Authorization: Bearer $INDIA_SUBSCRIPTIONS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"kind":"one_time","amount":49900}'
+```
+
+To sell one catalog on iPhone, Android and the web, set `PURCHASES_FILE` (the catalog, the platform policy and the routing strategy), `PURCHASE_STORE_FILE` and `PUBLIC_BASE_URL`. Then start a purchase. The platform decides where it may go, and the answer is a session with the ways to pay:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/purchases \
+  -H "Authorization: Bearer $INDIA_SUBSCRIPTIONS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"platform":"web","product":"ebook","customer":{"name":"Asha Rao","email":"asha@example.com","phone":"9876543210"},"customerRef":"user_42","returnUrl":"https://shop.example.com/thanks"}'
+```
+
+Ask what the customer owns, across stores and gateways:
+
+```bash
+curl http://127.0.0.1:8787/v1/entitlements/user_42 -H "Authorization: Bearer $INDIA_SUBSCRIPTIONS_API_KEY"
+```
+
+The other routes are `POST /v1/{provider}/payments`, `GET /v1/{provider}/payments/{paymentId}`, `POST /v1/{provider}/payments/verify` and `POST /v1/{provider}/payment-refunds` for one-time payments, and `GET /v1/purchases/{sessionId}`, `POST /v1/purchases/{sessionId}/alternative` and `POST /v1/purchases/{sessionId}/complete` for sessions. All are in the [HTTP API reference](../reference/generated/http-api.md). The Python client's models include these shapes; its [reference page](../reference/python-client.md) lists which calls have a method.
+
+A mobile app must never call these routes with the service's API key. It calls your backend, which forwards them: [Mobile apps](../guides/mobile-apps.md). See [One-time payments](../guides/one-time-payments.md), [Routing](../guides/routing.md) and [Selling on iPhone, Android and the web](../guides/purchases.md).
+
+## 5. Webhooks and events
 
 There are two different streams, and it helps to keep them apart.
 
@@ -129,9 +161,9 @@ There are two different streams, and it helps to keep them apart.
 | Gateway webhooks | Any configured gateway | The service (`POST /v1/{provider}/webhooks`) | The gateway |
 | Events webhook | The service | Your application (`EVENTS_WEBHOOK_URL`) | The service, with `EVENTS_WEBHOOK_SECRET` |
 
-Register `https://<your-service>/v1/razorpay/webhooks` at the gateway. The service verifies the gateway's signature, applies the event to the billing scheduler, and, if you set `EVENTS_WEBHOOK_URL` and `EVENTS_WEBHOOK_SECRET`, **posts the normalised events to your application** as JSON. Your application only has to check one signature scheme whichever gateway sent the event.
+Register `https://<your-service>/v1/razorpay/webhooks` at the gateway. App Store Server Notifications and Google's Pub/Sub push go to `/v1/app_store/webhooks` and `/v1/google_play/webhooks` in the same way. The service verifies the gateway's signature, applies the event to the billing scheduler and to purchase sessions (so entitlements follow), and, if you set `EVENTS_WEBHOOK_URL` and `EVENTS_WEBHOOK_SECRET`, **posts the normalised events to your application** as JSON. Your application only has to check one signature scheme whichever gateway sent the event.
 
-If you would rather receive the gateway's webhook in your own application, forward the exact raw body and headers to `POST /v1/{provider}/webhooks/parse` (the Python client wraps this as `parse_webhook`). The service verifies the signature, **applies each event to the billing scheduler** (so a mandate that was authorised, paused or cancelled at the gateway is reflected in billing), and returns the normalised events. Forwarding the same webhook twice is safe, and a bad signature answers 401 and changes nothing.
+If you would rather receive the gateway's webhook in your own application, forward the exact raw body and headers to `POST /v1/{provider}/webhooks/parse` (the Python client wraps this as `parse_webhook`). The service verifies the signature, **applies each event to the billing scheduler and to purchase sessions** (so a mandate that was authorised, paused or cancelled at the gateway is reflected in billing, and entitlements follow), and returns the normalised events. Forwarding the same webhook twice is safe, and a bad signature answers 401 and changes nothing.
 
 ### What the service posts
 

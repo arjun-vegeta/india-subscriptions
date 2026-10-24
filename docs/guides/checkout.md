@@ -99,9 +99,24 @@ app.post('/payu/return', express.urlencoded({ extended: false }), async (req, re
 
 An eNACH mandate that the bank has not yet confirmed comes back as `authorized: false` with `status: pending_authorization`. Show "being confirmed" and wait for the activation event.
 
+## One-time payments
+
+A one-time payment returns the same kind of instruction in `payment.checkout`, and `openCheckout` runs it the same way: Razorpay Standard Checkout opens with the order id, Cashfree.js calls `checkout` with the payment session id, and PayU, Paytm and PhonePe use `form_post` and `redirect`. Verify with `subs.payments.verify(provider, result, { expectedPaymentId })`. See [One-time payments](./one-time-payments.md).
+
+## The two store instructions
+
+`apple_storekit` and `google_play_billing` are not for the browser. They start on the device and carry what the store needs to tie the purchase to your order:
+
+| Kind | Fields | The device |
+|---|---|---|
+| `apple_storekit` | `productId`, `appAccountToken`, and `promotionalOffer` when the product has one | Passes `appAccountToken` as StoreKit's `.appAccountToken` purchase option, and the promotional offer if there is one. |
+| `google_play_billing` | `productKind`, `productId`, `basePlanId`, `offerId`, `obfuscatedAccountId`, `userChoiceBilling` | Launches a billing flow for the product with `setObfuscatedAccountId(obfuscatedAccountId)`. With `userChoiceBilling` true, the `BillingClient` is built with user choice billing enabled. |
+
+What the device gets back goes to your server, untouched, as the checkout result: `{ signedTransaction }` from StoreKit, `{ purchaseToken, productId }` from Play Billing. Your server verifies it with the order's id as the expected id, exactly as for a gateway. [Purchase sessions](./purchases.md) create these instructions and verify their results for you.
+
 ## Mobile apps and other clients
 
-`openCheckout` is for the web. A mobile app or another client branches on `checkout.kind` itself: open Razorpay's or Cashfree's native SDK with the ids in the instruction, or a web view for `form_post` and `redirect`. The result handling on the server is the same.
+`openCheckout` is for the web. A mobile app never holds the service's API key and never calls a gateway on its own authority: it talks to your backend, which creates the purchase and verifies the result. For a gateway, the app can open the hosted checkout page in a browser tab, or branch on `checkout.kind` itself (Razorpay's or Cashfree's native SDK with the ids in the instruction, or a web view for `form_post` and `redirect`). The result handling on the server is the same. See [Mobile apps](./mobile-apps.md).
 
 ## Content-Security-Policy
 

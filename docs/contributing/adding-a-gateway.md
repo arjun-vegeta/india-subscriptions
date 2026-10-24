@@ -22,9 +22,25 @@ An adapter implements `SubscriptionProvider` from `src/provider.ts`, usually by 
 | `createSubscription` | Returns the subscription with `checkout` instructions. |
 | `getSubscription`, `cancelSubscription`, `pauseSubscription`, `resumeSubscription`, `updateSubscription` | Throw `UNSUPPORTED` for what the gateway cannot do. |
 | `listCharges`, `getCharge`, `refundCharge` | Same. |
+| `createPayment`, `getPayment`, `verifyPayment`, `refundPayment` | One-time payments. `UNSUPPORTED` by default (`capabilities.oneTimePayments: false`); see below. |
 | `notifyCharge`, `createCharge` | For merchant-scheduled gateways only. |
 | `verifyCheckout(result)` | Verifies what came back to the browser; throws `SIGNATURE_INVALID` if tampered. |
-| `parseWebhook(request)` | Verifies the signature over the raw body and returns normalised events, each with a stable `id`. |
+| `parseWebhook(request)` | Verifies the signature over the raw body and returns normalised events, each with a stable `id`. May return a promise: an adapter may need a network call to verify or to read the object an event names. |
+
+### One-time payments
+
+A gateway with `capabilities.oneTimePayments: true` lists the methods in `oneTimePaymentMethods` and meets this contract (the full text is in the doc comment of `SubscriptionProvider`):
+
+1. `createPayment` returns a `Payment` with `status: created` and a `checkout` instruction. Every input has a place in the gateway's request or is refused with `UNSUPPORTED` or `VALIDATION` before any request: nothing is silently dropped.
+2. `Payment.id` is the id that works for `getPayment`, `refundPayment` and webhooks from the moment `createPayment` returns, even when the gateway only creates its own payment id later. Razorpay and Cashfree use the order id, PayU the transaction id, PhonePe the merchant order id, and Paytm the order id.
+3. `verifyPayment` verifies what came back to the browser (a signature, or by reading the order from the gateway) and returns `paid` with the `Payment`. A result for a different payment is for the facade to reject: it compares `expectedPaymentId` with `paymentId` and `reference`.
+4. `getPayment` is the source of truth. An unknown gateway status is `pending`, never `succeeded` or `failed`.
+5. `refundPayment` returns a `Refund` whose `chargeId` and `paymentId` are both the payment's id, and uses the caller's `refundId` as the gateway's idempotency where it has one.
+6. Webhook events about a payment are `payment.succeeded` and `payment.failed` with `paymentId` and `payment`, and a refund event carries `paymentId`. The adapter must tell a payment event from a subscription debit.
+
+### App stores
+
+A provider with `capabilities.kind: 'store'` is not a gateway: the product lives in the store and the purchase starts on the device. The router never chooses it. Its `createSubscription` and `createPayment` make no purchase and no network call: they validate `storeProduct`, mint an account token and return `status: created` with that token as `id` and an `apple_storekit` or `google_play_billing` checkout. After the purchase, the device result goes to `verifyCheckout` or `verifyPayment`, which return the store's real id as `subscriptionId` or `paymentId` and the token as `reference` (the same pattern PayU uses: the id only exists after authorisation). The caller passes the token as the expected id, so a purchase made for one order cannot unlock another. Everything the store signs is verified before it is read, with `node:crypto`. Read [Apple App Store](../gateways/app-store.md) and [Google Play](../gateways/google-play.md) for the two adapters.
 
 ### If the merchant raises the debits
 
@@ -98,7 +114,7 @@ describeMerchantAdapterConformance({
 
 ## Documentation
 
-1. Add the adapter to `ADAPTER_FACTORIES` in `scripts/generate-docs-reference.ts`, and its mapping tables to `regionContent` there. The capability matrix then includes it, and the tests require its page to carry the generated regions.
+1. Add the adapter to `ADAPTER_FACTORIES` in `scripts/generate-docs-reference.ts`, and its mapping tables to `regionContent` there. The capability matrix then includes it, and the tests require its page to carry the generated regions. Add it to the one-time payment and webhook tables of the guides that compare gateways ([One-time payments](../guides/one-time-payments.md#what-differs-per-gateway)).
 2. Write the gateway page in `docs/gateways/`, following [Razorpay](../gateways/razorpay.md), [Cashfree](../gateways/cashfree.md), [PayU](../gateways/payu.md), [PhonePe](../gateways/phonepe.md) or [Paytm](../gateways/paytm.md): configuration, capabilities, how trials, upfront amounts and authorisation debits work, payment methods and their limits, status and webhook mappings, and gateway-specific behaviour. Put the generated regions in the page (`<!-- generated:begin capabilities <gateway> -->` and friends; the region names are in the generator).
 3. Run `npm run docs:reference` and `npx vitest run test/docs`.
 

@@ -16,7 +16,7 @@ npm --prefix docs run dev
 
 ## What is generated
 
-`docs/reference/generated/` and the tables inside the gateway pages (between `<!-- generated:begin ... -->` and `<!-- generated:end -->`) are generated from the code. Do not edit them by hand.
+`docs/reference/generated/` and the tables inside the provider pages and some guides (between `<!-- generated:begin ... -->` and `<!-- generated:end -->`) are generated from the code. Do not edit them by hand. The generated pages include the routing defaults and exclusions (`reference/generated/routing.md`) and the platform policy matrix, statuses and defaults of purchase sessions (`reference/generated/purchases.md`); the guides on one-time payments, routing and purchases and the entitlements concept carry generated regions for the per-gateway payment methods, the strategy defaults, the platform policy and the entitlement statuses.
 
 ```bash
 npm run docs:reference
@@ -32,8 +32,8 @@ npx vitest run test/docs
 
 - Every `ts` code block is type-checked against the real entry points (`india-subscriptions`, `/server`, `/checkout`). A block with `title="name.ts"` is a file other blocks can import. A block marked `ts fragment reason="..."` is exempt, and the number of exemptions is capped.
 - TypeScript samples use the exported constants, never their string values.
-- The main flows (the first-subscription walkthrough for Express and Next.js, managing subscriptions, the events signature in TypeScript, Python and Go, the curl commands) are executed against scripted gateway responses.
-- Python samples are compiled and their imports checked against `clients/python`. Shell samples are one command each, with no `$` prompt.
+- The main flows (the first-subscription walkthrough for Express and Next.js, managing subscriptions, one-time payments, routing, a web purchase and an Android user choice purchase through the HTTP service, an iPhone purchase start, the mobile backend that forwards the five calls, the events signature in TypeScript, Python and Go, the curl commands) are executed against scripted provider responses.
+- Python samples are compiled and their imports checked against `clients/python`. Kotlin and Swift fences are shown as written and are not compiled. Shell samples are one command each, with no `$` prompt.
 - Every relative link and anchor is checked.
 
 ## Layout
@@ -41,9 +41,9 @@ npx vitest run test/docs
 ```text
 index.md               overview
 getting-started/       installation, first subscription, any language
-concepts/              how recurring payments work, lifecycle, trials, scheduling, events, money and time, errors
-guides/                checkout, webhooks, managing, scheduler, HTTP service, security, testing, going live
-gateways/              one page per gateway (PhonePe and Paytm are stubs)
+concepts/              how recurring payments work, lifecycle, trials, scheduling, events, entitlements, money and time, errors
+guides/                checkout, one-time payments, routing, purchases, store setup, mobile apps, webhooks, managing, scheduler, HTTP service, security, testing, going live
+gateways/              one page per provider: five gateways and the two app stores
 reference/             hand-written reference, and generated/ for the generated pages
 contributing/          architecture and adding a gateway
 examples/              worked examples that are type-checked

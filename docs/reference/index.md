@@ -10,11 +10,13 @@ Reference pages come in two kinds.
 - [HTTP API](./generated/http-api.md): every route of the service.
 - [Environment variables and command line](./generated/environment.md): everything `serve` reads.
 - [Errors](./generated/errors.md): every error code.
-- [Capability matrix](./generated/capabilities.md): what each gateway can do.
+- [Capability matrix](./generated/capabilities.md): what each provider can do.
+- [Routing](./generated/routing.md): the router's defaults, exclusions, outcomes and circuit breaker.
+- [Purchases](./generated/purchases.md): where each platform's purchases may go, statuses, defaults, and what the purchases file holds.
 
 **Hand-written**, describing behaviour the code does not carry as data:
 
-- [The client](./client.md): `createSubscriptions` and every method.
+- [The client](./client.md): `createSubscriptions` and every method, including payments, the router and purchase sessions.
 - [The billing scheduler](./scheduler.md): `BillingScheduler` and the `SchedulerStore` contract.
 - [The checkout helper](./checkout.md): `openCheckout`.
 - [The HTTP service functions](./http-service.md): `createHandler`, `createNodeServer`, `listen`, `runServe`.

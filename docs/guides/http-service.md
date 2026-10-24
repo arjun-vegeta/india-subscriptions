@@ -9,11 +9,39 @@ The service is the library behind a small HTTP API, for applications that are no
 Everything is an environment variable; the complete list, with which are required and their defaults, is generated in [Environment variables](../reference/generated/environment.md). The short version:
 
 - `INDIA_SUBSCRIPTIONS_API_KEY` is **required**. Clients send it as `Authorization: Bearer <key>`. Use a long random value (the service warns below 16 characters). `--allow-unauthenticated` exists for setups where something in front authenticates for you, and the service says so loudly at startup.
-- Each gateway is switched on by its own variables. A half-configured gateway is an error, never a silently disabled one.
+- Each gateway and each app store is switched on by its own variables (`RAZORPAY_*`, `CASHFREE_*`, `PAYU_*`, `PHONEPE_*`, `PAYTM_*`, `APP_STORE_*`, `GOOGLE_PLAY_*`). A half-configured provider is an error, never a silently disabled one.
+- `PURCHASES_FILE` and `PURCHASE_STORE_FILE`, both or neither, turn on [purchase sessions](./purchases.md). The file is one JSON document with `catalog`, `policy` and `routing`; the store file holds sessions, entitlements and the queue of reports owed to Google, so it must survive restarts. Run exactly **one** instance. Without them the purchase and entitlement routes answer with a configuration error. The routing strategy is optional; the router always exists.
+- `PUBLIC_BASE_URL` is the address customers' browsers reach the service on, such as `https://billing.example.com`. With purchases on, it builds the hosted checkout address of each gateway option and the address gateways return customers to. Use `https`. Without it, options carry no `hostedUrl`, and the policy `user_choice` is refused at start-up, because the alternative payment opens the hosted checkout.
 - `SCHEDULER_STORE_FILE` turns the billing scheduler on (it needs a durable file, and exactly **one** service instance). Without it, a merchant-scheduled gateway refuses to create subscriptions.
 - `EVENTS_WEBHOOK_URL` and `EVENTS_WEBHOOK_SECRET`, both or neither, make the service post normalised events to your application. See [Events](../concepts/events.md).
 
-The configuration is validated in one pass: a misconfigured deployment lists every problem at once, naming variables and never values.
+The configuration is validated in one pass: a misconfigured deployment lists every problem at once, naming variables and never values. The purchases file is validated the same way, with the purchase module's own schemas and catalog checks, and a misspelt key is an error rather than a silent default.
+
+A purchases file with one subscription, sold on every platform, and Android customers offered Google's choice screen:
+
+```json
+{
+  "catalog": [
+    {
+      "key": "pro-monthly",
+      "kind": "subscription",
+      "name": "Pro monthly",
+      "amount": 49900,
+      "interval": { "unit": "month", "count": 1 },
+      "taxRateBps": 1800,
+      "appStore": { "productId": "com.example.app.pro.monthly" },
+      "googlePlay": { "productId": "pro", "basePlanId": "monthly" }
+    }
+  ],
+  "policy": { "android": "user_choice" },
+  "routing": {
+    "priority": ["razorpay", "cashfree"],
+    "limits": { "cashfree": { "maxAmount": 1500000 } }
+  }
+}
+```
+
+The shapes are [`Product`](../reference/generated/models.md#product), [`PlatformPolicy`](../reference/generated/models.md#platformpolicy) and [`RoutingStrategy`](../reference/generated/models.md#routingstrategy).
 
 ## An example Dockerfile and compose file
 
@@ -23,7 +51,7 @@ These are documentation, not published images. They are not run by this reposito
 FROM node:22-alpine
 WORKDIR /app
 RUN npm install --omit=dev india-subscriptions
-# The service writes its scheduler state here.
+# The service writes its scheduler state here (and its purchase state, when purchases are on).
 RUN mkdir -p /data && chown node:node /data
 USER node
 ENV HOST=0.0.0.0 PORT=8787 SCHEDULER_STORE_FILE=/data/scheduler.json
@@ -58,7 +86,7 @@ Keep secrets in your secret manager or an untracked `.env`, never in the image. 
 ## Network exposure rules
 
 1. **Never put the service on the public internet.** It holds live gateway credentials and can move money. Listen on loopback or a private network and let only your own application reach it.
-2. **The one exception is the gateway webhook routes**, `POST /v1/{provider}/webhooks`. Gateways cannot send an API key, so these routes need none: each request is authenticated by the gateway's signature over the exact raw body, and a bad signature answers 401. Expose **only** those paths, for example through your reverse proxy, and nothing else.
+2. **The exceptions are the webhook routes and the hosted checkout.** The webhook routes, `POST /v1/{provider}/webhooks`, need no API key because gateways and stores cannot send one: each request is authenticated by the provider's signature over the exact raw body (for Google Play, by the Google-signed token of the Pub/Sub push), and a bad signature answers 401. If you serve purchases, the hosted checkout routes are public too: `GET /checkout/{sessionId}`, `GET` and `POST /checkout/{sessionId}/return`, and `GET` and `POST /checkout/return/{gateway}` (the short return address PayU uses). The unguessable session id is their credential. Expose **only** those paths, for example through your reverse proxy, and nothing else. See [the hosted checkout page](./purchases.md#the-hosted-checkout-page).
 3. Terminate TLS in front of the service. Plain HTTP between your application and the service is acceptable only on a private network.
 4. `GET /v1/health` and `GET /v1/openapi.json` need no key. They reveal which gateways are configured; do not expose them publicly either.
 5. The request body limit is 1 MiB. Webhooks are read as raw text, exactly as received.
@@ -66,9 +94,17 @@ Keep secrets in your secret manager or an untracked `.env`, never in the image. 
 An nginx location that exposes only the webhook routes looks like this:
 
 ```text
-location ~ ^/v1/(razorpay|cashfree|payu|phonepe|paytm)/webhooks$ {
+location ~ ^/v1/(razorpay|cashfree|payu|phonepe|paytm|app_store|google_play)/webhooks$ {
     proxy_pass http://127.0.0.1:8787;
     proxy_request_buffering off;
+}
+```
+
+With purchases on, add the hosted checkout:
+
+```text
+location ~ ^/checkout/(return/[a-z]+|[A-Za-z0-9_-]+(/return)?)$ {
+    proxy_pass http://127.0.0.1:8787;
 }
 ```
 
@@ -103,4 +139,6 @@ export const PATCH = handler;
 - **Logs** go to stdout and stderr. Messages never contain secrets or customer details.
 - **Shutdown.** On SIGINT and SIGTERM the service stops its tick loop, waits for a tick in flight, closes the server and releases the store.
 - **Health.** `GET /v1/health` returns `ok` and the gateways enabled.
-- **State.** With the scheduler on, `SCHEDULER_STORE_FILE` is the source of truth for billing. Put it on a persistent volume and back it up. Run one instance.
+- **State.** With the scheduler on, `SCHEDULER_STORE_FILE` is the source of truth for billing, and with purchases on, `PURCHASE_STORE_FILE` holds sessions, entitlements and the reports owed to Google. Put both on a persistent volume and back them up. Run one instance.
+- **Reports to Google.** When the Google Play provider is configured, the service sends the queued reports on every tick, and logs the ones Google refused and the ones past their 24 hour deadline. Alert on that log line: an overdue report breaks Google's reporting rule.
+- **Start-up warnings.** The report says when `PUBLIC_BASE_URL` is plain `http`, when it is missing, and when its length means PayU cannot be used for hosted purchases (PayU limits its return address to 50 characters, so PayU is then skipped and the purchase goes to the next gateway).

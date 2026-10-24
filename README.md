@@ -1,15 +1,22 @@
 # india-subscriptions
 
-One headless API for subscriptions on Indian payment gateways: plans, free
-trials, upfront amounts, mandate authorisation, recurring charges, pause,
-resume, cancel, refunds and webhooks. You bring your own gateway keys
-(Razorpay, Cashfree, PayU, PhonePe or Paytm); money always moves directly
-between the gateway and you.
+One headless API for subscriptions and payments on Indian payment gateways
+and app stores: plans, free trials, upfront amounts, mandate authorisation,
+recurring charges, pause, resume, cancel, one-time payments, refunds and
+webhooks. A router picks the best gateway for a new purchase, and purchase
+sessions sell one catalog on iPhone, Android and the web, with the Apple App
+Store and Google Play as providers and one answer to "what does this customer
+own". You bring your own keys (Razorpay, Cashfree, PayU, PhonePe, Paytm, App
+Store, Google Play); money always moves directly between the gateway or store
+and you.
 
 - **Node / TypeScript**: import the package.
 - **Any other language**: run the same code as a small self-hosted HTTP
   service and call it with a client generated from its OpenAPI document. A
   Python client with Pydantic models is included.
+- **Mobile**: an iOS SDK (Swift) in [sdks/ios](sdks/ios/README.md), and the
+  same five calls for an Android app. See
+  [Mobile apps](docs/guides/mobile-apps.md).
 
 ## Documentation
 
@@ -23,8 +30,24 @@ site: see [docs/README.md](docs/README.md).
 | Use it from Python or any language | [Using it from any language](docs/getting-started/any-language.md) |
 | Understand mandates, trials, statuses, the scheduler | [Concepts](docs/concepts/recurring-payments.md) |
 | Pick a gateway | [Razorpay](docs/gateways/razorpay.md), [Cashfree](docs/gateways/cashfree.md), [PayU](docs/gateways/payu.md), [PhonePe](docs/gateways/phonepe.md), [Paytm](docs/gateways/paytm.md) |
+| Take a one-time payment | [One-time payments](docs/guides/one-time-payments.md) |
+| Choose the best gateway for each purchase | [Routing](docs/guides/routing.md) |
+| Sell on iPhone, Android and the web | [Selling on iPhone, Android and the web](docs/guides/purchases.md), [Entitlements](docs/concepts/entitlements.md) |
+| Set up the App Store or Google Play | [Setting up the App Store](docs/guides/setting-up-app-store.md), [Setting up Google Play](docs/guides/setting-up-google-play.md), [Apple App Store](docs/gateways/app-store.md), [Google Play](docs/gateways/google-play.md) |
+| Build a mobile app | [Mobile apps](docs/guides/mobile-apps.md) |
 | Go live | [Going-live checklist](docs/guides/going-live.md) |
 | Look things up | [Reference](docs/reference/index.md) |
+
+## What the library covers
+
+| | Gateways (Razorpay, Cashfree, PayU, PhonePe, Paytm) | Apple App Store | Google Play |
+|---|---|---|---|
+| Subscriptions | Yes, with a mandate | Yes, Apple bills | Yes, Google bills |
+| One-time payments | Yes | Yes (consumables, non-consumables) | Yes |
+| Where the product lives | In your code | App Store Connect | Play Console |
+| Where the customer pays | The gateway's checkout | StoreKit, on the device | Play Billing, or Google's choice screen offering a gateway |
+| Chosen by | You, or the router | Purchase sessions (iOS) | Purchase sessions (Android) |
+| Cancel, refund from the server | Per gateway | No: the customer and Apple | Cancel at period end, refund the whole order |
 
 ## What each gateway supports
 
@@ -216,6 +239,82 @@ only. For one server process use `FileSchedulerStore` from
 `india-subscriptions/server`; for several, implement the `SchedulerStore`
 interface on your database (a PostgreSQL example is in the guide).
 
+## One-time payments
+
+The same shapes, with no mandate: create the payment, run its checkout,
+verify the result, read it, refund it. Always pass `expectedPaymentId`.
+
+```ts
+import { PaymentStatus, Provider } from 'india-subscriptions';
+import type { CheckoutResult, Customer } from 'india-subscriptions';
+import { subs } from './billing';
+
+export function startPayment(customer: Customer) {
+  return subs.payments.create(Provider.Razorpay, { reference: 'order_1042', amount: 49900, customer });
+  // Send payment.checkout to the browser; keep payment.id with your order.
+}
+
+export async function confirm(paymentId: string, result: CheckoutResult) {
+  const verification = await subs.payments.verify(Provider.Razorpay, result, { expectedPaymentId: paymentId });
+  const payment = await subs.payments.get(Provider.Razorpay, verification.paymentId);
+  return payment.status === PaymentStatus.Succeeded;
+}
+```
+
+See [One-time payments](docs/guides/one-time-payments.md) for what differs per
+gateway.
+
+## Routing
+
+`subs.router` chooses the gateway for a new subscription or payment: hard
+filters first (payment methods, needed capabilities, amount limits, a circuit
+breaker), then a score from the observed success rate, your fee table and
+your priority list. Every decision explains itself, and it never moves an
+existing mandate. See [Routing](docs/guides/routing.md).
+
+```ts
+import { ProductKind } from 'india-subscriptions';
+import { subs } from './billing';
+
+export async function bestGateway(amountInPaise: number) {
+  const decision = await subs.router.route({ kind: ProductKind.OneTime, amount: amountInPaise });
+  return decision.ranked; // best first: the order to try them in
+}
+```
+
+## iPhone, Android and the web
+
+Purchase sessions decide where a purchase may go on each platform (the App
+Store on iOS; Google Play, Google Play with user choice billing, or the
+gateways on Android; the gateways on the web), create it there, verify the
+result and keep an entitlement. User choice billing purchases are reported to
+Google automatically.
+
+```ts
+import { Platform } from 'india-subscriptions';
+import { purchasesOf } from './billing-purchases';
+
+export async function sell(customerRef: string) {
+  const session = await purchasesOf().start({
+    platform: Platform.Ios,
+    product: 'pro-monthly',
+    customer: { email: 'asha@example.com' },
+    customerRef,
+  });
+  return session.options; // an App Store option: the app carries out its checkout
+}
+
+export async function owns(customerRef: string) {
+  return (await purchasesOf().entitlements(customerRef)).active;
+}
+```
+
+A mobile app never holds the service's API key: it talks to your backend. See
+[Selling on iPhone, Android and the web](docs/guides/purchases.md),
+[Mobile apps](docs/guides/mobile-apps.md) and the setup guides for
+[the App Store](docs/guides/setting-up-app-store.md) and
+[Google Play](docs/guides/setting-up-google-play.md).
+
 ## Other languages
 
 ```bash
@@ -263,8 +362,9 @@ it is trusted). See [Errors](docs/concepts/errors.md).
 
 ## Not included
 
-- Routing a new payment to the best gateway, and one-time payments.
-- Native mobile SDKs.
+- An Android SDK (an Android app drives the same five calls; see
+  [Mobile apps](docs/guides/mobile-apps.md)).
+- Storefronts other than India and currencies other than INR.
 - PayU's own scheduler product (ZION), Cashfree paper mandates.
 
 ## Development
