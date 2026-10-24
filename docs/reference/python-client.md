@@ -38,10 +38,42 @@ with SubscriptionsClient("http://127.0.0.1:8787", api_key="...") as client:
 | `client.webhooks.parse(provider, request)` | `parseWebhook` |
 | `client.webhooks.receive(provider, raw_body, headers)` | `receiveWebhook` (the gateway-facing route; no key) |
 | `client.scheduler.tick(options)` | `runSchedulerTick` |
+| `client.payments.create(provider, payment)`, `.get(provider, payment_id)` | `createPayment`, `getPayment` |
+| `client.payments.verify(provider, result, expected_payment_id)` | `verifyPayment`. **Always pass `expected_payment_id`.** |
+| `client.payments.refund(provider, refund)` | `createPaymentRefund` |
+| `client.routing.decide(request)`, `.record_outcome(outcome)` | `decideRoute`, `recordRouteOutcome` |
+| `client.purchases.start(purchase)`, `.get(session_id)` | `startPurchase`, `getPurchase` |
+| `client.purchases.choose_alternative(session_id, external_transaction_token)` | `chooseAlternative` |
+| `client.purchases.complete(session_id, provider, result)` | `completePurchase` |
+| `client.purchases.flush(options)` | `flushPurchaseReports` |
+| `client.entitlements.get(customer_ref)` | `getEntitlements` |
+
+Every operation of the API has a method. The hosted checkout pages under `/checkout/` are for a customer's browser, so the client has no method for them.
 
 Inputs take the generated model or a plain `dict` (JSON names such as `maxAmount` or Python names such as `max_amount`). Unknown keys raise `pydantic.ValidationError` before anything is sent. Responses ignore unknown fields. Amounts are integer paise and instants are timezone-aware `datetime`s.
 
 Enums are generated: `Provider.RAZORPAY`, `SubscriptionStatus.TRIALING`, `IntervalUnit.MONTH`, `EventType.SUBSCRIPTION_CHARGED`. A checkout instruction is a union on `kind`: `isinstance(subscription.checkout, RazorpayCheckout)`.
+
+## Payments, routing and purchases
+
+```python
+from india_subscriptions import Platform, ProductKind, Provider
+
+payment = client.payments.create(Provider.RAZORPAY, {"amount": 29900, "customer": {"name": "Asha"}})
+verification = client.payments.verify(Provider.RAZORPAY, gateway_result, expected_payment_id=payment.id)
+
+decision = client.routing.decide({"kind": ProductKind.ONE_TIME, "amount": 29900})
+
+session = client.purchases.start(
+    {"platform": Platform.WEB, "product": "pro_monthly", "customer": {"name": "Asha"}, "customer_ref": "cust_42"}
+)
+session = client.purchases.complete(session.id, session.options[0].provider, checkout_result)
+owned = client.entitlements.get("cust_42")
+```
+
+`payments.verify` takes the result untouched and checks it against `expected_payment_id`; a genuine result for another payment raises `SIGNATURE_INVALID`. `routing.decide` raises `NO_ROUTE` when no configured gateway can take the request. `purchases.start` with the same `reference` and customer returns the same session, and raises `CONFLICT` when the customer already owns the product. The purchase calls need purchases configured on the service, otherwise they raise `CONFIG`. See the [HTTP service reference](http-service.md) for each route.
+
+The creating and settling calls (`payments.create`, `payments.refund`, `routing.record_outcome`, `purchases.start`, `.choose_alternative`, `.complete`, `.flush`) are never retried. After `OUTCOME_UNKNOWN`, read the state back with `payments.get` or `purchases.get`.
 
 ## Errors
 
@@ -51,7 +83,7 @@ Enums are generated: `Provider.RAZORPAY`, `SubscriptionStatus.TRIALING`, `Interv
 | `SubscriptionsTransportError` | No usable answer: connection refused, timeout, broken stream. Has `timed_out`, `request_sent` and `outcome_unknown`. |
 | `pydantic.ValidationError`, `ValueError` | Bad arguments, before any request. |
 
-`ErrorCode.OUTCOME_UNKNOWN` means a money-moving request was sent and no answer came back. Do not repeat it; fetch the current state first.
+`ErrorCode.OUTCOME_UNKNOWN` means a money-moving request was sent and no answer came back. Do not repeat it; fetch the current state first. `ErrorCode.NO_ROUTE` means no configured gateway can take the purchase or payment.
 
 ## Webhooks in a Python web framework
 

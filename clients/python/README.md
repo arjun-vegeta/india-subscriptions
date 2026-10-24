@@ -1,7 +1,8 @@
 # india-subscriptions (Python client)
 
 A typed Python client for the [`india-subscriptions`](../../README.md) HTTP service: one gateway-neutral API over
-subscriptions on Razorpay, Cashfree and PayU. The core library is TypeScript; other languages run its small
+subscriptions and one-time payments on Indian payment gateways, with routing, purchase sessions across app stores and
+gateways, and entitlements. The core library is TypeScript; other languages run its small
 self-hosted HTTP service and call it. This package is that call, with everything Pydantic-typed and no magic strings.
 
 * Python 3.9+, runtime dependencies `pydantic>=2.6` and `httpx>=0.27` only.
@@ -71,8 +72,21 @@ Amounts are integer paise (₹499 is `49900`). Instants are timezone-aware `date
 | `client.webhooks.parse(provider, request)` | `parseWebhook` |
 | `client.webhooks.receive(provider, raw_body, headers)` | `receiveWebhook` (the gateway-facing route; no key) |
 | `client.scheduler.tick(options=None)` | `runSchedulerTick` |
+| `client.payments.create(provider, payment)` / `.get(provider, payment_id)` | `createPayment` / `getPayment` |
+| `client.payments.verify(provider, result, expected_payment_id)` | `verifyPayment`. **Always pass `expected_payment_id`.** |
+| `client.payments.refund(provider, refund)` | `createPaymentRefund` |
+| `client.routing.decide(request)` | `decideRoute` |
+| `client.routing.record_outcome(outcome)` | `recordRouteOutcome` |
+| `client.purchases.start(purchase)` / `.get(session_id)` | `startPurchase` / `getPurchase` |
+| `client.purchases.choose_alternative(session_id, external_transaction_token)` | `chooseAlternative` |
+| `client.purchases.complete(session_id, provider, result)` | `completePurchase` |
+| `client.purchases.flush(options=None)` | `flushPurchaseReports` |
+| `client.entitlements.get(customer_ref)` | `getEntitlements` |
 
 `AsyncSubscriptionsClient` has the same names; `await` each call, and use `async with` / `await client.aclose()`.
+
+Every operation of the service's API has a method. The hosted checkout pages (`/checkout/...`) are for a customer's
+browser, not for API calls, so the client has nothing for them.
 
 ### Inputs
 
@@ -104,6 +118,101 @@ if isinstance(subscription.checkout, RazorpayCheckout):
     open_razorpay_checkout(subscription.checkout.key_id, subscription.checkout.subscription_id)
 ```
 
+## One-time payments
+
+`client.payments` creates, reads, verifies and refunds a one-time payment at a gateway. `create` returns the
+`Payment` with `checkout` instructions for the customer (a union on `kind`, like a subscription's). The browser or device
+supplies the result after paying, so verify it on your server and **always pass `expected_payment_id`**, the id (or
+your `reference`) you stored when you created the payment: a genuine result for another payment is then refused with
+`ErrorCode.SIGNATURE_INVALID`.
+
+```python
+from india_subscriptions import PaymentMethod, PaymentStatus, Provider
+
+payment = client.payments.create(
+    Provider.RAZORPAY,
+    {
+        "reference": "order_1001",
+        "amount": 29900,  # paise
+        "customer": {"name": "Asha", "email": "asha@example.com", "phone": "9876543210"},
+        "payment_methods": [PaymentMethod.UPI],
+    },
+)
+# ... the customer pays with payment.checkout; your server receives the gateway's result ...
+verification = client.payments.verify(Provider.RAZORPAY, gateway_result, expected_payment_id=payment.id)
+if verification.paid:
+    assert client.payments.get(Provider.RAZORPAY, payment.id).status is PaymentStatus.SUCCEEDED
+    client.payments.refund(Provider.RAZORPAY, {"payment_id": payment.id, "refund_id": "rf_1001", "amount": 10000})
+```
+
+`payments.create` and `payments.refund` are writes: they are never retried, and `ErrorCode.OUTCOME_UNKNOWN` means the
+payment or refund may exist. Read it back (`payments.get`) before repeating the call; a `reference` makes that easy.
+At an app store, `payments.create` makes no purchase: it returns the account token the purchase on the device must carry.
+
+## Routing
+
+`client.routing.decide(request)` chooses the best configured gateway for a subscription or a one-time payment and
+explains the choice: every gateway comes back as a candidate with its exclusions or its score, and `ranked` is the
+order to try them in. Nothing is created at a gateway. When no gateway can take the request the service answers
+`ErrorCode.NO_ROUTE`.
+
+```python
+from india_subscriptions import ErrorCode, PaymentMethod, ProductKind, SubscriptionsApiError
+
+try:
+    decision = client.routing.decide(
+        {"kind": ProductKind.ONE_TIME, "amount": 29900, "payment_methods": [PaymentMethod.NETBANKING]}
+    )
+    print(decision.provider, decision.ranked)
+except SubscriptionsApiError as error:
+    if error.code is ErrorCode.NO_ROUTE:
+        ...  # no configured gateway can take this payment
+```
+
+`client.routing.record_outcome({...})` tells the router how a gateway did (`RouteOutcomeResult.SUCCESS`, `FAILURE` or
+`UNAVAILABLE`), so its success rates and circuit breaker follow what you see. Purchase sessions record their own
+outcomes; use this for payments you create through `client.payments`.
+
+## Purchases and entitlements
+
+A purchase session decides, for the customer's platform, where a purchase may go: the App Store on iOS; Google Play,
+Google Play with user choice billing, or the gateways on Android; the gateways on the web. The service needs purchases
+configured (a catalog of products), otherwise these calls answer `ErrorCode.CONFIG`.
+
+```python
+from india_subscriptions import Platform, Provider
+
+session = client.purchases.start(
+    {
+        "platform": Platform.WEB,
+        "product": "pro_monthly",  # the key in your catalog
+        "customer": {"name": "Asha", "email": "asha@example.com"},
+        "customer_ref": "cust_42",
+        "reference": "buy_1001",  # starting again with the same reference and customer returns the same session
+    }
+)
+option = session.options[0]  # option.checkout says what the customer must do; option.provider holds the purchase
+# ... the customer pays; your server receives what the checkout handed back ...
+session = client.purchases.complete(session.id, option.provider, checkout_result)
+
+owned = client.entitlements.get("cust_42")
+print(owned.active, [item.product for item in owned.items])
+```
+
+* `purchases.complete` verifies the result against the order the session created and records the entitlement. A result
+  for another order raises `ErrorCode.SIGNATURE_INVALID` and the session stays as it was.
+* `purchases.start` answers `ErrorCode.CONFLICT` when the customer already owns the product.
+* `purchases.choose_alternative(session_id, token)` is for Android sessions with the `user_choice` policy: the customer
+  picked the alternative payment on Google's screen, and `token` is the external transaction token Google gave the app.
+  The session gains a gateway option with a `hosted_url` to open in a browser tab.
+* `purchases.flush()` sends the Google reports that are queued (the service also does it on every scheduler tick).
+  `result.overdue` lists the reports past their 24 hour deadline: page someone when it is not empty.
+* `entitlements.get(customer_ref)` lists everything the customer owns across stores and gateways; `active` is true when
+  one item gives access now.
+
+`start`, `choose_alternative`, `complete` and `flush` are writes and are never retried. `get` calls are retried like
+every GET.
+
 ## Errors
 
 ```python
@@ -125,10 +234,11 @@ except SubscriptionsTransportError as error:
 
 * `ErrorCode` is the generated enum of every code the service can return: the library's codes
   (`VALIDATION`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `PROVIDER_ERROR`, `OUTCOME_UNKNOWN`, ...) plus the service's own
-  (`UNAUTHORIZED`, `METHOD_NOT_ALLOWED`, `PAYLOAD_TOO_LARGE`, `INTERNAL_ERROR`).
+  (`UNAUTHORIZED`, `METHOD_NOT_ALLOWED`, `PAYLOAD_TOO_LARGE`, `INTERNAL_ERROR`). `NO_ROUTE` means no configured gateway
+  can take a purchase or payment.
 * **`ErrorCode.OUTCOME_UNKNOWN` means a money-moving request was sent and no answer came back. The debit, refund or
   change may or may not have happened. Do not repeat the call: fetch the current state first**
-  (`subscriptions.get`, `charges.list`) **and act on what you find.**
+  (`subscriptions.get`, `charges.list`, `payments.get`, `purchases.get`) **and act on what you find.**
 * A response that is not the documented shape (an HTML page from a proxy, an empty body, a success body that does not
   match its schema) raises `SubscriptionsApiError` with `ErrorCode.UNEXPECTED_RESPONSE` and `documented_shape=False`,
   with the start of the body in `response_body`. It is never a bare `KeyError` or `ValidationError`.
