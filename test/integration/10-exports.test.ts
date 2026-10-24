@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import * as checkout from '../../src/checkout/index.js';
 import * as main from '../../src/index.js';
+import * as postgres from '../../src/postgres-entry.js';
 import * as server from '../../src/server-entry.js';
 
 const README = readFileSync(fileURLToPath(new URL('../../README.md', import.meta.url)), 'utf8');
@@ -14,6 +15,7 @@ const README = readFileSync(fileURLToPath(new URL('../../README.md', import.meta
 const ENTRY_POINTS: Record<string, Record<string, unknown>> = {
   'india-subscriptions': main,
   'india-subscriptions/server': server,
+  'india-subscriptions/postgres': postgres,
   'india-subscriptions/checkout': checkout,
 };
 
@@ -142,6 +144,16 @@ describe('app stores, routing and purchases', () => {
     expect(subs.purchases).toBeInstanceOf(main.Purchases);
     for (const name of ['Product', 'PlatformPolicy', 'PurchaseSession', 'Entitlements', 'StartPurchaseInput', 'CompletePurchaseInput', 'FlushResult', 'RouteRequest', 'RoutingDecision', 'RouteOutcome', 'RoutingStrategy']) {
       expect(Object.values(main.SchemaName), name).toContain(name);
+    }
+  });
+});
+
+describe('the PostgreSQL entry point', () => {
+  it('exports the three stores and the migration, and none of them is in the main or server entry', () => {
+    for (const name of ['PostgresSchedulerStore', 'PostgresPurchaseStore', 'PostgresRoutingStatsStore', 'migratePostgres']) {
+      expect(typeof (postgres as Record<string, unknown>)[name], name).toBe('function');
+      expect(Object.keys(main), name).not.toContain(name);
+      expect(Object.keys(server), name).not.toContain(name);
     }
   });
 });

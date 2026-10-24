@@ -3,8 +3,8 @@
 //   2. `npm pack --dry-run` lists only dist/, README.md, LICENSE and package.json;
 //   3. the real tarball installs into a temp project OUTSIDE this repo;
 //   4. every entry point imports (ESM) and requires (CJS), and typechecks for TypeScript users;
-//   5. the main entry cannot reach node:http, the server or the browser code, and the
-//      checkout entry's built files import no node: module;
+//   5. the main entry cannot reach node:http, the server, the PostgreSQL stores or the browser code, the
+//      checkout entry's built files import no node: module, and the PostgreSQL entry imports no driver;
 //   6. the bin prints the OpenAPI document and `serve` starts, answers /v1/health and rejects
 //      an unauthenticated request.
 // No network is used: dependencies come from this repo's node_modules, packed to a tarball.
@@ -25,12 +25,16 @@ const REQUIRED_FILES = [
   'dist/esm/index.d.ts',
   'dist/esm/server-entry.js',
   'dist/esm/checkout/index.js',
+  'dist/esm/postgres-entry.js',
+  'dist/esm/postgres-entry.d.ts',
   'dist/esm/bin.js',
   'dist/esm/package.json',
   'dist/cjs/index.js',
   'dist/cjs/index.d.ts',
   'dist/cjs/server-entry.js',
   'dist/cjs/checkout/index.js',
+  'dist/cjs/postgres-entry.js',
+  'dist/cjs/postgres-entry.d.ts',
   'dist/cjs/package.json',
   'LICENSE',
   'package.json',
@@ -129,7 +133,7 @@ try {
   check('npm linked the bin', existsSync(bin));
 
   // -------------------------------------------------------------------------
-  step('ESM and CJS imports through all three entry points');
+  step('ESM and CJS imports through all four entry points');
   writeFileSync(
     join(consumer, 'esm.mjs'),
     `
@@ -137,6 +141,7 @@ import assert from 'node:assert/strict';
 import * as main from '${PACKAGE_NAME}';
 import * as server from '${PACKAGE_NAME}/server';
 import * as checkout from '${PACKAGE_NAME}/checkout';
+import * as postgres from '${PACKAGE_NAME}/postgres';
 import pkg from '${PACKAGE_NAME}/package.json' with { type: 'json' };
 
 assert.equal(typeof main.createSubscriptions, 'function');
@@ -167,6 +172,12 @@ assert.equal(typeof server.FileSchedulerStore, 'function');
 assert.equal(typeof server.runServe, 'function');
 assert.equal(typeof server.buildOpenApiDocument, 'function');
 assert.equal(typeof checkout.openCheckout, 'function');
+assert.deepEqual(Object.keys(postgres).filter((name) => /^(Postgres.*Store|migratePostgres)$/.test(name)).sort(), ['PostgresPurchaseStore', 'PostgresRoutingStatsStore', 'PostgresSchedulerStore', 'migratePostgres']);
+assert.equal('PostgresSchedulerStore' in main, false, 'the main entry has no PostgreSQL stores');
+const fakePool = { query: async () => ({ rows: [] }), connect: async () => ({ query: async () => ({ rows: [] }), release() {} }) };
+assert.ok(new postgres.PostgresSchedulerStore(fakePool, { schema: 'billing', tablePrefix: 'x_' }));
+assert.throws(() => new postgres.PostgresPurchaseStore(fakePool, { schema: 'a"; DROP TABLE x; --' }), (e) => e instanceof main.SubscriptionError && e.code === 'CONFIG');
+assert.equal((await postgres.migratePostgres(fakePool, { schema: 'billing' })).version, postgres.LATEST_MIGRATION_VERSION);
 assert.equal(pkg.name, '${PACKAGE_NAME}');
 console.log('esm ok');
 `,
@@ -179,6 +190,7 @@ const assert = require('node:assert/strict');
 const main = require('${PACKAGE_NAME}');
 const server = require('${PACKAGE_NAME}/server');
 const checkout = require('${PACKAGE_NAME}/checkout');
+const postgres = require('${PACKAGE_NAME}/postgres');
 
 const client = main.createSubscriptions({ providers: [main.payu({ key: 'k', salt: 's', environment: 'test' })] });
 assert.deepEqual(client.providers, ['payu']);
@@ -189,6 +201,8 @@ assert.ok(main.SubscriptionError.prototype instanceof Error);
 assert.equal(typeof server.createNodeServer, 'function');
 assert.equal(typeof server.FileSchedulerStore.open, 'function');
 assert.equal(typeof checkout.openCheckout, 'function');
+assert.equal(typeof postgres.PostgresRoutingStatsStore, 'function');
+assert.equal(typeof postgres.migratePostgres, 'function');
 console.log('cjs ok');
 `,
   );
@@ -213,6 +227,7 @@ console.log('cjs identity ok');
   const typesSource = `
 import { createSubscriptions, razorpay, phonepe, paytm, RazorpayApi, CashfreeApi, PayUApi, PhonePeApi, PaytmApi, SubscriptionError, ErrorCode, BaseProvider, type SubscriptionProvider, type Subscription, type SchedulerStore } from '${PACKAGE_NAME}';
 import { FileSchedulerStore, createHandler, runServe } from '${PACKAGE_NAME}/server';
+import { PostgresSchedulerStore, PostgresPurchaseStore, PostgresRoutingStatsStore, migratePostgres, type PostgresPool } from '${PACKAGE_NAME}/postgres';
 import { openCheckout, type CheckoutInstruction } from '${PACKAGE_NAME}/checkout';
 
 const client = createSubscriptions({ providers: [razorpay({ keyId: 'a', keySecret: 'b' })] });
@@ -220,9 +235,12 @@ const status: Promise<Subscription> = client.get('razorpay', 'sub_1');
 const code: ErrorCode = new SubscriptionError(ErrorCode.Config, 'x').code;
 const store: Promise<SchedulerStore> = FileSchedulerStore.open('/tmp/x.json');
 const handler = createHandler({ client, apiKey: 'k' });
+const pool: PostgresPool = { query: async () => ({ rows: [] }), connect: async () => ({ query: async () => ({ rows: [] }), release: () => undefined }) };
+const scheduler: SchedulerStore = new PostgresSchedulerStore(pool);
+const migrated: Promise<{ version: number }> = migratePostgres(pool, { schema: 'billing' });
 const checkout: (i: CheckoutInstruction) => Promise<unknown> = (i) => openCheckout(i);
 const custom: typeof BaseProvider | SubscriptionProvider | undefined = undefined;
-void [status, code, store, handler, checkout, custom, runServe, RazorpayApi, CashfreeApi, PayUApi, PhonePeApi, PaytmApi, phonepe, paytm];
+void [status, code, store, handler, checkout, custom, runServe, scheduler, migrated, PostgresPurchaseStore, PostgresRoutingStatsStore, RazorpayApi, CashfreeApi, PayUApi, PhonePeApi, PaytmApi, phonepe, paytm];
 `;
   const tsc = join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
   const typecheck = (label, file, flags) => {
@@ -242,8 +260,14 @@ void [status, code, store, handler, checkout, custom, runServe, RazorpayApi, Cas
     const names = [...main.keys()].map((file) => file.slice(installed.length + 1));
     const httpUsers = [...main].filter(([, specifiers]) => specifiers.some((s) => NODE_HTTP.has(s))).map(([file]) => file);
     check(`${flavour}: the main entry never imports node:http`, httpUsers.length === 0, httpUsers.join(', '));
-    const strays = names.filter((name) => /\/(server|checkout)\//.test(name) || /\/(server-entry|cli|bin|service|service-config|scheduler-file-store)\.js$/.test(name));
-    check(`${flavour}: the main entry reaches no server, CLI, file-store or browser module`, strays.length === 0, strays.join(', '));
+    const strays = names.filter((name) => /\/(server|checkout|postgres)\//.test(name) || /\/(server-entry|postgres-entry|cli|bin|service|service-config|scheduler-file-store)\.js$/.test(name));
+    check(`${flavour}: the main entry reaches no server, CLI, file-store, PostgreSQL or browser module`, strays.length === 0, strays.join(', '));
+
+    const postgres = importGraph(join(installed, 'dist', flavour, 'postgres-entry.js'));
+    const drivers = [...postgres].flatMap(([file, specifiers]) =>
+      specifiers.filter((s) => !s.startsWith('.') && !isBuiltin(s) && s !== 'zod').map((s) => `${file.slice(installed.length + 1)} -> ${s}`),
+    );
+    check(`${flavour}: the PostgreSQL entry imports only zod and node: modules (the driver is the caller's)`, drivers.length === 0, drivers.join(', '));
 
     const browser = importGraph(join(installed, 'dist', flavour, 'checkout', 'index.js'));
     const nodeImports = [...browser].flatMap(([file, specifiers]) => specifiers.filter(isBuiltin).map((s) => `${file.slice(installed.length + 1)} -> ${s}`));

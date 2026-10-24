@@ -31,6 +31,7 @@ function sourceOf(distPath: string): string {
 const ENTRY_POINTS = [
   ['.', 'src/index.ts'],
   ['./server', 'src/server-entry.ts'],
+  ['./postgres', 'src/postgres-entry.ts'],
   ['./checkout', 'src/checkout/index.ts'],
 ] as const;
 
@@ -63,7 +64,7 @@ describe('package.json', () => {
   });
 
   it('exposes nothing else (no deep imports), apart from package.json', () => {
-    expect(Object.keys(pkg.exports).sort()).toEqual(['.', './checkout', './package.json', './server']);
+    expect(Object.keys(pkg.exports).sort()).toEqual(['.', './checkout', './package.json', './postgres', './server']);
   });
 
   it('keeps the legacy fields in step with the "." entry, and typesVersions for old resolution of the subpaths', () => {
@@ -72,6 +73,7 @@ describe('package.json', () => {
     expect(pkg.types).toBe('./dist/cjs/index.d.ts');
     expect(pkg.typesVersions?.['*']).toEqual({
       server: ['dist/cjs/server-entry.d.ts'],
+      postgres: ['dist/cjs/postgres-entry.d.ts'],
       checkout: ['dist/cjs/checkout/index.d.ts'],
     });
   });
