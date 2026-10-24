@@ -11,7 +11,7 @@ import inspect
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Pattern, Tuple
+from typing import Any, Dict, List, Pattern, Set, Tuple
 
 import pytest
 
@@ -46,21 +46,11 @@ def load_spec() -> Dict[str, Any]:
 
 SPEC = load_spec()
 
-# The service routes this client has no method for: one-time payments, routing, purchases and entitlements, and the
-# hosted checkout (public pages for a browser, served outside the /v1 API). Remove an id here when the client gets its method.
-UNWRAPPED_OPERATIONS = {
-    "createPayment",
-    "getPayment",
-    "verifyPayment",
-    "createPaymentRefund",
-    "decideRoute",
-    "recordRouteOutcome",
-    "startPurchase",
-    "getPurchase",
-    "chooseAlternative",
-    "completePurchase",
-    "getEntitlements",
-    "flushPurchaseReports",
+# The service routes this client has no method for: none. (Add an id here only for an operation that is not part of the API.)
+UNWRAPPED_OPERATIONS: Set[str] = set()
+# The hosted checkout: public pages a customer's browser opens, answered as HTML and redirects, served outside the /v1 API
+# and authenticated by the session id alone. A typed API client has nothing to call here, so they are not operations of it.
+HOSTED_CHECKOUT_OPERATIONS = {
     "showHostedCheckout",
     "returnFromHostedCheckout",
     "postReturnFromHostedCheckout",
@@ -93,8 +83,21 @@ def test_the_spec_is_the_one_this_client_was_written_for() -> None:
 
 
 def test_every_operation_id_in_the_spec_is_known_to_the_client() -> None:
-    assert set(SPEC_OPERATIONS) - UNWRAPPED_OPERATIONS == {operation.value for operation in OperationId}
+    assert set(SPEC_OPERATIONS) - UNWRAPPED_OPERATIONS - HOSTED_CHECKOUT_OPERATIONS == {
+        operation.value for operation in OperationId
+    }
     assert UNWRAPPED_OPERATIONS <= set(SPEC_OPERATIONS)
+    assert UNWRAPPED_OPERATIONS == set()
+
+
+def test_the_hosted_checkout_pages_are_exactly_the_operations_outside_the_api_prefix() -> None:
+    outside = {
+        operation_id
+        for operation_id, (_, path, _) in SPEC_OPERATIONS.items()
+        if path.startswith(HOSTED_CHECKOUT_PREFIX)
+    }
+    assert outside == HOSTED_CHECKOUT_OPERATIONS
+    assert all(path.startswith(API_PREFIX + "/") for _, path, _ in (SPEC_OPERATIONS[o.value] for o in OperationId))
 
 
 def test_every_operation_has_a_route_and_a_client_method() -> None:

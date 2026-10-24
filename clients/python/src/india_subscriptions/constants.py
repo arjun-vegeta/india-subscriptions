@@ -117,6 +117,9 @@ class PathParam(str, Enum):
     PLAN_ID = "planId"
     SUBSCRIPTION_ID = "subscriptionId"
     CHARGE_ID = "chargeId"
+    PAYMENT_ID = "paymentId"
+    SESSION_ID = "sessionId"
+    CUSTOMER_REF = "customerRef"
 
 
 class QueryParam(str, Enum):
@@ -146,6 +149,18 @@ class ApiPath:
     WEBHOOKS_PARSE = f"{API_PREFIX}/{{provider}}/webhooks/parse"
     WEBHOOKS = f"{API_PREFIX}/{{provider}}/webhooks"
     SCHEDULER_TICK = f"{API_PREFIX}/scheduler/tick"
+    PAYMENTS = f"{API_PREFIX}/{{provider}}/payments"
+    PAYMENT = f"{PAYMENTS}/{{paymentId}}"
+    PAYMENT_VERIFY = f"{PAYMENTS}/verify"
+    PAYMENT_REFUNDS = f"{API_PREFIX}/{{provider}}/payment-refunds"
+    ROUTING_DECIDE = f"{API_PREFIX}/routing/decide"
+    ROUTING_OUTCOMES = f"{API_PREFIX}/routing/outcomes"
+    PURCHASES = f"{API_PREFIX}/purchases"
+    PURCHASES_FLUSH = f"{PURCHASES}/flush"
+    PURCHASE = f"{PURCHASES}/{{sessionId}}"
+    PURCHASE_ALTERNATIVE = f"{PURCHASE}/alternative"
+    PURCHASE_COMPLETE = f"{PURCHASE}/complete"
+    ENTITLEMENTS = f"{API_PREFIX}/entitlements/{{customerRef}}"
 
 
 class OperationId(str, Enum):
@@ -172,6 +187,18 @@ class OperationId(str, Enum):
     PARSE_WEBHOOK = "parseWebhook"
     RECEIVE_WEBHOOK = "receiveWebhook"
     RUN_SCHEDULER_TICK = "runSchedulerTick"
+    CREATE_PAYMENT = "createPayment"
+    GET_PAYMENT = "getPayment"
+    VERIFY_PAYMENT = "verifyPayment"
+    CREATE_PAYMENT_REFUND = "createPaymentRefund"
+    DECIDE_ROUTE = "decideRoute"
+    RECORD_ROUTE_OUTCOME = "recordRouteOutcome"
+    START_PURCHASE = "startPurchase"
+    GET_PURCHASE = "getPurchase"
+    CHOOSE_ALTERNATIVE = "chooseAlternative"
+    COMPLETE_PURCHASE = "completePurchase"
+    FLUSH_PURCHASE_REPORTS = "flushPurchaseReports"
+    GET_ENTITLEMENTS = "getEntitlements"
 
 
 class Route(NamedTuple):
@@ -209,6 +236,18 @@ ROUTES: Mapping[OperationId, Route] = {
         _route(OperationId.PARSE_WEBHOOK, HttpMethod.POST, ApiPath.WEBHOOKS_PARSE),
         _route(OperationId.RECEIVE_WEBHOOK, HttpMethod.POST, ApiPath.WEBHOOKS, AuthMode.SIGNATURE),
         _route(OperationId.RUN_SCHEDULER_TICK, HttpMethod.POST, ApiPath.SCHEDULER_TICK),
+        _route(OperationId.CREATE_PAYMENT, HttpMethod.POST, ApiPath.PAYMENTS),
+        _route(OperationId.GET_PAYMENT, HttpMethod.GET, ApiPath.PAYMENT),
+        _route(OperationId.VERIFY_PAYMENT, HttpMethod.POST, ApiPath.PAYMENT_VERIFY),
+        _route(OperationId.CREATE_PAYMENT_REFUND, HttpMethod.POST, ApiPath.PAYMENT_REFUNDS),
+        _route(OperationId.DECIDE_ROUTE, HttpMethod.POST, ApiPath.ROUTING_DECIDE),
+        _route(OperationId.RECORD_ROUTE_OUTCOME, HttpMethod.POST, ApiPath.ROUTING_OUTCOMES),
+        _route(OperationId.START_PURCHASE, HttpMethod.POST, ApiPath.PURCHASES),
+        _route(OperationId.GET_PURCHASE, HttpMethod.GET, ApiPath.PURCHASE),
+        _route(OperationId.CHOOSE_ALTERNATIVE, HttpMethod.POST, ApiPath.PURCHASE_ALTERNATIVE),
+        _route(OperationId.COMPLETE_PURCHASE, HttpMethod.POST, ApiPath.PURCHASE_COMPLETE),
+        _route(OperationId.FLUSH_PURCHASE_REPORTS, HttpMethod.POST, ApiPath.PURCHASES_FLUSH),
+        _route(OperationId.GET_ENTITLEMENTS, HttpMethod.GET, ApiPath.ENTITLEMENTS),
     )
 }
 """One entry per operation: HTTP method, route template and how it is authenticated."""
@@ -236,5 +275,17 @@ CLIENT_METHODS: Mapping[OperationId, str] = {
     OperationId.PARSE_WEBHOOK: "webhooks.parse",
     OperationId.RECEIVE_WEBHOOK: "webhooks.receive",
     OperationId.RUN_SCHEDULER_TICK: "scheduler.tick",
+    OperationId.CREATE_PAYMENT: "payments.create",
+    OperationId.GET_PAYMENT: "payments.get",
+    OperationId.VERIFY_PAYMENT: "payments.verify",
+    OperationId.CREATE_PAYMENT_REFUND: "payments.refund",
+    OperationId.DECIDE_ROUTE: "routing.decide",
+    OperationId.RECORD_ROUTE_OUTCOME: "routing.record_outcome",
+    OperationId.START_PURCHASE: "purchases.start",
+    OperationId.GET_PURCHASE: "purchases.get",
+    OperationId.CHOOSE_ALTERNATIVE: "purchases.choose_alternative",
+    OperationId.COMPLETE_PURCHASE: "purchases.complete",
+    OperationId.FLUSH_PURCHASE_REPORTS: "purchases.flush",
+    OperationId.GET_ENTITLEMENTS: "entitlements.get",
 }
 """The client attribute path that implements each operation, on both client classes."""

@@ -8,7 +8,7 @@ import pytest
 
 from india_subscriptions.constants import ROUTES, ApiPath, AuthMode, ContentType, HeaderName, OperationId
 
-from .cases import CASES, EMPTY_BODY_OPERATIONS, HEALTH_JSON, SUBSCRIPTION_JSON, TICK_JSON, Case, case_id, parsed
+from .cases import CASES, EMPTY_BODY_OPERATIONS, FLUSH_RESULT_JSON, HEALTH_JSON, SUBSCRIPTION_JSON, TICK_JSON, Case, case_id, parsed
 from .conftest import API_KEY, BASE_URL, BOTH_KINDS, ClientKind, Recorder, json_response, run
 
 
@@ -60,6 +60,7 @@ EMPTY_BODY_RESPONSES = {
     OperationId.PAUSE_SUBSCRIPTION: SUBSCRIPTION_JSON,
     OperationId.RESUME_SUBSCRIPTION: SUBSCRIPTION_JSON,
     OperationId.RUN_SCHEDULER_TICK: TICK_JSON,
+    OperationId.FLUSH_PURCHASE_REPORTS: FLUSH_RESULT_JSON,
 }
 
 

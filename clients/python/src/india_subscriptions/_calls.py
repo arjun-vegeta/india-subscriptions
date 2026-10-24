@@ -18,25 +18,41 @@ from .models import (
     Charge,
     ChargeNotification,
     CheckoutVerification,
+    ChooseAlternativeInput,
+    CompletePurchaseInput,
     CreateChargeInput,
+    CreatePaymentInput,
     CreatePlanInput,
     CreateSubscriptionInput,
+    Entitlements,
+    FlushOptions,
+    FlushResult,
     Health,
     ListChargesOptions,
     NotifyChargeInput,
     OpenApiDocument,
     PauseSubscriptionOptions,
+    Payment,
+    PaymentVerification,
     Plan,
     Provider,
+    PurchaseSession,
     Refund,
     RefundInput,
+    RefundPaymentInput,
     ResumeSubscriptionOptions,
+    RouteOutcome,
+    RouteRequest,
+    RoutingDecision,
+    RoutingReceipt,
+    StartPurchaseInput,
     Subscription,
     SubscriptionEvent,
     TickRequest,
     TickResult,
     UpdateSubscriptionInput,
     VerifyCheckoutInput,
+    VerifyPaymentInput,
     WebhookReceipt,
     WebhookRequest,
 )
@@ -57,6 +73,13 @@ _VERIFICATION = TypeAdapter(CheckoutVerification)
 _EVENT_LIST = TypeAdapter(List[SubscriptionEvent])
 _RECEIPT = TypeAdapter(WebhookReceipt)
 _TICK = TypeAdapter(TickResult)
+_PAYMENT = TypeAdapter(Payment)
+_PAYMENT_VERIFICATION = TypeAdapter(PaymentVerification)
+_DECISION = TypeAdapter(RoutingDecision)
+_ROUTING_RECEIPT = TypeAdapter(RoutingReceipt)
+_PURCHASE = TypeAdapter(PurchaseSession)
+_FLUSH = TypeAdapter(FlushResult)
+_ENTITLEMENTS = TypeAdapter(Entitlements)
 
 
 def _provider(provider: Provider) -> Mapping[PathParam, str]:
@@ -209,3 +232,66 @@ def run_scheduler_tick(options: Union[TickRequest, Input, None]) -> Call[TickRes
     return Call(ROUTES[OperationId.RUN_SCHEDULER_TICK], _TICK, body=body)
 
 
+def create_payment(provider: Provider, payment: Union[CreatePaymentInput, Input]) -> Call[Payment]:
+    body = dump_request(coerce(CreatePaymentInput, payment))
+    return Call(ROUTES[OperationId.CREATE_PAYMENT], _PAYMENT, _provider(provider), body=body)
+
+
+def get_payment(provider: Provider, payment_id: str) -> Call[Payment]:
+    return Call(ROUTES[OperationId.GET_PAYMENT], _PAYMENT, _provider_and(provider, PathParam.PAYMENT_ID, payment_id))
+
+
+def verify_payment(
+    provider: Provider, result: Input, expected_payment_id: Optional[str]
+) -> Call[PaymentVerification]:
+    """The gateway's (or the store's) result is forwarded untouched (nothing is dropped, not even a null)."""
+    body = (
+        VerifyPaymentInput(result=dict(result))
+        if expected_payment_id is None
+        else VerifyPaymentInput(result=dict(result), expected_payment_id=expected_payment_id)
+    )
+    return Call(ROUTES[OperationId.VERIFY_PAYMENT], _PAYMENT_VERIFICATION, _provider(provider), body=dump_keeping_nulls(body))
+
+
+def create_payment_refund(provider: Provider, refund: Union[RefundPaymentInput, Input]) -> Call[Refund]:
+    body = dump_request(coerce(RefundPaymentInput, refund))
+    return Call(ROUTES[OperationId.CREATE_PAYMENT_REFUND], _REFUND, _provider(provider), body=body)
+
+
+def decide_route(request: Union[RouteRequest, Input]) -> Call[RoutingDecision]:
+    body = dump_request(coerce(RouteRequest, request))
+    return Call(ROUTES[OperationId.DECIDE_ROUTE], _DECISION, body=body)
+
+
+def record_route_outcome(outcome: Union[RouteOutcome, Input]) -> Call[RoutingReceipt]:
+    body = dump_request(coerce(RouteOutcome, outcome))
+    return Call(ROUTES[OperationId.RECORD_ROUTE_OUTCOME], _ROUTING_RECEIPT, body=body)
+
+
+def start_purchase(purchase: Union[StartPurchaseInput, Input]) -> Call[PurchaseSession]:
+    body = dump_request(coerce(StartPurchaseInput, purchase))
+    return Call(ROUTES[OperationId.START_PURCHASE], _PURCHASE, body=body)
+
+
+def get_purchase(session_id: str) -> Call[PurchaseSession]:
+    return Call(ROUTES[OperationId.GET_PURCHASE], _PURCHASE, {PathParam.SESSION_ID: session_id})
+
+
+def choose_alternative(session_id: str, external_transaction_token: str) -> Call[PurchaseSession]:
+    body = dump_request(ChooseAlternativeInput(external_transaction_token=external_transaction_token))
+    return Call(ROUTES[OperationId.CHOOSE_ALTERNATIVE], _PURCHASE, {PathParam.SESSION_ID: session_id}, body=body)
+
+
+def complete_purchase(session_id: str, provider: Provider, result: Input) -> Call[PurchaseSession]:
+    """The checkout result (the store's transaction, or a gateway's data) is forwarded untouched."""
+    body = dump_keeping_nulls(CompletePurchaseInput(provider=Provider(provider), result=dict(result)))
+    return Call(ROUTES[OperationId.COMPLETE_PURCHASE], _PURCHASE, {PathParam.SESSION_ID: session_id}, body=body)
+
+
+def flush_purchase_reports(options: Union[FlushOptions, Input, None]) -> Call[FlushResult]:
+    body = None if options is None else dump_request(coerce(FlushOptions, options))
+    return Call(ROUTES[OperationId.FLUSH_PURCHASE_REPORTS], _FLUSH, body=body)
+
+
+def get_entitlements(customer_ref: str) -> Call[Entitlements]:
+    return Call(ROUTES[OperationId.GET_ENTITLEMENTS], _ENTITLEMENTS, {PathParam.CUSTOMER_REF: customer_ref})

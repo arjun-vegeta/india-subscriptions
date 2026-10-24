@@ -125,7 +125,7 @@ async def test_a_body_that_is_not_the_documented_error_still_raises_something_us
     assert error.code is ErrorCode.UNEXPECTED_RESPONSE
     assert error.documented_shape is False
     assert error.status_code == response.status_code
-    assert str(response.status_code) in str(error)
+    assert str(int(response.status_code)) in str(error)  # int(): str() of an IntEnum differs before Python 3.11
     assert error.response_body == response.text[:500]
     assert error.retryable is (response.status_code in RETRYABLE_STATUSES)
 

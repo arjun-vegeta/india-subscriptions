@@ -29,18 +29,31 @@ from .models import (
     ChargeNotification,
     CheckoutVerification,
     CreateChargeInput,
+    CreatePaymentInput,
     CreatePlanInput,
     CreateSubscriptionInput,
+    Entitlements,
+    FlushOptions,
+    FlushResult,
     Health,
     ListChargesOptions,
     NotifyChargeInput,
     OpenApiDocument,
     PauseSubscriptionOptions,
+    Payment,
+    PaymentVerification,
     Plan,
     Provider,
+    PurchaseSession,
     Refund,
     RefundInput,
+    RefundPaymentInput,
     ResumeSubscriptionOptions,
+    RouteOutcome,
+    RouteRequest,
+    RoutingDecision,
+    RoutingReceipt,
+    StartPurchaseInput,
     Subscription,
     SubscriptionEvent,
     TickRequest,
@@ -110,6 +123,10 @@ class AsyncSubscriptionsClient:
         self.checkout = AsyncCheckoutResource(self)
         self.webhooks = AsyncWebhooksResource(self)
         self.scheduler = AsyncSchedulerResource(self)
+        self.payments = AsyncPaymentsResource(self)
+        self.routing = AsyncRoutingResource(self)
+        self.purchases = AsyncPurchasesResource(self)
+        self.entitlements = AsyncEntitlementsResource(self)
 
     def __repr__(self) -> str:
         return f"AsyncSubscriptionsClient(base_url={self._base_url!r})"
@@ -314,6 +331,112 @@ class AsyncSchedulerResource(_AsyncResource):
         return await self._client._execute(calls.run_scheduler_tick(options))
 
 
+class AsyncPaymentsResource(_AsyncResource):
+    """One-time payments. At an app store, ``create`` makes no purchase: it returns the account token the purchase on the device must carry."""
+
+    async def create(self, provider: Provider, payment: Union[CreatePaymentInput, Input]) -> Payment:
+        """Creates the payment (an order) and returns it with ``checkout`` instructions for the customer to pay.
+
+        Not retried on failure. ``OUTCOME_UNKNOWN`` means the payment may have been created: pass a
+        ``reference`` (and an ``idempotency_key`` where the gateway takes one), and read the payment back
+        before repeating the call.
+        """
+        return await self._client._execute(calls.create_payment(provider, payment))
+
+    async def get(self, provider: Provider, payment_id: str) -> Payment:
+        """The payment with its current status: the source of truth, whatever the browser reported."""
+        return await self._client._execute(calls.get_payment(provider, payment_id))
+
+    async def verify(
+        self, provider: Provider, result: Input, expected_payment_id: Optional[str] = None
+    ) -> PaymentVerification:
+        """Verifies what the gateway (or the store, on a device) returned after the customer paid.
+
+        ``result`` is passed on untouched.
+
+        **Always pass ``expected_payment_id``**: the payment id (or your reference) your server stored when it
+        created the payment. The browser or device supplies ``result``, so without the expected id a genuine
+        result for *another* payment would verify. With it, the service rejects a result that belongs to
+        anything else, with ``ErrorCode.SIGNATURE_INVALID``.
+        """
+        return await self._client._execute(calls.verify_payment(provider, result, expected_payment_id))
+
+    async def refund(self, provider: Provider, refund: Union[RefundPaymentInput, Input]) -> Refund:
+        """Refunds a one-time payment in full or in part.
+
+        Not retried on failure. ``OUTCOME_UNKNOWN`` means the refund may have happened: read the payment's
+        ``refunded_amount`` before repeating it.
+        """
+        return await self._client._execute(calls.create_payment_refund(provider, refund))
+
+
+class AsyncRoutingResource(_AsyncResource):
+    """Which gateway should take a new subscription or payment."""
+
+    async def decide(self, request: Union[RouteRequest, Input]) -> RoutingDecision:
+        """Chooses the best configured gateway and explains the choice: every gateway comes back with its exclusions or its score.
+
+        Nothing is created at a gateway. Raises ``SubscriptionsApiError`` with ``ErrorCode.NO_ROUTE`` when no
+        gateway can take the request.
+        """
+        return await self._client._execute(calls.decide_route(request))
+
+    async def record_outcome(self, outcome: Union[RouteOutcome, Input]) -> RoutingReceipt:
+        """Tells the router how a gateway did (success, failure or unavailable), so its success rates and circuit breaker follow what you see.
+
+        Purchase sessions record their own outcomes: use this for payments you create through the explicit
+        gateway routes. Not retried on failure: a repeat would be counted twice.
+        """
+        return await self._client._execute(calls.record_route_outcome(outcome))
+
+
+class AsyncPurchasesResource(_AsyncResource):
+    """Purchase sessions: one call decides, per platform, where a purchase may go. The service must have purchases configured."""
+
+    async def start(self, purchase: Union[StartPurchaseInput, Input]) -> PurchaseSession:
+        """Decides where the purchase may go on the customer's platform, creates it there and returns the session with the ways to pay.
+
+        Repeating the call with the same ``reference`` returns the same session. ``ErrorCode.CONFLICT`` means
+        the customer already owns the product. Not retried on failure: on ``OUTCOME_UNKNOWN``, repeat the call
+        with the same ``reference`` and customer to get the session that was created, if any.
+        """
+        return await self._client._execute(calls.start_purchase(purchase))
+
+    async def get(self, session_id: str) -> PurchaseSession:
+        """The session with its current status."""
+        return await self._client._execute(calls.get_purchase(session_id))
+
+    async def choose_alternative(self, session_id: str, external_transaction_token: str) -> PurchaseSession:
+        """The customer picked the alternative payment on Google's choice screen (sessions with the ``user_choice`` policy).
+
+        Creates the purchase at the best gateway and adds it to the session as a second option, with a
+        ``hosted_url`` to open in a browser tab. Repeating it with the same token returns the same option.
+        """
+        return await self._client._execute(calls.choose_alternative(session_id, external_transaction_token))
+
+    async def complete(self, session_id: str, provider: Provider, result: Input) -> PurchaseSession:
+        """Verifies what the checkout handed back (the store's transaction from the device, or a gateway's result) and records the entitlement.
+
+        ``result`` is passed on untouched. A result for another order raises ``SubscriptionsApiError`` with
+        ``ErrorCode.SIGNATURE_INVALID`` and the session stays as it was.
+        """
+        return await self._client._execute(calls.complete_purchase(session_id, provider, result))
+
+    async def flush(self, options: Union[FlushOptions, Input, None] = None) -> FlushResult:
+        """Sends the purchases, renewals and refunds made through Google Play user choice billing that Google has not been told about yet.
+
+        The service does this on every tick by itself; call it to do it now. ``overdue`` lists the reports
+        past their 24 hour deadline: page someone when it is not empty. Not retried on failure.
+        """
+        return await self._client._execute(calls.flush_purchase_reports(options))
+
+
+class AsyncEntitlementsResource(_AsyncResource):
+    async def get(self, customer_ref: str) -> Entitlements:
+        """Everything the customer owns across app stores and gateways; ``active`` is true when one item gives access now."""
+        return await self._client._execute(calls.get_entitlements(customer_ref))
+
+
 __all__ = [
     "AsyncSubscriptionsClient",
     "AsyncPlansResource",
@@ -322,4 +445,8 @@ __all__ = [
     "AsyncCheckoutResource",
     "AsyncWebhooksResource",
     "AsyncSchedulerResource",
+    "AsyncPaymentsResource",
+    "AsyncRoutingResource",
+    "AsyncPurchasesResource",
+    "AsyncEntitlementsResource",
 ]

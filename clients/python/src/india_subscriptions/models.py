@@ -1165,7 +1165,7 @@ class CreatePaymentInput(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     reference: Annotated[Optional[str], Field(max_length=60, min_length=1)] = None
@@ -1220,7 +1220,7 @@ class VerifyPaymentInput(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     result: dict[str, Any]
@@ -1241,7 +1241,7 @@ class RefundPaymentInput(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     payment_id: Annotated[str, Field(alias='paymentId', min_length=1)]
@@ -1414,7 +1414,7 @@ class RouteNeeds(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     trial: Optional[bool] = None
@@ -1455,7 +1455,7 @@ class RouteRequest(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     kind: ProductKind
@@ -1587,7 +1587,7 @@ class RouteOutcome(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     provider: Provider
@@ -2134,7 +2134,7 @@ class StartPurchaseInput(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     platform: Platform
@@ -2173,7 +2173,7 @@ class ChooseAlternativeInput(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     external_transaction_token: Annotated[
@@ -2190,7 +2190,7 @@ class CompletePurchaseInput(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     provider: Provider
@@ -2209,7 +2209,7 @@ class FlushOptions(BaseModel):
     """
 
     model_config = ConfigDict(
-        extra='ignore',
+        extra='forbid',
         populate_by_name=True,
     )
     limit: Annotated[Optional[int], Field(ge=1, le=500)] = None

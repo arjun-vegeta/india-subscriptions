@@ -64,6 +64,56 @@
       "extra": "forbid"
     }
   },
+  "CreatePaymentInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "VerifyPaymentInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "RefundPaymentInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "RouteRequest": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "RouteNeeds": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "RouteOutcome": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "StartPurchaseInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "ChooseAlternativeInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "CompletePurchaseInput": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
+  "FlushOptions": {
+    "config": {
+      "extra": "forbid"
+    }
+  },
   "OpenApiDocument": {
     "config": {
       "extra": "allow"

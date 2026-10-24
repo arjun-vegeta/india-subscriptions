@@ -18,17 +18,32 @@ from india_subscriptions import (
     ChargeNotification,
     ChargeKind,
     ChargeStatus,
+    ChannelPolicy,
     CheckoutVerification,
     CreatePlanInput,
     Currency,
+    Entitlements,
     EventType,
+    FlushResult,
     Health,
     NotifyChargeInput,
     PauseSubscriptionOptions,
+    Payment,
+    PaymentMethod,
+    PaymentStatus,
+    PaymentVerification,
     Plan,
+    Platform,
+    ProductKind,
     Provider,
+    PurchaseSession,
     Refund,
     RefundStatus,
+    RouteOutcomeKind,
+    RouteOutcomeResult,
+    RoutingDecision,
+    RoutingReceipt,
+    SalesChannel,
     SchedulingMode,
     Subscription,
     SubscriptionEvent,
@@ -42,9 +57,15 @@ from india_subscriptions.models import (
     IntervalUnit,
     CancelMode,
     ChangeTiming,
+    CashfreeCheckout,
+    EntitlementStatus,
+    GooglePlayBillingCheckout,
     RazorpayCheckout,
+    ReportKind,
     HealthStatus,
     OpenApiDocument,
+    RouteExclusion,
+    SessionStatus,
 )
 
 SUBSCRIPTION_ID = "sub_1"
@@ -141,6 +162,139 @@ TICK_JSON = {
     "halted": 0,
     "expired": 0,
     "errors": [],
+}
+
+PAYMENT_ID = "pay_one_1"
+SESSION_ID = "ps_0123456789abcdef0123456789abcdef"
+CUSTOMER_REF = "cust_42"
+PHONEPE = Provider.PHONEPE.value
+PAYMENT_JSON = {
+    "provider": RAZORPAY,
+    "id": PAYMENT_ID,
+    "reference": "order_77",
+    "status": PaymentStatus.SUCCEEDED.value,
+    "providerStatus": "captured",
+    "amount": 29900,
+    "currency": Currency.INR.value,
+    "paymentMethod": PaymentMethod.UPI.value,
+    "paidAt": "2026-11-17T10:31:00Z",
+    "checkout": {"kind": "razorpay_checkout", "keyId": "rzp_test_1", "orderId": "order_1"},
+    "raw": {"id": PAYMENT_ID},
+}
+PAYMENT_VERIFICATION_JSON = {
+    "provider": RAZORPAY,
+    "paymentId": PAYMENT_ID,
+    "reference": "order_77",
+    "paid": True,
+    "status": PaymentStatus.SUCCEEDED.value,
+    "raw": {},
+}
+PAYMENT_REFUND_JSON = {**REFUND_JSON, "chargeId": PAYMENT_ID, "paymentId": PAYMENT_ID}
+ROUTING_DECISION_JSON = {
+    "provider": CASHFREE,
+    "ranked": [CASHFREE, RAZORPAY],
+    "candidates": [
+        {
+            "provider": CASHFREE,
+            "eligible": True,
+            "exclusions": [],
+            "score": 0.91,
+            "factors": {"successRate": 0.97, "samples": 120, "cost": 590.0, "priority": 1.0, "healthy": True},
+        },
+        {"provider": RAZORPAY, "eligible": True, "exclusions": [], "score": 0.88},
+        {
+            "provider": PHONEPE,
+            "eligible": False,
+            "exclusions": [RouteExclusion.UNHEALTHY.value],
+            "details": ["phonepe is on probation"],
+        },
+    ],
+}
+PURCHASE_SESSION_JSON = {
+    "id": SESSION_ID,
+    "platform": Platform.ANDROID.value,
+    "product": "pro_monthly",
+    "policy": ChannelPolicy.USER_CHOICE.value,
+    "status": SessionStatus.OPEN.value,
+    "customerRef": CUSTOMER_REF,
+    "reference": "buy_1",
+    "options": [
+        {
+            "channel": SalesChannel.STORE.value,
+            "provider": Provider.GOOGLE_PLAY.value,
+            "checkout": {
+                "kind": "google_play_billing",
+                "productKind": ProductKind.SUBSCRIPTION.value,
+                "productId": "pro_monthly",
+                "basePlanId": "monthly",
+                "obfuscatedAccountId": "acct_abc",
+                "userChoiceBilling": True,
+            },
+            "handle": "sub_g1",
+        }
+    ],
+    "attempts": [],
+    "createdAt": "2026-11-17T10:30:00Z",
+    "expiresAt": "2026-11-17T11:30:00Z",
+}
+PURCHASE_SESSION_WITH_ALTERNATIVE_JSON = {
+    **PURCHASE_SESSION_JSON,
+    "status": SessionStatus.AWAITING_PAYMENT.value,
+    "externalTransactionToken": "token_1",
+    "options": [
+        *PURCHASE_SESSION_JSON["options"],
+        {
+            "channel": SalesChannel.GATEWAY.value,
+            "provider": CASHFREE,
+            "checkout": {"kind": "cashfree_checkout", "sessionId": "session_1", "environment": "test"},
+            "handle": "sub_c1",
+            "hostedUrl": "https://pay.example.test/checkout/ps_1",
+        },
+    ],
+}
+PURCHASE_SESSION_COMPLETED_JSON = {
+    **PURCHASE_SESSION_JSON,
+    "status": SessionStatus.COMPLETED.value,
+    "completedAt": "2026-11-17T10:40:00Z",
+    "subscriptionId": "sub_g1",
+    "provider": Provider.GOOGLE_PLAY.value,
+}
+FLUSH_RESULT_JSON = {
+    "sent": 2,
+    "retrying": 1,
+    "blocked": 0,
+    "rejected": 0,
+    "skipped": 0,
+    "entries": [],
+    "overdue": [
+        {
+            "id": "rep_1",
+            "kind": "transaction",
+            "attempts": 3,
+            "dueBy": "2026-11-17T09:00:00Z",
+            "overdue": True,
+            "errorCode": "PROVIDER_ERROR",
+        }
+    ],
+}
+ENTITLEMENTS_JSON = {
+    "customerRef": CUSTOMER_REF,
+    "active": True,
+    "items": [
+        {
+            "product": "pro_monthly",
+            "kind": ProductKind.SUBSCRIPTION.value,
+            "provider": Provider.GOOGLE_PLAY.value,
+            "channel": SalesChannel.STORE.value,
+            "platform": Platform.ANDROID.value,
+            "subscriptionId": "sub_g1",
+            "status": "active",
+            "active": True,
+            "cancelAtPeriodEnd": False,
+            "currentPeriodEnd": "2026-12-17T10:30:00Z",
+            "updatedAt": "2026-11-17T10:40:00Z",
+        }
+    ],
 }
 
 WEBHOOK_BODY = '{"event": "subscription.charged",  "id":"evt_1"}\r\n'
@@ -257,7 +411,95 @@ def _check_tick(result: Any) -> None:
     assert (result.due, result.charged, result.errors) == (3, 2, [])
 
 
+def _check_payment(result: Any) -> None:
+    assert isinstance(result, Payment)
+    assert result.provider is Provider.RAZORPAY
+    assert result.id == PAYMENT_ID
+    assert result.status is PaymentStatus.SUCCEEDED
+    assert result.amount == 29900
+    assert result.payment_method is PaymentMethod.UPI
+    assert result.paid_at == datetime(2026, 11, 17, 10, 31, tzinfo=timezone.utc)
+    assert isinstance(result.checkout, RazorpayCheckout)
+    assert result.checkout.order_id == "order_1"
+
+
+def _check_payment_verification(result: Any) -> None:
+    assert isinstance(result, PaymentVerification)
+    assert result.paid is True
+    assert result.payment_id == PAYMENT_ID
+    assert result.status is PaymentStatus.SUCCEEDED
+
+
+def _check_payment_refund(result: Any) -> None:
+    assert isinstance(result, Refund)
+    assert result.status is RefundStatus.SUCCEEDED
+    assert result.charge_id == PAYMENT_ID
+    assert result.amount == 1000
+
+
+def _check_decision(result: Any) -> None:
+    assert isinstance(result, RoutingDecision)
+    assert result.provider is Provider.CASHFREE
+    assert result.ranked == [Provider.CASHFREE, Provider.RAZORPAY]
+    assert [candidate.eligible for candidate in result.candidates] == [True, True, False]
+    assert result.candidates[0].factors is not None and result.candidates[0].factors.samples == 120
+    assert result.candidates[2].exclusions == [RouteExclusion.UNHEALTHY]
+
+
+def _check_routing_receipt(result: Any) -> None:
+    assert isinstance(result, RoutingReceipt)
+    assert result.recorded is True
+
+
+def _check_session(result: Any) -> None:
+    assert isinstance(result, PurchaseSession)
+    assert result.id == SESSION_ID
+    assert result.platform is Platform.ANDROID
+    assert result.policy is ChannelPolicy.USER_CHOICE
+    assert result.status is SessionStatus.OPEN
+    assert [option.channel for option in result.options] == [SalesChannel.STORE]
+    assert isinstance(result.options[0].checkout, GooglePlayBillingCheckout)
+    assert result.options[0].checkout.user_choice_billing is True
+    assert result.options[0].checkout.product_kind is ProductKind.SUBSCRIPTION
+    assert result.expires_at == datetime(2026, 11, 17, 11, 30, tzinfo=timezone.utc)
+
+
+def _check_session_with_alternative(result: Any) -> None:
+    assert isinstance(result, PurchaseSession)
+    assert result.status is SessionStatus.AWAITING_PAYMENT
+    assert result.external_transaction_token == "token_1"
+    assert [option.channel for option in result.options] == [SalesChannel.STORE, SalesChannel.GATEWAY]
+    assert str(result.options[1].hosted_url) == "https://pay.example.test/checkout/ps_1"
+    assert isinstance(result.options[1].checkout, CashfreeCheckout)
+
+
+def _check_completed_session(result: Any) -> None:
+    assert isinstance(result, PurchaseSession)
+    assert result.status is SessionStatus.COMPLETED
+    assert result.provider is Provider.GOOGLE_PLAY
+    assert result.subscription_id == "sub_g1"
+    assert result.completed_at == datetime(2026, 11, 17, 10, 40, tzinfo=timezone.utc)
+
+
+def _check_flush(result: Any) -> None:
+    assert isinstance(result, FlushResult)
+    assert (result.sent, result.retrying, result.rejected) == (2, 1, 0)
+    assert len(result.overdue) == 1
+    assert result.overdue[0].overdue is True
+    assert result.overdue[0].kind is ReportKind.TRANSACTION
+
+
+def _check_entitlements(result: Any) -> None:
+    assert isinstance(result, Entitlements)
+    assert result.customer_ref == CUSTOMER_REF
+    assert result.active is True
+    assert result.items[0].provider is Provider.GOOGLE_PLAY
+    assert result.items[0].status is EntitlementStatus.ACTIVE
+    assert result.items[0].current_period_end == datetime(2026, 12, 17, 10, 30, tzinfo=timezone.utc)
+
+
 VERIFICATION_JSON = {"provider": RAZORPAY, "subscriptionId": SUBSCRIPTION_ID, "authorized": True, "raw": {}}
+PURCHASE_TOKEN_RESULT = {"purchaseToken": "tok_123", "productId": "pro_monthly", "orderId": None}
 GATEWAY_RESULT = {"razorpay_payment_id": "pay_1", "razorpay_subscription_id": SUBSCRIPTION_ID, "extra": None, "n": 1}
 
 CASES: List[Case] = [
@@ -520,6 +762,176 @@ CASES: List[Case] = [
         _check_tick,
         body={"limit": 10},
     ),
+    Case(
+        OperationId.CREATE_PAYMENT,
+        lambda c: c.payments.create(
+            Provider.RAZORPAY,
+            {
+                "reference": "order_77",
+                "amount": 29900,
+                "customer": {"name": "Asha", "email": "asha@example.com", "phone": "9876543210", "state": "Karnataka"},
+                "payment_methods": [PaymentMethod.UPI, PaymentMethod.NETBANKING],
+                "returnUrl": "https://shop.example.com/return",
+                "store_product": {"productId": "coins_100", "consumable": True},
+            },
+        ),
+        _path(ApiPath.PAYMENTS, provider=RAZORPAY),
+        201,
+        PAYMENT_JSON,
+        _check_payment,
+        body={
+            "reference": "order_77",
+            "amount": 29900,
+            "customer": {"name": "Asha", "email": "asha@example.com", "phone": "9876543210", "state": "Karnataka"},
+            "paymentMethods": [PaymentMethod.UPI.value, PaymentMethod.NETBANKING.value],
+            "returnUrl": "https://shop.example.com/return",
+            "storeProduct": {"productId": "coins_100", "consumable": True},
+        },
+    ),
+    Case(
+        OperationId.GET_PAYMENT,
+        lambda c: c.payments.get(Provider.RAZORPAY, PAYMENT_ID),
+        _path(ApiPath.PAYMENT, provider=RAZORPAY, paymentId=PAYMENT_ID),
+        200,
+        PAYMENT_JSON,
+        _check_payment,
+    ),
+    Case(
+        OperationId.VERIFY_PAYMENT,
+        lambda c: c.payments.verify(Provider.RAZORPAY, GATEWAY_RESULT, expected_payment_id="order_77"),
+        _path(ApiPath.PAYMENT_VERIFY, provider=RAZORPAY),
+        200,
+        PAYMENT_VERIFICATION_JSON,
+        _check_payment_verification,
+        body={"result": GATEWAY_RESULT, "expectedPaymentId": "order_77"},
+    ),
+    Case(
+        OperationId.CREATE_PAYMENT_REFUND,
+        lambda c: c.payments.refund(
+            Provider.RAZORPAY, {"paymentId": PAYMENT_ID, "refundId": "rf_1", "amount": 1000, "reason": "duplicate"}
+        ),
+        _path(ApiPath.PAYMENT_REFUNDS, provider=RAZORPAY),
+        201,
+        PAYMENT_REFUND_JSON,
+        _check_payment_refund,
+        body={"paymentId": PAYMENT_ID, "refundId": "rf_1", "amount": 1000, "reason": "duplicate"},
+    ),
+    Case(
+        OperationId.DECIDE_ROUTE,
+        lambda c: c.routing.decide(
+            {
+                "kind": ProductKind.ONE_TIME,
+                "amount": 29900,
+                "payment_methods": [PaymentMethod.UPI],
+                "needs": {"refunds": True},
+                "exclude": [Provider.PAYU],
+                "prefer": Provider.CASHFREE,
+            }
+        ),
+        ApiPath.ROUTING_DECIDE,
+        200,
+        ROUTING_DECISION_JSON,
+        _check_decision,
+        body={
+            "kind": ProductKind.ONE_TIME.value,
+            "amount": 29900,
+            "paymentMethods": [PaymentMethod.UPI.value],
+            "needs": {"refunds": True},
+            "exclude": [Provider.PAYU.value],
+            "prefer": CASHFREE,
+        },
+    ),
+    Case(
+        OperationId.RECORD_ROUTE_OUTCOME,
+        lambda c: c.routing.record_outcome(
+            {
+                "provider": Provider.CASHFREE,
+                "kind": RouteOutcomeKind.PAYMENT,
+                "result": RouteOutcomeResult.FAILURE,
+                "payment_method": PaymentMethod.UPI,
+                "at": datetime(2026, 11, 17, 10, 0, tzinfo=IST),
+            }
+        ),
+        ApiPath.ROUTING_OUTCOMES,
+        200,
+        {"recorded": True},
+        _check_routing_receipt,
+        body={
+            "provider": CASHFREE,
+            "kind": RouteOutcomeKind.PAYMENT.value,
+            "result": RouteOutcomeResult.FAILURE.value,
+            "paymentMethod": PaymentMethod.UPI.value,
+            "at": "2026-11-17T10:00:00+05:30",
+        },
+    ),
+    Case(
+        OperationId.START_PURCHASE,
+        lambda c: c.purchases.start(
+            {
+                "platform": Platform.ANDROID,
+                "product": "pro_monthly",
+                "customer": {"name": "Asha", "email": "asha@example.com", "state": "Karnataka"},
+                "customer_ref": CUSTOMER_REF,
+                "reference": "buy_1",
+                "returnUrl": "myapp://done",
+            }
+        ),
+        ApiPath.PURCHASES,
+        201,
+        PURCHASE_SESSION_JSON,
+        _check_session,
+        body={
+            "platform": Platform.ANDROID.value,
+            "product": "pro_monthly",
+            "customer": {"name": "Asha", "email": "asha@example.com", "state": "Karnataka"},
+            "customerRef": CUSTOMER_REF,
+            "reference": "buy_1",
+            "returnUrl": "myapp://done",
+        },
+    ),
+    Case(
+        OperationId.GET_PURCHASE,
+        lambda c: c.purchases.get(SESSION_ID),
+        _path(ApiPath.PURCHASE, sessionId=SESSION_ID),
+        200,
+        PURCHASE_SESSION_JSON,
+        _check_session,
+    ),
+    Case(
+        OperationId.CHOOSE_ALTERNATIVE,
+        lambda c: c.purchases.choose_alternative(SESSION_ID, "token_1"),
+        _path(ApiPath.PURCHASE_ALTERNATIVE, sessionId=SESSION_ID),
+        200,
+        PURCHASE_SESSION_WITH_ALTERNATIVE_JSON,
+        _check_session_with_alternative,
+        body={"externalTransactionToken": "token_1"},
+    ),
+    Case(
+        OperationId.COMPLETE_PURCHASE,
+        lambda c: c.purchases.complete(SESSION_ID, Provider.GOOGLE_PLAY, PURCHASE_TOKEN_RESULT),
+        _path(ApiPath.PURCHASE_COMPLETE, sessionId=SESSION_ID),
+        200,
+        PURCHASE_SESSION_COMPLETED_JSON,
+        _check_completed_session,
+        body={"provider": Provider.GOOGLE_PLAY.value, "result": PURCHASE_TOKEN_RESULT},
+    ),
+    Case(
+        OperationId.FLUSH_PURCHASE_REPORTS,
+        lambda c: c.purchases.flush({"limit": 100}),
+        ApiPath.PURCHASES_FLUSH,
+        200,
+        FLUSH_RESULT_JSON,
+        _check_flush,
+        body={"limit": 100},
+    ),
+    Case(
+        OperationId.GET_ENTITLEMENTS,
+        lambda c: c.entitlements.get(CUSTOMER_REF),
+        _path(ApiPath.ENTITLEMENTS, customerRef=CUSTOMER_REF),
+        200,
+        ENTITLEMENTS_JSON,
+        _check_entitlements,
+    ),
 ]
 
 # Request-shape variants that are not an operation of their own.
@@ -528,6 +940,7 @@ EMPTY_BODY_OPERATIONS = [
     (OperationId.PAUSE_SUBSCRIPTION, lambda c: c.subscriptions.pause(Provider.RAZORPAY, SUBSCRIPTION_ID)),
     (OperationId.RESUME_SUBSCRIPTION, lambda c: c.subscriptions.resume(Provider.RAZORPAY, SUBSCRIPTION_ID)),
     (OperationId.RUN_SCHEDULER_TICK, lambda c: c.scheduler.tick()),
+    (OperationId.FLUSH_PURCHASE_REPORTS, lambda c: c.purchases.flush()),
 ]
 
 
