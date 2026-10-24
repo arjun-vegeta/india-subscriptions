@@ -42,7 +42,7 @@ Read from the policy code with an App Store, a Google Play and a gateway provide
 
 ## When a gateway fails to create the purchase
 
-The next ranked gateway is tried when the create call of a gateway fails with `PROVIDER_UNAVAILABLE`, `RATE_LIMITED`, `NETWORK`, `TIMEOUT`, `AUTH`, `PROVIDER_ERROR`, `OUTCOME_UNKNOWN`. Of the codes in that list, `PROVIDER_UNAVAILABLE`, `RATE_LIMITED`, `NETWORK`, `TIMEOUT`, `AUTH`, `OUTCOME_UNKNOWN` count as the gateway being unavailable and feed its circuit breaker. A refusal of the purchase's inputs (`VALIDATION` or `UNSUPPORTED`) also moves on to the next gateway, because nothing was created, and is recorded as a failed request, never as the gateway being unavailable. `CONFLICT` stops at once. See [Selling on iPhone, Android and the web](../../guides/purchases.md#when-a-gateway-fails).
+The next ranked gateway is tried when the create call of a gateway fails with `PROVIDER_UNAVAILABLE`, `RATE_LIMITED`, `NETWORK`, `TIMEOUT`, `AUTH`, `PROVIDER_ERROR`, `OUTCOME_UNKNOWN`, `VALIDATION`, `UNSUPPORTED`. Of the codes in that list, `PROVIDER_UNAVAILABLE`, `RATE_LIMITED`, `NETWORK`, `TIMEOUT`, `AUTH`, `OUTCOME_UNKNOWN` count as the gateway being unavailable and feed its circuit breaker. A refusal of the purchase's inputs (`VALIDATION` or `UNSUPPORTED`) also moves on to the next gateway, because nothing was created, and is recorded as a failed request, never as the gateway being unavailable. `CONFLICT` stops at once. See [Selling on iPhone, Android and the web](../../guides/purchases.md#when-a-gateway-fails).
 
 ## Reports to Google
 
