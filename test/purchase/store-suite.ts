@@ -71,8 +71,17 @@ export const report = (fields: Partial<ReportRecord> = {}): ReportRecord => ({
 /** Builds a store under test. `now` is the lock clock, in epoch milliseconds. */
 export type StoreFactory = (options?: { now?: () => number }) => Promise<PurchaseStore>;
 
+export interface PurchaseStoreSuiteOptions {
+  /**
+   * True (the default) when the store judges lock expiry on a clock the test can inject. A store that asks the
+   * database for the time sets it to false and tests expiry itself.
+   */
+  injectableClock?: boolean;
+}
+
 /** The behaviours every `PurchaseStore` must have (see the guarantees documented on the interface). */
-export function purchaseStoreSuite(name: string, make: StoreFactory): void {
+export function purchaseStoreSuite(name: string, make: StoreFactory, options: PurchaseStoreSuiteOptions = {}): void {
+  const injectableClock = options.injectableClock ?? true;
   describe(`${name}: sessions`, () => {
     it('reads its own writes and hands out copies', async () => {
       const store = await make();
@@ -191,7 +200,7 @@ export function purchaseStoreSuite(name: string, make: StoreFactory): void {
   });
 
   describe(`${name}: locks`, () => {
-    it('only one caller gets a lock, until it is released or expires', async () => {
+    it.runIf(injectableClock)('only one caller gets a lock, until it is released or expires', async () => {
       const clock = new FakeClock();
       const store = await make({ now: clock.epoch });
       const token = await store.acquireLock('k', 1000);
