@@ -14,10 +14,15 @@ import {
   ChargeKind,
   ChargeStatus,
   CheckoutKind,
+  ChannelPolicy,
   Currency,
   Environment,
   ErrorCode,
   EventType,
+  IntervalUnit,
+  PaymentMethod,
+  PaymentStatus,
+  ProductKind,
   Provider,
   ProviderKind,
   RefundStatus,
@@ -33,6 +38,8 @@ import {
   ChargeNotificationSchema,
   ChargeSchema,
   CheckoutVerificationSchema,
+  PaymentSchema,
+  PaymentVerificationSchema,
   PlanSchema,
   RefundSchema,
   SubscriptionEventSchema,
@@ -44,20 +51,25 @@ import {
   type CheckoutResult,
   type CheckoutVerification,
   type CreateChargeInput,
+  type CreatePaymentInput,
   type CreatePlanInput,
   type CreateSubscriptionInput,
   type ListChargesOptions,
   type NotifyChargeInput,
   type PauseSubscriptionOptions,
+  type Payment,
+  type PaymentVerification,
   type Plan,
   type Refund,
   type RefundInput,
+  type RefundPaymentInput,
   type ResumeSubscriptionOptions,
   type Subscription,
   type SubscriptionEvent,
   type UpdateSubscriptionInput,
   type WebhookRequest,
 } from '../../../../src/schemas.js';
+import { MemoryPurchaseStore } from '../../../../src/purchase/index.js';
 import { createNodeServer, listen } from '../../../../src/server/index.js';
 
 const API_KEY = requiredEnv('E2E_API_KEY');
@@ -67,6 +79,9 @@ const CHECKOUT_SIGNATURE_FIELD = 'signature';
 const CHECKOUT_SUBSCRIPTION_FIELD = 'subscription_id';
 /** A charge id that makes the fake gateway "lose" its answer: the outcome is unknown. */
 const UNKNOWN_OUTCOME_CHARGE_ID = 'charge_outcome_unknown';
+/** A payment reference that makes the fake gateway "lose" its answer to `createPayment`. */
+const UNKNOWN_OUTCOME_PAYMENT_REFERENCE = 'payment_outcome_unknown';
+const PAYMENT_ID_FIELD = 'payment_id';
 const MS_PER_DAY = 86_400_000;
 
 function requiredEnv(name: string): string {
@@ -95,8 +110,13 @@ const CAPABILITIES: Omit<Capabilities, 'provider'> = {
   signedWebhooks: true,
   idempotencyKeys: true,
   paymentMethods: [],
-  oneTimePayments: false,
-  oneTimePaymentMethods: [],
+  oneTimePayments: true,
+  oneTimePaymentMethods: [PaymentMethod.Upi, PaymentMethod.NetBanking, PaymentMethod.Wallet],
+};
+
+/** Per gateway: Cashfree takes one-time payments by UPI only, so a request for net banking has exactly one candidate. */
+const CAPABILITY_OVERRIDES: Partial<Record<Provider, Partial<Capabilities>>> = {
+  [Provider.Cashfree]: { oneTimePaymentMethods: [PaymentMethod.Upi] },
 };
 
 function notFound(provider: Provider, what: string, id: string): SubscriptionError {
@@ -118,11 +138,12 @@ class FakeProvider extends BaseProvider {
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly statusBeforePause = new Map<string, Subscription['status']>();
   private readonly charges = new Map<string, Charge[]>();
+  private readonly payments = new Map<string, Payment>();
   private counter = 0;
 
   constructor(readonly name: Provider) {
     super();
-    this.capabilities = checked(CapabilitiesSchema, { ...CAPABILITIES, provider: name });
+    this.capabilities = checked(CapabilitiesSchema, { ...CAPABILITIES, ...CAPABILITY_OVERRIDES[name], provider: name });
   }
 
   protected describeError(_response: HttpResponse): GatewayErrorInfo {
@@ -370,6 +391,107 @@ class FakeProvider extends BaseProvider {
     });
   }
 
+  override async createPayment(input: CreatePaymentInput): Promise<Payment> {
+    if (input.reference === UNKNOWN_OUTCOME_PAYMENT_REFERENCE) {
+      throw new SubscriptionError(
+        ErrorCode.OutcomeUnknown,
+        'POST /orders was sent but no response was received. It may or may not have taken effect: fetch the current state before retrying.',
+        { provider: this.name },
+      );
+    }
+    const existing = [...this.payments.values()].find((payment) => input.reference !== undefined && payment.reference === input.reference);
+    if (existing) return existing; // the same reference never creates two orders
+    const id = this.nextId('order');
+    const checkout =
+      this.name === Provider.Cashfree
+        ? { kind: CheckoutKind.CashfreeCheckout, sessionId: `session_${id}`, environment: Environment.Test }
+        : { kind: CheckoutKind.RazorpayCheckout, keyId: 'rzp_test_fake', orderId: id };
+    const payment = checked(PaymentSchema, {
+      provider: this.name,
+      id,
+      reference: input.reference,
+      status: PaymentStatus.Created,
+      providerStatus: 'created',
+      amount: input.amount,
+      currency: Currency.INR,
+      customer: input.customer,
+      createdAt: new Date().toISOString(),
+      checkout,
+      metadata: input.metadata,
+      raw: { fake: true, id },
+    });
+    this.payments.set(id, payment);
+    return payment;
+  }
+
+  override async getPayment(paymentId: string): Promise<Payment> {
+    const payment = this.payments.get(paymentId);
+    if (!payment) throw notFound(this.name, 'Payment', paymentId);
+    return payment;
+  }
+
+  override async verifyPayment(result: CheckoutResult): Promise<PaymentVerification> {
+    const paymentId = String(result[PAYMENT_ID_FIELD] ?? '');
+    const expected = sha256Hmac(WEBHOOK_SECRET, paymentId);
+    const received = result[CHECKOUT_SIGNATURE_FIELD];
+    if (typeof received !== 'string' || !safeEqual(expected, received)) {
+      throw new SubscriptionError(ErrorCode.SignatureInvalid, `${this.name} payment signature does not match`, {
+        provider: this.name,
+      });
+    }
+    const current = await this.getPayment(paymentId);
+    const paid = checked(PaymentSchema, {
+      ...current,
+      status: PaymentStatus.Succeeded,
+      providerStatus: 'paid',
+      paymentMethod: PaymentMethod.Upi,
+      paidAt: new Date().toISOString(),
+    });
+    this.payments.set(paid.id, paid);
+    return checked(PaymentVerificationSchema, {
+      provider: this.name,
+      paymentId: paid.id,
+      reference: paid.reference,
+      paid: true,
+      status: PaymentStatus.Succeeded,
+      payment: paid,
+      raw: result,
+    });
+  }
+
+  override async refundPayment(input: RefundPaymentInput): Promise<Refund> {
+    const payment = await this.getPayment(input.paymentId);
+    const amount = input.amount ?? payment.amount;
+    if (amount > payment.amount - (payment.refundedAmount ?? 0)) {
+      throw new SubscriptionError(ErrorCode.Validation, 'The refund is more than what is left of the payment', {
+        provider: this.name,
+        httpStatus: 400,
+        providerCode: 'BAD_REQUEST_ERROR',
+      });
+    }
+    const refundedAmount = (payment.refundedAmount ?? 0) + amount;
+    this.payments.set(
+      payment.id,
+      checked(PaymentSchema, {
+        ...payment,
+        refundedAmount,
+        status: refundedAmount === payment.amount ? PaymentStatus.Refunded : PaymentStatus.PartiallyRefunded,
+      }),
+    );
+    return checked(RefundSchema, {
+      provider: this.name,
+      id: input.refundId,
+      reference: input.refundId,
+      chargeId: payment.id,
+      paymentId: payment.id,
+      status: RefundStatus.Succeeded,
+      amount,
+      currency: Currency.INR,
+      createdAt: new Date().toISOString(),
+      raw: { fake: true },
+    });
+  }
+
   async verifyCheckout(result: CheckoutResult): Promise<CheckoutVerification> {
     const subscriptionId = String(result[CHECKOUT_SUBSCRIPTION_FIELD] ?? '');
     const expected = sha256Hmac(WEBHOOK_SECRET, subscriptionId);
@@ -421,6 +543,21 @@ class FakeProvider extends BaseProvider {
 
 const client = createSubscriptions({
   providers: [new FakeProvider(Provider.Razorpay), new FakeProvider(Provider.Cashfree)],
+  // Purchases: web and (policy `gateways`) Android go to the gateways. iOS would go to the App Store, which is not configured.
+  purchases: {
+    catalog: [
+      { key: 'coins_100', kind: ProductKind.OneTime, name: '100 coins', amount: 29900 },
+      {
+        key: 'pro_monthly',
+        kind: ProductKind.Subscription,
+        name: 'Pro monthly',
+        amount: 49900,
+        interval: { unit: IntervalUnit.Month, count: 1 },
+      },
+    ],
+    policy: { android: ChannelPolicy.Gateways },
+    store: new MemoryPurchaseStore(),
+  },
 });
 
 const server = createNodeServer({

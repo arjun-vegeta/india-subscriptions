@@ -13,6 +13,7 @@ import hmac
 import inspect
 import json
 import socket
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Union
@@ -21,8 +22,13 @@ import pytest
 
 from india_subscriptions import (
     AsyncSubscriptionsClient,
+    ChannelPolicy,
     ErrorCode,
     EventType,
+    Platform,
+    PaymentMethod,
+    PaymentStatus,
+    ProductKind,
     Provider,
     SubscriptionStatus,
     SubscriptionsApiError,
@@ -41,7 +47,12 @@ from india_subscriptions.models import (
     Environment,
     HealthStatus,
     RefundStatus,
+    RouteExclusion,
+    RouteOutcomeKind,
+    RouteOutcomeResult,
+    SalesChannel,
     SchedulingMode,
+    SessionStatus,
 )
 
 from ..conftest import BOTH_KINDS, ClientKind
@@ -53,10 +64,19 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 SIGNATURE_HEADER = "x-fake-signature"
 UNKNOWN_OUTCOME_CHARGE_ID = "charge_outcome_unknown"  # fixture_server.ts: this debit "loses" its answer
 TRIAL_DAYS = 14
+UNKNOWN_OUTCOME_PAYMENT_REFERENCE = "payment_outcome_unknown"  # fixture_server.ts: creating this payment "loses" its answer
+COINS = "coins_100"  # fixture_server.ts catalog: a one-time product of 29900 paise
+PRO = "pro_monthly"  # fixture_server.ts catalog: a subscription product of 49900 paise
+CUSTOMER = {"name": "Asha", "email": "asha@example.com", "phone": "9876543210"}
 
 
 async def settle(value: Union[Any, Awaitable[Any]]) -> Any:
     return await value if inspect.isawaitable(value) else value
+
+
+def unique(prefix: str) -> str:
+    """The same service serves every test (and both clients), so each scenario uses ids of its own."""
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
 def sign(secret: str, payload: str) -> str:
@@ -109,6 +129,8 @@ async def test_health_and_capabilities(api: Api) -> None:
     assert capabilities.scheduling == [SchedulingMode.GATEWAY]
     assert capabilities.merchant_charge_lead_hours == 24
     assert capabilities.trial is True
+    assert capabilities.one_time_payments is True
+    assert capabilities.one_time_payment_methods == [PaymentMethod.UPI]
 
 
 async def test_the_openapi_document_served_is_the_one_the_client_was_built_from(api: Api) -> None:
@@ -425,6 +447,283 @@ async def test_the_gateway_facing_webhook_route_needs_no_api_key(api: Api, servi
     with pytest.raises(SubscriptionsApiError) as caught:
         await api(api.client.webhooks.receive(Provider.CASHFREE, WEBHOOK_BODY.encode("utf-8"), {SIGNATURE_HEADER: "bad"}))
     assert caught.value.code is ErrorCode.SIGNATURE_INVALID
+
+
+# -- one-time payments ------------------------------------------------------------------------------------
+
+
+async def test_the_one_time_payment_lifecycle(api: Api, service: Service) -> None:
+    provider = Provider.RAZORPAY
+    client = api.client
+    reference = unique("order")
+
+    created = await api(
+        client.payments.create(
+            provider,
+            {
+                "reference": reference,
+                "amount": 29900,
+                "customer": CUSTOMER,
+                "payment_methods": [PaymentMethod.UPI],
+                "metadata": {"cart": "c-9"},
+            },
+        )
+    )
+    assert created.provider is provider
+    assert created.status is PaymentStatus.CREATED
+    assert (created.reference, created.amount, created.metadata) == (reference, 29900, {"cart": "c-9"})
+    assert isinstance(created.checkout, RazorpayCheckout)
+    assert created.checkout.order_id == created.id
+    assert created.customer is not None and created.customer.email == "asha@example.com"
+    again = await api(client.payments.create(provider, {"reference": reference, "amount": 29900, "customer": CUSTOMER}))
+    assert again.id == created.id  # the fake gateway keeps one order per reference
+
+    fetched = await api(client.payments.get(provider, created.id))
+    assert fetched.id == created.id and fetched.status is PaymentStatus.CREATED
+
+    good = {"payment_id": created.id, "signature": sign(service.webhook_secret, created.id), "extra": None}
+    verified = await api(client.payments.verify(provider, good, expected_payment_id=reference))
+    assert verified.paid is True
+    assert verified.payment_id == created.id
+    assert verified.status is PaymentStatus.SUCCEEDED
+    assert verified.payment is not None and verified.payment.payment_method is PaymentMethod.UPI
+    assert verified.raw == good  # forwarded untouched, nulls included
+    assert (await api(client.payments.get(provider, created.id))).status is PaymentStatus.SUCCEEDED
+
+    with pytest.raises(SubscriptionsApiError) as tampered:
+        await api(client.payments.verify(provider, {**good, "signature": "0" * 64}, created.id))
+    assert tampered.value.code is ErrorCode.SIGNATURE_INVALID
+    assert tampered.value.status_code == HttpStatus.UNAUTHORIZED
+
+    # A genuine result for another payment is refused when the expected id says which payment this is.
+    other = await api(client.payments.create(provider, {"amount": 100, "customer": CUSTOMER}))
+    with pytest.raises(SubscriptionsApiError) as replayed:
+        await api(client.payments.verify(provider, good, other.id))
+    assert replayed.value.code is ErrorCode.SIGNATURE_INVALID
+
+    partial = await api(client.payments.refund(provider, {"payment_id": created.id, "refund_id": unique("rf"), "amount": 10000}))
+    assert partial.status is RefundStatus.SUCCEEDED
+    assert partial.amount == 10000
+    assert partial.charge_id == created.id and partial.payment_id == created.id
+    after_partial = await api(client.payments.get(provider, created.id))
+    assert (after_partial.status, after_partial.refunded_amount) == (PaymentStatus.PARTIALLY_REFUNDED, 10000)
+
+    with pytest.raises(SubscriptionsApiError) as too_much:
+        await api(client.payments.refund(provider, {"payment_id": created.id, "refund_id": unique("rf"), "amount": 20000}))
+    assert too_much.value.code is ErrorCode.VALIDATION
+    assert too_much.value.provider_code == "BAD_REQUEST_ERROR"
+
+    rest = await api(client.payments.refund(provider, {"payment_id": created.id, "refund_id": unique("rf"), "amount": 19900}))
+    assert rest.amount == 19900
+    assert (await api(client.payments.get(provider, created.id))).status is PaymentStatus.REFUNDED
+
+    with pytest.raises(SubscriptionsApiError) as missing:
+        await api(client.payments.get(provider, "order_does_not_exist"))
+    assert missing.value.code is ErrorCode.NOT_FOUND
+    assert missing.value.status_code == HttpStatus.NOT_FOUND
+
+
+async def test_a_cashfree_payment_has_the_other_checkout_kind(api: Api) -> None:
+    payment = await api(api.client.payments.create(Provider.CASHFREE, {"amount": 5000, "customer": CUSTOMER}))
+
+    assert isinstance(payment.checkout, CashfreeCheckout)
+    assert payment.checkout.environment is Environment.TEST
+
+
+async def test_a_lost_answer_to_a_payment_is_outcome_unknown(api: Api) -> None:
+    with pytest.raises(SubscriptionsApiError) as caught:
+        await api(
+            api.client.payments.create(
+                Provider.RAZORPAY, {"reference": UNKNOWN_OUTCOME_PAYMENT_REFERENCE, "amount": 100, "customer": CUSTOMER}
+            )
+        )
+
+    assert caught.value.code is ErrorCode.OUTCOME_UNKNOWN
+    assert caught.value.outcome_unknown is True
+    assert caught.value.status_code == HttpStatus.GATEWAY_TIMEOUT
+    assert caught.value.provider is Provider.RAZORPAY
+
+
+# -- routing ----------------------------------------------------------------------------------------------
+
+
+async def test_routing_explains_its_choice_and_says_when_no_gateway_can_take_the_request(api: Api) -> None:
+    client = api.client
+
+    upi = await api(client.routing.decide({"kind": ProductKind.ONE_TIME, "amount": 29900, "payment_methods": [PaymentMethod.UPI]}))
+    assert set(upi.ranked) == {Provider.RAZORPAY, Provider.CASHFREE}
+    assert upi.provider is upi.ranked[0]
+    assert all(candidate.eligible and candidate.score is not None for candidate in upi.candidates)
+
+    preferred = await api(
+        client.routing.decide(
+            {"kind": ProductKind.ONE_TIME, "amount": 29900, "payment_methods": [PaymentMethod.UPI], "prefer": Provider.CASHFREE}
+        )
+    )
+    assert preferred.provider is Provider.CASHFREE
+
+    netbanking = await api(
+        client.routing.decide({"kind": ProductKind.ONE_TIME, "amount": 29900, "payment_methods": [PaymentMethod.NETBANKING]})
+    )
+    assert netbanking.ranked == [Provider.RAZORPAY]
+    excluded = {candidate.provider: candidate for candidate in netbanking.candidates}[Provider.CASHFREE]
+    assert excluded.eligible is False
+    assert excluded.exclusions == [RouteExclusion.PAYMENT_METHOD_UNSUPPORTED]
+    assert excluded.score is None
+
+    with pytest.raises(SubscriptionsApiError) as no_route:
+        await api(
+            client.routing.decide(
+                {
+                    "kind": ProductKind.ONE_TIME,
+                    "amount": 29900,
+                    "payment_methods": [PaymentMethod.NETBANKING],
+                    "exclude": [Provider.RAZORPAY],
+                }
+            )
+        )
+    assert no_route.value.code is ErrorCode.NO_ROUTE
+    assert no_route.value.status_code == HttpStatus.UNPROCESSABLE
+    assert no_route.value.retryable is False
+
+
+async def test_recording_a_routing_outcome(api: Api) -> None:
+    receipt = await api(
+        api.client.routing.record_outcome(
+            {"provider": Provider.RAZORPAY, "kind": RouteOutcomeKind.PAYMENT, "result": RouteOutcomeResult.SUCCESS}
+        )
+    )
+    assert receipt.recorded is True
+
+    with pytest.raises(SubscriptionsApiError) as unknown:
+        await api(
+            api.client.routing.record_outcome(
+                {"provider": Provider.PAYU, "kind": RouteOutcomeKind.PAYMENT, "result": RouteOutcomeResult.SUCCESS}
+            )
+        )
+    assert unknown.value.code is ErrorCode.NOT_FOUND  # PayU is not configured on this service
+
+
+# -- purchases and entitlements ---------------------------------------------------------------------------
+
+
+async def test_a_web_purchase_of_a_one_time_product_from_start_to_entitlement(api: Api, service: Service) -> None:
+    client = api.client
+    customer_ref = unique("cust")
+    reference = unique("buy")
+    start = {"platform": Platform.WEB, "product": COINS, "customer": CUSTOMER, "customer_ref": customer_ref, "reference": reference}
+
+    session = await api(client.purchases.start(start))
+
+    assert session.status is SessionStatus.OPEN
+    assert session.policy is ChannelPolicy.GATEWAYS
+    assert (session.platform, session.product, session.customer_ref, session.reference) == (Platform.WEB, COINS, customer_ref, reference)
+    assert len(session.options) == 1
+    option = session.options[0]
+    assert option.channel is SalesChannel.GATEWAY
+    assert option.provider in (Provider.RAZORPAY, Provider.CASHFREE)
+    assert option.routing is not None and option.routing.provider is option.provider
+    assert session.expires_at > session.created_at
+
+    repeated = await api(client.purchases.start(start))
+    assert repeated.id == session.id  # the same reference and customer: the same session
+
+    assert (await api(client.purchases.get(session.id))).id == session.id
+    nothing_yet = await api(client.entitlements.get(customer_ref))
+    assert nothing_yet.active is False and nothing_yet.items == []
+
+    # A genuine result for another order does not complete this session, and the session stays as it was.
+    other = await api(client.payments.create(option.provider, {"amount": 29900, "customer": CUSTOMER}))
+    stolen = {"payment_id": other.id, "signature": sign(service.webhook_secret, other.id)}
+    with pytest.raises(SubscriptionsApiError) as replayed:
+        await api(client.purchases.complete(session.id, option.provider, stolen))
+    assert replayed.value.code is ErrorCode.SIGNATURE_INVALID
+    assert (await api(client.purchases.get(session.id))).status is SessionStatus.OPEN
+
+    paid = {"payment_id": option.handle, "signature": sign(service.webhook_secret, option.handle)}
+    completed = await api(client.purchases.complete(session.id, option.provider, paid))
+    assert completed.status is SessionStatus.COMPLETED
+    assert completed.provider is option.provider
+    assert completed.payment_id == option.handle
+    assert completed.completed_at is not None
+
+    entitlements = await api(client.entitlements.get(customer_ref))
+    assert entitlements.customer_ref == customer_ref
+    assert entitlements.active is True
+    assert [(item.product, item.provider, item.channel, item.active) for item in entitlements.items] == [
+        (COINS, option.provider, SalesChannel.GATEWAY, True)
+    ]
+    assert entitlements.items[0].payment_id == option.handle
+
+    with pytest.raises(SubscriptionsApiError) as owned:
+        await api(client.purchases.start({**start, "reference": unique("buy")}))
+    assert owned.value.code is ErrorCode.CONFLICT
+    assert owned.value.status_code == HttpStatus.CONFLICT
+
+
+async def test_an_android_purchase_of_a_subscription_goes_to_the_gateways_under_this_policy(api: Api, service: Service) -> None:
+    client = api.client
+    customer_ref = unique("cust")
+
+    session = await api(
+        client.purchases.start({"platform": Platform.ANDROID, "product": PRO, "customer": CUSTOMER, "customer_ref": customer_ref})
+    )
+
+    assert session.policy is ChannelPolicy.GATEWAYS
+    option = session.options[0]
+    assert option.channel is SalesChannel.GATEWAY
+    assert option.checkout.kind is not None
+
+    # There is no choice screen under this policy, so there is no alternative to choose.
+    with pytest.raises(SubscriptionsApiError) as no_alternative:
+        await api(client.purchases.choose_alternative(session.id, "external-token"))
+    assert no_alternative.value.code is ErrorCode.VALIDATION
+
+    result = {"subscription_id": option.handle, "signature": sign(service.webhook_secret, option.handle)}
+    completed = await api(client.purchases.complete(session.id, option.provider, result))
+    assert completed.status is SessionStatus.COMPLETED
+    assert completed.subscription_id == option.handle
+    entitlements = await api(client.entitlements.get(customer_ref))
+    assert entitlements.active is True
+    assert entitlements.items[0].subscription_id == option.handle
+
+
+async def test_purchase_errors_from_the_service(api: Api) -> None:
+    client = api.client
+
+    with pytest.raises(SubscriptionsApiError) as unknown_session:
+        await api(client.purchases.get("ps_" + "0" * 32))
+    assert unknown_session.value.code is ErrorCode.NOT_FOUND
+    assert unknown_session.value.status_code == HttpStatus.NOT_FOUND
+
+    with pytest.raises(SubscriptionsApiError) as unknown_product:
+        await api(
+            client.purchases.start({"platform": Platform.WEB, "product": "nope", "customer": CUSTOMER, "customer_ref": unique("cust")})
+        )
+    assert unknown_product.value.code in (ErrorCode.NOT_FOUND, ErrorCode.VALIDATION)
+
+    # iOS would go to the App Store, which this service has no provider for: a configuration error.
+    with pytest.raises(SubscriptionsApiError) as not_configured:
+        await api(
+            client.purchases.start({"platform": Platform.IOS, "product": COINS, "customer": CUSTOMER, "customer_ref": unique("cust")})
+        )
+    assert not_configured.value.code is ErrorCode.CONFIG
+    assert not_configured.value.status_code == HttpStatus.INTERNAL_SERVER_ERROR
+
+
+async def test_flushing_the_report_queue(api: Api) -> None:
+    result = await api(api.client.purchases.flush({"limit": 10}))
+
+    assert (result.sent, result.retrying, result.rejected) == (0, 0, 0)  # nothing was queued: no purchase went through Google
+    assert result.entries == [] and result.overdue == []
+    assert (await api(api.client.purchases.flush())).sent == 0
+
+
+async def test_entitlements_of_an_unknown_customer_are_empty(api: Api) -> None:
+    entitlements = await api(api.client.entitlements.get(unique("nobody")))
+
+    assert entitlements.active is False
+    assert entitlements.items == []
 
 
 @pytest.mark.parametrize("kind", BOTH_KINDS, ids=lambda kind: kind.value)
