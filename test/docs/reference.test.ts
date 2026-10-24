@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Provider } from '../../src/constants.js';
 import { EnvVar } from '../../src/service-config.js';
-import { GENERATED_PATHS, PROVIDERS, PROVIDERS_WITHOUT_ADAPTER, gatewayPageFile, generateAll } from '../../scripts/generate-docs-reference.js';
+import { GENERATED_PATHS, PROVIDERS, PROVIDERS_WITHOUT_ADAPTER, REGION_PAGES, gatewayPageFile, generateAll } from '../../scripts/generate-docs-reference.js';
 import { DOCS } from './lib.js';
 
 const generated = generateAll();
@@ -43,12 +43,13 @@ describe('generated reference', () => {
     for (const name of Object.values(EnvVar)) expect(environment).toContain(`\`${name}\``);
   });
 
-  it('puts every gateway with an adapter in the capability matrix, and every other gateway on a stub page', () => {
+  it('puts every provider with an adapter in the capability matrix, and any other provider on a stub page', () => {
     const capabilities = generated.get('reference/generated/capabilities.md') ?? '';
     expect(PROVIDERS.length).toBeGreaterThan(0);
     for (const provider of PROVIDERS) {
       const page = readFileSync(join(DOCS, 'gateways', gatewayPageFile(provider)), 'utf8');
       expect(page).toContain(`<!-- generated:begin capabilities ${provider} -->`);
+      expect(page, `${provider} has an adapter, so its page is no stub`).not.toContain('In progress');
     }
     for (const provider of PROVIDERS_WITHOUT_ADAPTER) {
       const page = readFileSync(join(DOCS, 'gateways', gatewayPageFile(provider)), 'utf8');
@@ -56,6 +57,9 @@ describe('generated reference', () => {
       expect(capabilities).not.toContain(`| ${provider}`);
     }
     expect([...PROVIDERS, ...PROVIDERS_WITHOUT_ADAPTER].sort()).toEqual(Object.values(Provider).sort());
+    // Both app stores have adapters now, so both are in the matrix.
+    expect(PROVIDERS).toEqual(expect.arrayContaining([Provider.AppStore, Provider.GooglePlay]));
+    expect(capabilities).toContain('| Apple App Store | Google Play |');
   });
 
   it('shows the gateway mapping tables inside the gateway pages', () => {
@@ -65,5 +69,38 @@ describe('generated reference', () => {
     expect(cashfree).toContain('| `BANK_APPROVAL_PENDING` | `pending_authorization` |');
     const payu = generated.get('gateways/payu.md') ?? '';
     expect(payu).toContain('| `in progress` | `pending` |');
+  });
+
+  it('shows the store mapping tables inside the store pages', () => {
+    const appStorePage = generated.get('gateways/app-store.md') ?? '';
+    expect(appStorePage).toContain('| `3` BillingRetry | `past_due` |');
+    expect(appStorePage).toContain('| `DID_RENEW` | `subscription.charged` |');
+    expect(appStorePage).toContain('| `REFUND_FULL` | `refunded` | `refunded` |');
+    const googlePage = generated.get('gateways/google-play.md') ?? '';
+    expect(googlePage).toContain('| `SUBSCRIPTION_STATE_ON_HOLD` | `halted` |');
+    expect(googlePage).toContain('| `SUBSCRIPTION_RENEWED` (2) | `subscription.charged` |');
+    expect(googlePage).toContain('| `ONE_TIME_PRODUCT_PURCHASED` (1) | `payment.succeeded` |');
+  });
+
+  it('generates the routing and purchase reference from the schemas, the constants and the policy code', () => {
+    const routing = generated.get('reference/generated/routing.md') ?? '';
+    expect(routing).toContain('| `weights.successRate` | `1` |');
+    expect(routing).toContain('| `successRate.minSamples` | `20` |');
+    expect(routing).toContain('| `circuitBreaker.cooldownMs` | `60000` |');
+    expect(routing).toContain('| `RouteExclusion.Unhealthy` | `unhealthy` |');
+    const purchases = generated.get('reference/generated/purchases.md') ?? '';
+    expect(purchases).toContain('| ios | `store` | Apple App Store (`app_store`) | never |');
+    expect(purchases).toContain('| android | `user_choice` | Google Play (`google_play`) | only after the customer picks the alternative |');
+    expect(purchases).toContain('| web | `gateways` | none | the best gateway, chosen by the router |');
+    expect(purchases).toContain('24 hours');
+  });
+
+  it('fills the generated regions of the guides that carry them', () => {
+    for (const path of REGION_PAGES) {
+      expect(generated.get(path), `${path} has generated regions`).toBeDefined();
+    }
+    const methods = generated.get('guides/one-time-payments.md') ?? '';
+    expect(methods).toContain('| Razorpay | yes |');
+    expect(methods).toContain('| Apple App Store |');
   });
 });

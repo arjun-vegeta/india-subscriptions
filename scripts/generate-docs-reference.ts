@@ -12,14 +12,20 @@
 // differs from what it returns. Every fact comes from the code: the OpenAPI document (built from the route table and
 // the Zod schemas), the constants (including their doc comments), the adapters' `capabilities`, the adapters' mapping
 // tables, `service-config.ts` (probed, not copied) and `.env.example`.
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { generateKeyPairSync } from 'node:crypto';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { z } from 'zod';
 import { USAGE } from '../src/cli.js';
-import { ErrorCode, Environment, Provider } from '../src/constants.js';
+import { ChannelPolicy, ErrorCode, Environment, Platform, ProductKind, Provider } from '../src/constants.js';
 import { createSubscriptions } from '../src/client.js';
 import { SubscriptionError } from '../src/errors.js';
 import type { SubscriptionProvider } from '../src/provider.js';
+import { appStore } from '../src/providers/appstore/index.js';
+import * as AppStoreConstants from '../src/providers/appstore/constants.js';
+import { googlePlay } from '../src/providers/googleplay/index.js';
+import * as GooglePlayConstants from '../src/providers/googleplay/constants.js';
 import { cashfree } from '../src/providers/cashfree/index.js';
 import * as CashfreeConstants from '../src/providers/cashfree/constants.js';
 import { payu } from '../src/providers/payu/index.js';
@@ -30,6 +36,10 @@ import { phonepe } from '../src/providers/phonepe/index.js';
 import * as PhonePeConstants from '../src/providers/phonepe/constants.js';
 import { razorpay } from '../src/providers/razorpay/index.js';
 import * as RazorpayMapper from '../src/providers/razorpay/mapper.js';
+import * as PurchaseConstants from '../src/purchase/constants.js';
+import { resolvePolicy } from '../src/purchase/policy.js';
+import { PlatformPolicySchema, type Product } from '../src/purchase/schemas.js';
+import { RoutingStrategySchema } from '../src/routing/schemas.js';
 import { MemorySchedulerStore } from '../src/scheduler/memory-store.js';
 import * as SchedulerSchemas from '../src/scheduler/schemas.js';
 import { CapabilitiesSchema, type Capabilities } from '../src/schemas.js';
@@ -45,6 +55,7 @@ import {
 } from '../src/server/constants.js';
 import { buildOpenApiDocument } from '../src/server/openapi.js';
 import { routes } from '../src/server/routes.js';
+import { PurchasesFileKey } from '../src/service-purchases.js';
 import {
   DEFAULT_HOST,
   DEFAULT_PORT,
@@ -166,6 +177,8 @@ function readSource(relative: string): string {
 const CONSTANT_DOCS = new Map<string, ConstantDoc[]>([
   ...parseConstantDocs(readSource('src/constants.ts')),
   ...parseConstantDocs(readSource('src/scheduler/constants.ts')),
+  ...parseConstantDocs(readSource('src/routing/constants.ts')),
+  ...parseConstantDocs(readSource('src/purchase/constants.ts')),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -598,10 +611,17 @@ function errorsPage(): string {
 // Capabilities
 // ---------------------------------------------------------------------------
 
+/** Throwaway keys, so the store adapters can be built to read their capabilities. They are generated per run and sign nothing. */
+function dummyKeys(): { ec: string; rsa: string } {
+  const ec = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  return { ec, rsa };
+}
+
 /**
- * One entry per gateway that has an adapter. A gateway whose adapter is still being written (it is in `Provider` but not
- * here) gets a stub page in docs/gateways/ and no generated content. When its adapter lands, add it here: the tests
- * fail until its page carries the generated regions.
+ * One entry per provider that has an adapter (the gateways and the two app stores). A provider whose adapter is still being
+ * written (it is in `Provider` but not here) gets a stub page in docs/gateways/ and no generated content. When its adapter
+ * lands, add it here: the tests fail until its page carries the generated regions.
  */
 const ADAPTER_FACTORIES: Partial<Record<Provider, () => SubscriptionProvider>> = {
   [Provider.Razorpay]: () => razorpay({ keyId: 'rzp_test_dummy', keySecret: 'dummy' }),
@@ -610,6 +630,15 @@ const ADAPTER_FACTORIES: Partial<Record<Provider, () => SubscriptionProvider>> =
   [Provider.PhonePe]: () => phonepe({ clientId: 'dummy', clientSecret: 'dummy', clientVersion: 1, environment: Environment.Test }),
   [Provider.Paytm]: () =>
     paytm({ mid: 'dummymid', merchantKey: '0123456789abcdef', website: 'WEBSTAGING', environment: Environment.Test }),
+  [Provider.AppStore]: () =>
+    appStore({ bundleId: 'com.example.app', issuerId: 'dummy-issuer', keyId: 'DUMMYKEYID', privateKey: dummyKeys().ec, environment: Environment.Test }),
+  [Provider.GooglePlay]: () =>
+    googlePlay({
+      packageName: 'com.example.app',
+      clientEmail: 'billing@example-project.iam.gserviceaccount.com',
+      privateKey: dummyKeys().rsa,
+      environment: Environment.Test,
+    }),
 };
 
 /** The gateways with an adapter, in the order of `Provider`. */
@@ -681,7 +710,7 @@ function capabilitiesPage(): string {
   const lines = header(
     'Capability matrix',
     'src/providers/*/adapter.ts (the `capabilities` of each adapter), src/client.ts',
-    'What each gateway adapter can do, read from the adapters themselves with dummy credentials. ' +
+    'What each provider adapter (the five gateways and the two app stores) can do, read from the adapters themselves with dummy credentials. ' +
       'Check `subs.capabilities(provider)` at runtime instead of assuming: an operation a gateway cannot do throws `UNSUPPORTED`.',
   );
   const keys = capabilityKeys();
@@ -925,6 +954,257 @@ function environmentPage(): string {
   return lines.join('\n');
 }
 
+
+// ---------------------------------------------------------------------------
+// Routing and purchases: tables read from the schemas, the constants and the policy code
+// ---------------------------------------------------------------------------
+
+/** Constant, value and meaning of one `as const` object, from its doc comments. */
+function constantTable(name: string): string[] {
+  const entries = CONSTANT_DOCS.get(name);
+  if (!entries) throw new Error(`No constants named ${name}`);
+  return table(['Constant', 'Value', 'Meaning'], entries.map((entry) => [code(`${name}.${entry.key}`), code(entry.value), entry.doc]));
+}
+
+/** Every leaf setting of the routing strategy with its default and its description, read from the Zod schema. */
+function routingDefaultsTable(): string[] {
+  const schema = z.toJSONSchema(RoutingStrategySchema, { io: 'input', unrepresentable: 'any' }) as Json;
+  const rows: string[][] = [];
+  const walk = (node: Json, path: string[]): void => {
+    const properties = asObject(node.properties);
+    const filled = Object.keys(asObject(node.default)).length > 0;
+    if (Object.keys(properties).length > 0 && path.length > 0 && node.type === 'object' && !('additionalProperties' in node) && !filled) {
+      for (const [key, value] of Object.entries(properties)) walk(asObject(value), [...path, key]);
+      return;
+    }
+    if (path.length === 0) {
+      for (const [key, value] of Object.entries(properties)) walk(asObject(value), [key]);
+      return;
+    }
+    const fallback = node.default;
+    rows.push([
+      code(path.join('.')),
+      fallback === undefined ? '' : code(JSON.stringify(fallback)),
+      (str(node.description) ?? '').replace(/\s*Default \S+\.$/, ''),
+    ]);
+  };
+  walk(schema, []);
+  return table(['Setting', 'Default', 'Meaning'], rows);
+}
+
+/** What each platform and policy resolves to, by running the policy code on a product that has both store mappings. */
+function platformPolicyTable(): string[] {
+  const capabilities = [Provider.AppStore, Provider.GooglePlay, Provider.Razorpay].map((provider) => adapterCapabilities(provider));
+  const product: Product = {
+    key: 'pro',
+    kind: ProductKind.Subscription,
+    name: 'Pro',
+    amount: 49900,
+    interval: { unit: 'month', count: 1 },
+    taxRateBps: 1800,
+    appStore: { productId: 'pro' },
+    googlePlay: { productId: 'pro', basePlanId: 'monthly' },
+  };
+  const rows: string[][] = [];
+  const add = (platform: Platform, android: ChannelPolicy | undefined, goods: boolean): void => {
+    const policy = PlatformPolicySchema.parse(android === undefined ? {} : { android });
+    const resolved = resolvePolicy({
+      platform,
+      product: goods ? { ...product, physicalGoods: true, appStore: undefined, googlePlay: undefined } : product,
+      policy,
+      capabilities,
+      hasReporter: true,
+    });
+    const store = resolved.store ? `${PROVIDER_LABEL[resolved.store.provider] ?? resolved.store.provider} (${code(resolved.store.provider)})` : 'none';
+    const gateway =
+      resolved.gateways && resolved.store ? 'only after the customer picks the alternative' : resolved.gateways ? 'the best gateway, chosen by the router' : 'never';
+    rows.push([goods ? 'any platform, physical goods' : platform, goods ? 'not applicable' : code(resolved.policy), store, gateway]);
+  };
+  add(Platform.Ios, undefined, false);
+  for (const android of Object.values(ChannelPolicy)) add(Platform.Android, android, false);
+  add(Platform.Web, undefined, false);
+  add(Platform.Web, undefined, true);
+  return table(['Platform', 'Policy', 'Store', 'Gateway'], rows);
+}
+
+/** Which entitlement statuses give access and which block a second purchase of the same product. */
+function entitlementStatusTable(): string[] {
+  const docs = CONSTANT_DOCS.get('EntitlementStatus') ?? [];
+  return table(
+    ['Status', 'Gives access', 'Blocks a second purchase', 'Meaning'],
+    docs.map((entry) => {
+      const status = entry.value as PurchaseConstants.EntitlementStatus;
+      return [
+        code(entry.value),
+        PurchaseConstants.ACCESS_STATUSES.includes(status) ? 'yes' : 'no',
+        PurchaseConstants.BLOCKING_STATUSES.includes(status) ? 'yes' : 'no',
+        entry.doc,
+      ];
+    }),
+  );
+}
+
+function duration(ms: number): string {
+  const units: [string, number][] = [['hour', 3_600_000], ['minute', 60_000], ['second', 1000]];
+  for (const [name, size] of units) {
+    if (ms % size === 0 && ms >= size) {
+      const count = ms / size;
+      return `${count} ${name}${count === 1 ? '' : 's'}`;
+    }
+  }
+  return `${ms} ms`;
+}
+
+// ---------------------------------------------------------------------------
+// Routing and purchases pages
+// ---------------------------------------------------------------------------
+
+const ROUTING_PAGE = 'routing.md';
+const PURCHASES_PAGE = 'purchases.md';
+
+function routingPage(pages: Pages): string {
+  const lines = header(
+    'Routing',
+    'src/routing/schemas.ts, src/routing/constants.ts',
+    'What the gateway router takes, what it decides on, and what every setting defaults to. The guide is [Routing](../../guides/routing.md); ' +
+      'the shapes are in [Models](./models.md).',
+  );
+  lines.push(
+    '## Strategy defaults',
+    '',
+    `Every field of ${refLink('RoutingStrategy', ROUTING_PAGE, pages)} is optional. The defaults below are read from the schema.`,
+    '',
+    ...routingDefaultsTable(),
+    '',
+    '## Why a gateway is excluded',
+    '',
+    `A request names ${refLink('RouteRequest', ROUTING_PAGE, pages)}; a gateway that fails a hard filter is never chosen, and the decision lists every reason.`,
+    '',
+    ...constantTable('RouteExclusion'),
+    '',
+    '## What can be recorded',
+    '',
+    `${refLink('RouteOutcome', ROUTING_PAGE, pages)} says what an attempt was and how it ended.`,
+    '',
+    ...constantTable('RouteOutcomeKind'),
+    '',
+    ...constantTable('RouteOutcomeResult'),
+    '',
+    '## The circuit breaker',
+    '',
+    ...constantTable('CircuitState'),
+    '',
+    '## What a request can need',
+    '',
+    'Each flag of `needs` excludes the gateways whose capability of the same name is off.',
+    '',
+    ...constantTable('RouteNeed'),
+    '',
+  );
+  return lines.join('\n');
+}
+
+const FILE_KEY_MEANING: Record<PurchasesFileKey, string> = {
+  [PurchasesFileKey.Catalog]: 'The products you sell: a list of Product. At least one.',
+  [PurchasesFileKey.Policy]: 'Where each platform may buy: PlatformPolicy. Optional; the defaults are the App Store on iOS, Google Play on Android and the gateways on the web.',
+  [PurchasesFileKey.Routing]: 'The routing strategy: RoutingStrategy. Optional; the router uses its defaults.',
+};
+
+const CONFIG_ISSUE_MEANING: Record<PurchaseConstants.ConfigIssue, string> = {
+  [PurchaseConstants.ConfigIssue.DuplicateProductKey]: 'Two products share a key.',
+  [PurchaseConstants.ConfigIssue.SubscriptionWithoutInterval]: 'A subscription has no interval.',
+  [PurchaseConstants.ConfigIssue.OneTimeWithInterval]: 'A one-time product has an interval.',
+  [PurchaseConstants.ConfigIssue.OneTimeWithTrial]: 'A one-time product has a trial.',
+  [PurchaseConstants.ConfigIssue.PhysicalGoodsWithStoreProduct]: 'A physical-goods product has an App Store or Google Play mapping.',
+  [PurchaseConstants.ConfigIssue.MissingAppStoreProvider]: 'A product is sold on iOS but the App Store provider is not configured.',
+  [PurchaseConstants.ConfigIssue.MissingAppStoreProduct]: 'A product sold on iOS has no `appStore` mapping.',
+  [PurchaseConstants.ConfigIssue.MissingGooglePlayProvider]: 'A product is sold through Google Play but the Google Play provider is not configured.',
+  [PurchaseConstants.ConfigIssue.MissingGooglePlayProduct]: 'A product sold through Google Play has no `googlePlay` mapping.',
+  [PurchaseConstants.ConfigIssue.MissingGateway]: 'A platform sells through the gateways (or through the alternative of user choice billing) and no gateway is configured.',
+  [PurchaseConstants.ConfigIssue.MissingTaxRate]: 'A product sold through user choice billing has no `taxRateBps`.',
+  [PurchaseConstants.ConfigIssue.MissingReporter]: 'The Android policy is `user_choice` and the Google Play provider that reports to Google is not configured.',
+  [PurchaseConstants.ConfigIssue.MissingCustomerState]: 'A start under user choice billing had no `customer.state`. A fault of the request: `VALIDATION`.',
+  [PurchaseConstants.ConfigIssue.PlatformNotOffered]: 'A start named a platform the product is not sold on. A fault of the request: `VALIDATION`.',
+  [PurchaseConstants.ConfigIssue.ProviderKindMismatch]: 'The provider that owns a store mapping is of the wrong kind.',
+};
+
+function purchasesPage(pages: Pages): string {
+  const lines = header(
+    'Purchases',
+    'src/purchase/, src/service-purchases.ts',
+    'What purchase sessions decide, and the numbers they run on. The guide is [Selling on iPhone, Android and the web](../../guides/purchases.md); ' +
+      'the shapes are in [Models](./models.md).',
+  );
+  lines.push(
+    '## Where a purchase may go',
+    '',
+    `Read from the policy code with an App Store, a Google Play and a gateway provider configured. The platform policy is ${refLink('PlatformPolicy', PURCHASES_PAGE, pages)}.`,
+    '',
+    ...platformPolicyTable(),
+    '',
+    '## Statuses',
+    '',
+    ...constantTable('SessionStatus'),
+    '',
+    ...entitlementStatusTable(),
+    '',
+    '## When a gateway fails to create the purchase',
+    '',
+    `The next ranked gateway is tried when the create call of a gateway fails with ${PurchaseConstants.FALLBACK_ERROR_CODES.map((value) => code(value)).join(', ')}. ` +
+      `Of the codes in that list, ${PurchaseConstants.UNAVAILABLE_ERROR_CODES.map((value) => code(value)).join(', ')} count as the gateway being unavailable and feed its circuit breaker. ` +
+      'A refusal of the purchase\'s inputs (`VALIDATION` or `UNSUPPORTED`) also moves on to the next gateway, because nothing was created, and is recorded as a failed request, never as the gateway being unavailable. ' +
+      '`CONFLICT` stops at once. See [Selling on iPhone, Android and the web](../../guides/purchases.md#when-a-gateway-fails).',
+    '',
+    '## Reports to Google',
+    '',
+    ...constantTable('ReportKind'),
+    '',
+    ...constantTable('ReportStatus'),
+    '',
+    ...constantTable('FlushOutcome'),
+    '',
+    '## Problems the purchase configuration reports',
+    '',
+    'A bad catalog or policy throws `CONFIG` listing every problem at once. The problems it names:',
+    '',
+    ...table(
+      ['Problem', 'Meaning'],
+      Object.values(PurchaseConstants.ConfigIssue).map((issue) => [code(issue), CONFIG_ISSUE_MEANING[issue]]),
+    ),
+    '',
+    '## Problems reported to `onIssue`',
+    '',
+    ...constantTable('PurchaseIssue'),
+    '',
+    '## Numbers',
+    '',
+    ...table(
+      ['Setting', 'Default'],
+      [
+        ['Time an unpaid session stays open (`sessionTtlMs`)', duration(PurchaseConstants.DEFAULT_SESSION_TTL_MS)],
+        ['Deadline Google sets for a report, from the transaction time', duration(PurchaseConstants.REPORT_DEADLINE_MS)],
+        ['Reports one flush sends at most (`limit`)', String(PurchaseConstants.DEFAULT_FLUSH_LIMIT)],
+        ['Wait before the first retry of a failed report (`retry.baseMs`), doubled each time', duration(PurchaseConstants.DEFAULT_RETRY_BASE_MS)],
+        ['Longest wait between retries (`retry.maxMs`)', duration(PurchaseConstants.DEFAULT_RETRY_MAX_MS)],
+        ['Time a flush owns the reports it claimed (`reportLeaseMs`)', duration(PurchaseConstants.DEFAULT_REPORT_LEASE_MS)],
+        ['Lifetime of a lock (`lock.ttlMs`)', duration(PurchaseConstants.DEFAULT_LOCK_TTL_MS)],
+        ['Time a request waits for a lock before `CONFLICT` (`lock.waitMs`)', duration(PurchaseConstants.DEFAULT_LOCK_WAIT_MS)],
+      ].map(([setting, value]) => [setting as string, value as string]),
+    ),
+    '',
+    '## The purchases file of the service',
+    '',
+    `\`serve\` reads one JSON file named by \`PURCHASES_FILE\`. It has these keys and no others; a misspelt key is an error.`,
+    '',
+    ...table(
+      ['Key', 'Holds'],
+      Object.values(PurchasesFileKey).map((key) => [code(key), FILE_KEY_MEANING[key]]),
+    ),
+    '',
+  );
+  return lines.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Regions inside hand-written gateway pages
 // ---------------------------------------------------------------------------
@@ -1017,6 +1297,93 @@ function regionContent(name: string): string[] {
         ['Plan interval', 'Paytm frequency unit'],
         PaytmConstants.PAYTM_FREQUENCY_FOR_INTERVAL.map((entry) => [`${entry.count} ${entry.unit}`, code(entry.frequency)]),
       );
+    case 'appstore-subscription-status':
+      return [
+        ...table(
+          ['App Store status', 'Unified status'],
+          Object.entries(AppStoreConstants.AppStoreSubscriptionStatus).map(([name, number]) => [
+            `${code(String(number))} ${name}`,
+            code(AppStoreConstants.SUBSCRIPTION_STATUS_MAP[number]),
+          ]),
+        ),
+        '',
+        ...table(
+          ['Expiration intent of an expired subscription', 'Unified status'],
+          Object.entries(AppStoreConstants.ExpirationIntent).map(([name, number]) => [
+            `${code(String(number))} ${name}`,
+            code(AppStoreConstants.EXPIRATION_INTENT_STATUS[number]),
+          ]),
+        ),
+        '',
+        `A status Apple adds later is \`${AppStoreConstants.UNKNOWN_SUBSCRIPTION_STATUS}\`.`,
+      ];
+    case 'appstore-revocation-status':
+      return table(
+        ['Revocation type of a transaction', 'Unified payment status', 'Unified charge status'],
+        Object.entries(AppStoreConstants.REVOCATION_PAYMENT_STATUS).map(([type, status]) => [
+          code(type),
+          code(status),
+          code(AppStoreConstants.REVOCATION_CHARGE_STATUS[type] ?? ''),
+        ]),
+      );
+    case 'appstore-webhook-events':
+      return table(
+        ['Notification type (and subtype)', 'Unified event'],
+        Object.entries(AppStoreConstants.NOTIFICATION_EVENT_MAP).map(([key, event]) => [code(key), code(event)]),
+      );
+    case 'googleplay-subscription-status':
+      return [
+        ...mapTable(GooglePlayConstants.SUBSCRIPTION_STATUS_BY_STATE, ['Google subscription state', 'Unified status']),
+        '',
+        `A state Google adds later is \`${GooglePlayConstants.SUBSCRIPTION_STATUS_FALLBACK}\`.`,
+      ];
+    case 'googleplay-payment-status':
+      return [
+        ...mapTable(GooglePlayConstants.PAYMENT_STATUS_BY_PURCHASE_STATE, ['Google one-time purchase state', 'Unified payment status']),
+        '',
+        `A state Google adds later is \`${GooglePlayConstants.PAYMENT_STATUS_FALLBACK}\`.`,
+      ];
+    case 'googleplay-webhook-events':
+      return [
+        ...table(
+          ['Subscription notification', 'Unified event'],
+          Object.entries(GooglePlayConstants.SUBSCRIPTION_EVENT_BY_NOTIFICATION).map(([type, event]) => [
+            `${code(GooglePlayConstants.SUBSCRIPTION_NOTIFICATION_NAMES[Number(type) as GooglePlayConstants.SubscriptionNotificationType])} (${type})`,
+            code(event),
+          ]),
+        ),
+        '',
+        ...table(
+          ['One-time product notification', 'Unified event'],
+          Object.entries(GooglePlayConstants.ONE_TIME_EVENT_BY_NOTIFICATION).map(([type, event]) => [
+            `${code(GooglePlayConstants.ONE_TIME_NOTIFICATION_NAMES[Number(type) as GooglePlayConstants.OneTimeNotificationType])} (${type})`,
+            code(event),
+          ]),
+        ),
+      ];
+    case 'one-time-methods':
+      return table(
+        ['Provider', 'One-time payments', 'Methods of a one-time payment', 'Methods of a mandate'],
+        PROVIDERS.map((provider) => {
+          const shown = adapterCapabilities(provider);
+          return [
+            PROVIDER_LABEL[provider] ?? provider,
+            formatCapability(shown.oneTimePayments),
+            shown.oneTimePaymentMethods.length > 0 ? formatCapability(shown.oneTimePaymentMethods) : 'none to choose',
+            shown.paymentMethods.length > 0 ? formatCapability(shown.paymentMethods) : 'none to choose',
+          ];
+        }),
+      );
+    case 'payment-statuses':
+      return constantTable('PaymentStatus');
+    case 'routing-defaults':
+      return routingDefaultsTable();
+    case 'route-exclusions':
+      return constantTable('RouteExclusion');
+    case 'platform-policy':
+      return platformPolicyTable();
+    case 'entitlement-statuses':
+      return entitlementStatusTable();
     default:
       throw new Error(`Unknown generated region "${name}"`);
   }
@@ -1062,6 +1429,8 @@ export function generateAll(): Map<string, string> {
   put('errors.md', errorsPage());
   put('capabilities.md', capabilitiesPage());
   put('environment.md', environmentPage());
+  put(ROUTING_PAGE, routingPage(pages));
+  put(PURCHASES_PAGE, purchasesPage(pages));
 
   for (const provider of PROVIDERS) {
     const path = `gateways/${gatewayPageFile(provider)}`;
@@ -1069,10 +1438,18 @@ export function generateAll(): Map<string, string> {
     const filled = fillRegions(current);
     if (filled !== undefined) files.set(path, filled.endsWith('\n') ? filled : `${filled}\n`);
   }
+  for (const path of REGION_PAGES) {
+    if (!existsSync(join(DOCS, path))) continue;
+    const filled = fillRegions(readFileSync(join(DOCS, path), 'utf8'));
+    if (filled !== undefined) files.set(path, filled.endsWith('\n') ? filled : `${filled}\n`);
+  }
   return files;
 }
 
-export const GENERATED_PATHS = ['models', 'enums', 'scheduler-records', 'http-api', 'errors', 'capabilities', 'environment'].map(
+/** Hand-written pages outside docs/gateways/ that also carry generated regions. */
+export const REGION_PAGES = ['guides/one-time-payments.md', 'guides/purchases.md', 'guides/routing.md', 'concepts/entitlements.md'];
+
+export const GENERATED_PATHS = ['models', 'enums', 'scheduler-records', 'http-api', 'errors', 'capabilities', 'environment', 'routing', 'purchases'].map(
   (name) => `${GENERATED_DIR}/${name}.md`,
 );
 

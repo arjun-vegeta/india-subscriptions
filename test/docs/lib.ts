@@ -103,6 +103,8 @@ export const ALLOWED_LANGUAGES = [
   'yaml',
   'sql',
   'html',
+  'kotlin',
+  'swift',
 ] as const;
 
 /** How many `ts fragment` opt-outs the documentation may contain. Raise it only with a reason. */

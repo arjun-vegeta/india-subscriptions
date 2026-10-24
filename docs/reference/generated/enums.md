@@ -246,13 +246,13 @@ Why a gateway was ruled out: `wrong_product_kind` (no one-time payments), `missi
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `wrong_product_kind` |  |
-|  | `missing_capability` |  |
-|  | `payment_method_unsupported` |  |
-|  | `excluded_by_merchant` |  |
-|  | `unhealthy` |  |
-|  | `above_max_amount` |  |
-|  | `below_min_amount` |  |
+| `RouteExclusion.WrongProductKind` | `wrong_product_kind` | The request is for a one-time payment and the gateway does not take them (`oneTimePayments` is false). |
+| `RouteExclusion.MissingCapability` | `missing_capability` | The request needs a capability (`needs`) the gateway does not have. |
+| `RouteExclusion.PaymentMethodUnsupported` | `payment_method_unsupported` | None of the payment methods the customer can use is one the gateway offers for this product kind. |
+| `RouteExclusion.ExcludedByMerchant` | `excluded_by_merchant` | The merchant listed the gateway in the request's `exclude`. |
+| `RouteExclusion.Unhealthy` | `unhealthy` | The circuit breaker is open: the gateway kept answering `unavailable` and its cooldown has not passed. |
+| `RouteExclusion.AboveMaxAmount` | `above_max_amount` | The amount is above the `maxAmount` the strategy sets for the gateway. |
+| `RouteExclusion.BelowMinAmount` | `below_min_amount` | The amount is below the `minAmount` the strategy sets for the gateway. |
 
 ### RouteOutcomeKind
 
@@ -260,10 +260,10 @@ What an outcome is about: `authorization` (a customer authorising a mandate), `c
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `authorization` |  |
-|  | `charge` |  |
-|  | `payment` |  |
-|  | `request` |  |
+| `RouteOutcomeKind.Authorization` | `authorization` | A customer's attempt to authorise a mandate (the first step of a subscription). |
+| `RouteOutcomeKind.Charge` | `charge` | A recurring debit on an existing mandate. |
+| `RouteOutcomeKind.Payment` | `payment` | A one-time payment. |
+| `RouteOutcomeKind.Request` | `request` | An API call to the gateway that is not one of the above (creating a plan, an order, a subscription). |
 
 ### RouteOutcomeResult
 
@@ -271,9 +271,9 @@ What an outcome is about: `authorization` (a customer authorising a mandate), `c
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `success` |  |
-|  | `failure` |  |
-|  | `unavailable` |  |
+| `RouteOutcomeResult.Success` | `success` | The gateway did what was asked. |
+| `RouteOutcomeResult.Failure` | `failure` | The gateway answered and the attempt did not succeed (a declined card, a refused mandate, a validation error). It says nothing about the gateway being down. |
+| `RouteOutcomeResult.Unavailable` | `unavailable` | The gateway could not be reached or answered with an outage-class error (HTTP 5xx, timeout, network). Feeds the circuit breaker. |
 
 ### CircuitState
 
@@ -281,9 +281,9 @@ A gateway's circuit breaker: `closed` (normal), `open` (excluded until the coold
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `closed` |  |
-|  | `open` |  |
-|  | `half_open` |  |
+| `CircuitState.Closed` | `closed` | Normal: the gateway is a candidate. |
+| `CircuitState.Open` | `open` | The failure threshold was reached and the cooldown has not passed: the gateway is excluded. |
+| `CircuitState.HalfOpen` | `half_open` | The cooldown passed: the gateway is a candidate again. One `unavailable` result reopens it, one `success` closes it. |
 
 ### SessionStatus
 
@@ -291,11 +291,11 @@ A gateway's circuit breaker: `closed` (normal), `open` (excluded until the coold
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `open` |  |
-|  | `awaiting_payment` |  |
-|  | `completed` |  |
-|  | `failed` |  |
-|  | `expired` |  |
+| `SessionStatus.Open` | `open` | Created. The customer has not come back from the checkout yet. |
+| `SessionStatus.AwaitingPayment` | `awaiting_payment` | The customer has paid or approved but the provider has not confirmed yet (a mandate pending at the bank), or the customer chose the alternative payment on Google's screen and the gateway checkout is under way. A confirmation (`complete` or a webhook event) finishes it. |
+| `SessionStatus.Completed` | `completed` | Paid or authorised and recorded as an entitlement. |
+| `SessionStatus.Failed` | `failed` | A verification said the purchase was not paid or not authorised. Not final: a later result or event that shows the money moved (a customer who retries on the same Cashfree order) completes the session. |
+| `SessionStatus.Expired` | `expired` | `expiresAt` passed without a payment. Not final either: a payment confirmed afterwards still completes it. |
 
 ### EntitlementStatus
 
@@ -303,14 +303,14 @@ A gateway's circuit breaker: `closed` (normal), `open` (excluded until the coold
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `active` |  |
-|  | `trialing` |  |
-|  | `past_due` |  |
-|  | `paused` |  |
-|  | `halted` |  |
-|  | `cancelled` |  |
-|  | `expired` |  |
-|  | `refunded` |  |
+| `EntitlementStatus.Active` | `active` | Paid and current. A paid one-time purchase stays `active`. |
+| `EntitlementStatus.Trialing` | `trialing` | In a free trial. |
+| `EntitlementStatus.PastDue` | `past_due` | A charge failed and is being retried; the subscription is alive. |
+| `EntitlementStatus.Paused` | `paused` | Charging is paused. |
+| `EntitlementStatus.Halted` | `halted` | Retries are exhausted; no further automatic charges. |
+| `EntitlementStatus.Cancelled` | `cancelled` | Ended. Terminal. |
+| `EntitlementStatus.Expired` | `expired` | The term ended (expired, or every cycle was collected). Terminal. |
+| `EntitlementStatus.Refunded` | `refunded` | A one-time purchase that was refunded in full. Terminal. |
 
 ### ReportKind
 
@@ -318,8 +318,8 @@ A gateway's circuit breaker: `closed` (normal), `open` (excluded until the coold
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `transaction` |  |
-|  | `refund` |  |
+| `ReportKind.Transaction` | `transaction` | A first purchase, a free trial, or a renewal: `createexternaltransaction`. |
+| `ReportKind.Refund` | `refund` | A refund: `refundexternaltransaction`. |
 
 ### ReportStatus
 
@@ -327,9 +327,9 @@ A gateway's circuit breaker: `closed` (normal), `open` (excluded until the coold
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `queued` |  |
-|  | `sent` |  |
-|  | `rejected` |  |
+| `ReportStatus.Queued` | `queued` | Waiting to be sent (or to be sent again). |
+| `ReportStatus.Sent` | `sent` | Google accepted it. Final. |
+| `ReportStatus.Rejected` | `rejected` | Google refused it as invalid (`VALIDATION`). Never retried: fix the data and enqueue it again by hand. |
 
 ### FlushOutcome
 
@@ -337,11 +337,11 @@ What a flush did with a report: `sent`, `retrying` (failed, tried again after a 
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `sent` |  |
-|  | `retrying` |  |
-|  | `blocked` |  |
-|  | `rejected` |  |
-|  | `no_reporter` |  |
+| `FlushOutcome.Sent` | `sent` |  |
+| `FlushOutcome.Retrying` | `retrying` | The attempt failed; the report stays queued and is tried again after a backoff. |
+| `FlushOutcome.Blocked` | `blocked` | Waiting for the report it refers to (the first transaction of a renewal, the transaction of a refund). |
+| `FlushOutcome.Rejected` | `rejected` | Google refused it as invalid; it will not be retried. |
+| `FlushOutcome.NoReporter` | `no_reporter` | No reporter is configured, so nothing can be sent. The report stays queued. |
 
 ### AttemptOutcome
 
@@ -349,8 +349,8 @@ What a flush did with a report: `sent`, `retrying` (failed, tried again after a 
 
 | Constant | Value | Meaning |
 |---|---|---|
-|  | `created` |  |
-|  | `failed` |  |
+| `AttemptOutcome.Created` | `created` | The gateway created the order or mandate. |
+| `AttemptOutcome.Failed` | `failed` | The create call failed. |
 
 ### ErrorCode
 
