@@ -117,25 +117,34 @@
 |---|---|---|---|
 | `PUBLIC_BASE_URL` | no |  | Where customers' browsers reach this service, for example https://billing.example.com (no trailing slash needed). The hosted checkout (/checkout/{sessionId}) and the gateways' return URLs are built on it; without it purchases carry no hostedUrl. |
 | `PURCHASES_FILE` | yes |  | Path of the purchases configuration, a JSON file {"catalog": [...], "policy": {...}, "routing": {...}}; policy and routing are optional. Unset: the /v1/purchases and /v1/entitlements routes answer with a configuration error and everything else works as before. |
-| `PURCHASE_STORE_FILE` | yes |  | Path of the purchase state file (sessions, entitlements, the report queue for Google; one JSON file, one service instance only). |
+| `PURCHASE_STORE_FILE` | yes, unless `DATABASE_URL` is set |  | Path of the purchase state file (sessions, entitlements, the report queue for Google; one JSON file, one service instance only). Not needed with DATABASE_URL, and an error together with it. |
 
 ## Billing scheduler
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SCHEDULER_STORE_FILE` | no |  | Path of the scheduler's state file (one JSON file, one service instance only). Unset: the scheduler is off and gateways that need it (merchant-scheduled mandates) refuse to create subscriptions. |
+| `SCHEDULER_STORE_FILE` | no |  | Path of the scheduler's state file (one JSON file, one service instance only). An error together with DATABASE_URL. Unset (and no DATABASE_URL): the scheduler is off and gateways that need it (merchant-scheduled mandates) refuse to create subscriptions. |
 | `SCHEDULER_TICK_SECONDS` | no | `300` | Seconds between scheduler ticks (1-86400, default 300). |
+
+## PostgreSQL
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | no |  | Connection string of a PostgreSQL database (postgres://user:password@host:5432/dbname). It holds a password: keep it out of logs and images. Set: billing schedules, purchase sessions, entitlements, the Google report queue and routing statistics live in the database, so several instances can share it; the tables are created at start-up. Needs the "pg" package (npm install pg). Replaces SCHEDULER_STORE_FILE and PURCHASE_STORE_FILE: setting either of them as well is an error. |
+| `DATABASE_SCHEMA` | with `DATABASE_URL` | `public` | Optional: the schema that holds the tables (default public). It is created when it does not exist and the role may create it. |
+| `DATABASE_TABLE_PREFIX` | with `DATABASE_URL` | `india_subscriptions_` | Optional: prepended to every table and index name (default india_subscriptions_), so several installations can share a schema. |
+| `DATABASE_POOL_SIZE` | with `DATABASE_URL` | `10` | Optional: most connections one instance holds open (1-200, default 10). Instances times this must stay below the server's max_connections. |
 
 ## Events webhook
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `EVENTS_WEBHOOK_URL` | yes |  | Where to POST events as JSON. Gateway webhook events ({"kind":"gateway","provider":...,"events":[...]}) are sent before the gateway is answered: a non-2xx answer makes the gateway retry. Billing scheduler events ({"kind":"scheduler","events":[...]}, only with SCHEDULER_STORE_FILE) are sent in the background, retried with backoff 5 times, then logged and dropped. Every event has an "id": de-duplicate on it (delivery is at least once). |
+| `EVENTS_WEBHOOK_URL` | yes |  | Where to POST events as JSON. Gateway webhook events ({"kind":"gateway","provider":...,"events":[...]}) are sent before the gateway is answered: a non-2xx answer makes the gateway retry. Billing scheduler events ({"kind":"scheduler","events":[...]}, only with the scheduler on) are sent in the background, retried with backoff 5 times, then logged and dropped. Every event has an "id": de-duplicate on it (delivery is at least once). |
 | `EVENTS_WEBHOOK_SECRET` | yes |  | Shared secret. Each POST carries two headers: x-india-subscriptions-timestamp: Unix time in whole seconds, e.g. 1767225600 x-india-subscriptions-signature: lower-case hex HMAC-SHA256 (key = this secret) of the string &lt;timestamp> "." &lt;raw request body> e.g. 1767225600.{"kind":"scheduler","events":[...]} A receiver recomputes it over the exact bytes received, compares in constant time, and rejects a timestamp that is missing, not a number, or more than 300 seconds from its clock (past or future). TypeScript receivers can call verifyEventsSignature() from india-subscriptions. |
 
 ## Limits
 
-`SCHEDULER_TICK_SECONDS` accepts 1 to 86400. `PORT` accepts 0 to 65535 (0 picks a free port).
+`SCHEDULER_TICK_SECONDS` accepts 1 to 86400. `PORT` accepts 0 to 65535 (0 picks a free port). `DATABASE_POOL_SIZE` accepts 1 to 200.
 
 ## Command line
 
@@ -167,7 +176,10 @@ Environment (serve):
     CASHFREE_CLIENT_ID CASHFREE_CLIENT_SECRET CASHFREE_ENVIRONMENT [CASHFREE_WEBHOOK_SECRET]
     PAYU_KEY PAYU_SALT PAYU_ENVIRONMENT [PAYU_SUCCESS_URL PAYU_FAILURE_URL]
     (PhonePe, Paytm, and the app stores APP_STORE_* and GOOGLE_PLAY_*: see .env.example)
-  PURCHASES_FILE, PURCHASE_STORE_FILE, PUBLIC_BASE_URL   purchase sessions, entitlements, hosted checkout (off without the files)
-  SCHEDULER_STORE_FILE, SCHEDULER_TICK_SECONDS   billing scheduler (off without a store file)
+  PURCHASES_FILE, PURCHASE_STORE_FILE, PUBLIC_BASE_URL   purchase sessions, entitlements, hosted checkout (off without the purchases file;
+    its state goes in the store file, or in PostgreSQL with DATABASE_URL)
+  SCHEDULER_STORE_FILE, SCHEDULER_TICK_SECONDS   billing scheduler (off without a store file or DATABASE_URL)
+  DATABASE_URL [DATABASE_SCHEMA DATABASE_TABLE_PREFIX DATABASE_POOL_SIZE]   keep all state in PostgreSQL, shared by
+    several instances (needs the "pg" package; replaces the store files)
   EVENTS_WEBHOOK_URL, EVENTS_WEBHOOK_SECRET   forward gateway events, signed
 ```

@@ -27,8 +27,12 @@ import { FlushOutcome } from './purchase/constants.js';
 import type { FlushResult } from './purchase/schemas.js';
 import { BillingScheduler } from './scheduler/scheduler.js';
 import type { TickResult } from './scheduler/schemas.js';
+import type { PurchaseStore } from './purchase/store.js';
+import type { RoutingStatsStore } from './routing/stats-store.js';
+import type { SchedulerStore } from './scheduler/store.js';
 import { FilePurchaseStore } from './purchase-file-store.js';
 import { FileSchedulerStore } from './scheduler-file-store.js';
+import { openDatabase, type Database, type DriverImporter } from './service-database.js';
 import { GATEWAY_RETURN_ID_FIELD } from './server/checkout.js';
 import { ApiPath, PathParam } from './server/constants.js';
 import { RETURN_URL_MAX_LENGTH } from './providers/payu/constants.js';
@@ -40,6 +44,7 @@ import {
   STORE_ORDER,
   EnvVar,
   parseServiceEnv,
+  schedulerEnabled,
   type EnvironmentVariables,
   type ServiceConfig,
 } from './service-config.js';
@@ -80,6 +85,11 @@ export interface BuildServiceOptions {
   /** `fetch` for every gateway adapter and for the events webhook (tests, proxies). */
   fetch?: FetchLike;
   logger?: Logger;
+  /**
+   * Loads the PostgreSQL driver when `DATABASE_URL` is set. Defaults to `import('pg')`; tests pass their own to stand in for
+   * a driver that is, or is not, installed.
+   */
+  importDriver?: DriverImporter;
 }
 
 /** Everything `serve` needs, built but not yet listening. */
@@ -87,30 +97,33 @@ export interface Service {
   /** Validated configuration. Holds secrets: never log it. */
   readonly config: ServiceConfig;
   readonly client: Subscriptions;
-  /** Present when `SCHEDULER_STORE_FILE` is set. */
+  /** Present when `SCHEDULER_STORE_FILE` or `DATABASE_URL` is set. */
   readonly scheduler?: BillingScheduler;
-  readonly store?: FileSchedulerStore;
+  /** The scheduler's store: the file store, or the PostgreSQL store. */
+  readonly store?: SchedulerStore;
   /** Present when `PURCHASES_FILE` is set: purchase sessions, entitlements and the Google report queue (`client.purchases`). */
   readonly purchases?: Purchases;
-  /** Present when `PURCHASE_STORE_FILE` is set. */
-  readonly purchaseStore?: FilePurchaseStore;
+  /** The purchase store: the file store (`PURCHASE_STORE_FILE`), or the PostgreSQL store. Present with `purchases`. */
+  readonly purchaseStore?: PurchaseStore;
   /** Present when `EVENTS_WEBHOOK_URL` is set: forwards gateway webhook events. */
   readonly onEvents?: EventsHook;
-  /** Present when both `EVENTS_WEBHOOK_URL` and `SCHEDULER_STORE_FILE` are set: forwards scheduler events. */
+  /** Present when `EVENTS_WEBHOOK_URL` is set and the scheduler is on: forwards scheduler events. */
   readonly schedulerEvents?: SchedulerEventsRelay;
   /** A `node:http` server for the API, not yet listening. */
   createServer(): Server;
   /** The startup report: enabled gateways, listen URL, scheduler. Free of secrets. `config.warnings` are separate. */
   describe(listenUrl: string): string[];
-  /** Stops the scheduler events relay (waiting for the delivery in flight) and releases the scheduler store. */
+  /** Stops the scheduler events relay (waiting for the delivery in flight), releases the file stores and closes the database pool. */
   close(): Promise<void>;
 }
 
 /**
  * Validates `env`, builds the gateways, the billing scheduler (when
- * `SCHEDULER_STORE_FILE` is set), the client and the events hook. Throws one
- * `SubscriptionError` listing every configuration problem, or `CONFIG` when the
- * scheduler's file exists but is not a valid store.
+ * `SCHEDULER_STORE_FILE` or `DATABASE_URL` is set), the client and the events
+ * hook. With `DATABASE_URL` it also loads the driver, connects and migrates.
+ * Throws one `SubscriptionError` listing every configuration problem, `CONFIG`
+ * when the scheduler's file exists but is not a valid store or the driver is
+ * missing, and `INTERNAL_ERROR` when the database cannot be reached.
  */
 export async function buildService(env: EnvironmentVariables, options: BuildServiceOptions = {}): Promise<Service> {
   const logger = options.logger ?? consoleLogger;
@@ -142,34 +155,57 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
   if (googlePlayConfig) providers.push(googlePlay(googlePlayConfig, providerOptions));
 
   const eventsWebhook = config.eventsWebhook;
-  const schedulerEvents = eventsWebhook && config.schedulerStoreFile
+  const schedulerEvents = eventsWebhook && schedulerEnabled(config)
     ? createSchedulerEventsRelay({ ...eventsWebhook, fetch: options.fetch, logger })
     : undefined;
 
-  let store: FileSchedulerStore | undefined;
-  let scheduler: BillingScheduler | undefined;
-  if (config.schedulerStoreFile) {
-    store = await FileSchedulerStore.open(config.schedulerStoreFile);
-    const byName = new Map(providers.map((provider) => [provider.name, provider] as const));
-    scheduler = new BillingScheduler({
-      store,
-      resolveProvider: (name) => {
-        const provider = byName.get(name);
-        if (!provider) throw new SubscriptionError(ErrorCode.Config, `Provider ${String(name)} is not configured`);
-        return provider;
-      },
-      onEvent: (event) => {
-        logger.info(`scheduler: ${event.type} ${event.scheduleId}`);
-        schedulerEvents?.enqueue(event);
-      },
-    });
+  // PostgreSQL, when configured, holds all three kinds of state; otherwise each has its own file.
+  let database: Database | undefined;
+  if (config.database) {
+    try {
+      database = await openDatabase(config.database, {
+        importDriver: options.importDriver,
+        onPoolError: (message) => logger.warn(message),
+      });
+    } catch (error) {
+      await schedulerEvents?.close();
+      throw error;
+    }
   }
 
-  warnAboutReturnUrlLimits(config);
-
-  let purchaseStore: FilePurchaseStore | undefined;
+  let store: SchedulerStore | undefined;
+  let scheduler: BillingScheduler | undefined;
+  let purchaseStore: PurchaseStore | undefined;
+  let schedulerFile: FileSchedulerStore | undefined;
+  let purchaseFile: FilePurchaseStore | undefined;
+  /** Closes what the service opened: the file stores wait for their writes, the pool for its connections. */
+  const releaseStores = async (): Promise<void> => {
+    await schedulerFile?.close();
+    await purchaseFile?.close();
+    await database?.close();
+  };
   let client: Subscriptions;
   try {
+    if (database) store = database.scheduler;
+    else if (config.schedulerStoreFile) store = schedulerFile = await FileSchedulerStore.open(config.schedulerStoreFile);
+    if (store) {
+      const byName = new Map(providers.map((provider) => [provider.name, provider] as const));
+      scheduler = new BillingScheduler({
+        store,
+        resolveProvider: (name) => {
+          const provider = byName.get(name);
+          if (!provider) throw new SubscriptionError(ErrorCode.Config, `Provider ${String(name)} is not configured`);
+          return provider;
+        },
+        onEvent: (event) => {
+          logger.info(`scheduler: ${event.type} ${event.scheduleId}`);
+          schedulerEvents?.enqueue(event);
+        },
+      });
+    }
+
+    warnAboutReturnUrlLimits(config);
+
     const purchasesConfig = config.purchasesFile
       ? await loadPurchasesFile(config.purchasesFile, {
           capabilities: providers.map((provider) => provider.capabilities),
@@ -177,13 +213,17 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
           publicBaseUrl: config.publicBaseUrl,
         })
       : undefined;
-    if (purchasesConfig && config.purchaseStoreFile) purchaseStore = await FilePurchaseStore.open(config.purchaseStoreFile);
+    if (purchasesConfig) {
+      if (database) purchaseStore = database.purchases;
+      else if (config.purchaseStoreFile) purchaseStore = purchaseFile = await FilePurchaseStore.open(config.purchaseStoreFile);
+    }
     const base = config.publicBaseUrl;
     client = createSubscriptions({
       providers,
       scheduler,
       routing: {
         ...(purchasesConfig?.routing ? { strategy: purchasesConfig.routing } : {}),
+        ...(database ? { stats: database.routingStats } : {}),
         onStatsError: (error) => logger.warn(`routing statistics unavailable: ${describeError(error)}`),
       },
       ...(purchasesConfig && purchaseStore
@@ -208,8 +248,7 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
     });
   } catch (error) {
     await schedulerEvents?.close();
-    await store?.close();
-    await purchaseStore?.close();
+    await releaseStores();
     throw error;
   }
 
@@ -234,8 +273,7 @@ export async function buildService(env: EnvironmentVariables, options: BuildServ
     describe: (listenUrl) => describeService(config, client, listenUrl),
     close: async () => {
       await schedulerEvents?.close();
-      await store?.close();
-      await purchaseStore?.close();
+      await releaseStores();
     },
   };
 }
@@ -309,7 +347,10 @@ function describeService(config: ServiceConfig, client: Subscriptions, listenUrl
     ...(stores.length > 0 ? [`app stores enabled: ${stores.join(', ')}`] : []),
     `listening on ${listenUrl}`,
   ];
-  if (config.schedulerStoreFile) {
+  if (config.database) {
+    lines.push(`state store: PostgreSQL (schedules, purchases and routing statistics; shared by every instance on this database)`);
+    lines.push(`billing scheduler: on (store PostgreSQL, tick every ${config.tickSeconds}s)`);
+  } else if (config.schedulerStoreFile) {
     lines.push(`billing scheduler: on (store ${config.schedulerStoreFile}, tick every ${config.tickSeconds}s)`);
   } else {
     const consequence = schedulerConsequence(enabled, client);
@@ -323,7 +364,7 @@ function describeService(config: ServiceConfig, client: Subscriptions, listenUrl
   );
   lines.push(
     config.eventsWebhook
-      ? `events webhook: ${originOf(config.eventsWebhook.url)} (signed; gateway events${config.schedulerStoreFile ? ' and scheduler events' : ''})`
+      ? `events webhook: ${originOf(config.eventsWebhook.url)} (signed; gateway events${schedulerEnabled(config) ? ' and scheduler events' : ''})`
       : `events webhook: off (${EnvVar.EventsWebhookUrl} is not set)`,
   );
   return lines;
@@ -337,7 +378,8 @@ function describePurchases(config: ServiceConfig, client: Subscriptions): string
     ? `hosted checkout on ${originOf(config.publicBaseUrl)}`
     : `hosted checkout OFF (${EnvVar.PublicBaseUrl} is not set)`;
   const reports = client.providers.includes(Provider.GooglePlay) ? 'Google reports flushed on every tick' : 'no Google reports';
-  return `purchases: on (file ${config.purchasesFile}, state ${config.purchaseStoreFile}, ${hosted}, ${reports}, tick every ${config.tickSeconds}s)`;
+  const state = config.database ? 'PostgreSQL' : config.purchaseStoreFile;
+  return `purchases: on (file ${config.purchasesFile}, state ${state}, ${hosted}, ${reports}, tick every ${config.tickSeconds}s)`;
 }
 
 // ---------------------------------------------------------------------------

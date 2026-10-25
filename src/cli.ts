@@ -64,8 +64,11 @@ Environment (serve):
     ${EnvVar.CashfreeClientId} ${EnvVar.CashfreeClientSecret} ${EnvVar.CashfreeEnvironment} [${EnvVar.CashfreeWebhookSecret}]
     ${EnvVar.PayuKey} ${EnvVar.PayuSalt} ${EnvVar.PayuEnvironment} [${EnvVar.PayuSuccessUrl} ${EnvVar.PayuFailureUrl}]
     (PhonePe, Paytm, and the app stores APP_STORE_* and GOOGLE_PLAY_*: see .env.example)
-  ${EnvVar.PurchasesFile}, ${EnvVar.PurchaseStoreFile}, ${EnvVar.PublicBaseUrl}   purchase sessions, entitlements, hosted checkout (off without the files)
-  ${EnvVar.SchedulerStoreFile}, ${EnvVar.SchedulerTickSeconds}   billing scheduler (off without a store file)
+  ${EnvVar.PurchasesFile}, ${EnvVar.PurchaseStoreFile}, ${EnvVar.PublicBaseUrl}   purchase sessions, entitlements, hosted checkout (off without the purchases file;
+    its state goes in the store file, or in PostgreSQL with DATABASE_URL)
+  ${EnvVar.SchedulerStoreFile}, ${EnvVar.SchedulerTickSeconds}   billing scheduler (off without a store file or ${EnvVar.DatabaseUrl})
+  ${EnvVar.DatabaseUrl} [${EnvVar.DatabaseSchema} ${EnvVar.DatabaseTablePrefix} ${EnvVar.DatabasePoolSize}]   keep all state in PostgreSQL, shared by
+    several instances (needs the "pg" package; replaces the store files)
   ${EnvVar.EventsWebhookUrl}, ${EnvVar.EventsWebhookSecret}   forward gateway events, signed
 `;
 

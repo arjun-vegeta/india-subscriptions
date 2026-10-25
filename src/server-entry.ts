@@ -26,17 +26,20 @@ export {
 } from './service-purchases.js';
 export {
   EnvVar,
+  DEFAULT_DATABASE_POOL_SIZE,
   DEFAULT_HOST,
   DEFAULT_PORT,
   DEFAULT_TICK_SECONDS,
   PROVIDER_ORDER,
   STORE_ORDER,
   parseServiceEnv,
+  type DatabaseConfig,
   type EnvironmentVariables,
   type EventsWebhookConfig,
   type ParseServiceEnvOptions,
   type ServiceConfig,
 } from './service-config.js';
+export { DATABASE_DRIVER_PACKAGE, type DriverImporter } from './service-database.js';
 export {
   buildService,
   consoleLogger,

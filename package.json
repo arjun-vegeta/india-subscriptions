@@ -119,5 +119,13 @@
   },
   "dependencies": {
     "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
   }
 }

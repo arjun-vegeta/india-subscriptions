@@ -56,11 +56,14 @@ import {
 import { buildOpenApiDocument } from '../src/server/openapi.js';
 import { routes } from '../src/server/routes.js';
 import { PurchasesFileKey } from '../src/service-purchases.js';
+import { DEFAULT_SCHEMA, DEFAULT_TABLE_PREFIX } from '../src/postgres/constants.js';
 import {
+  DEFAULT_DATABASE_POOL_SIZE,
   DEFAULT_HOST,
   DEFAULT_PORT,
   DEFAULT_TICK_SECONDS,
   EnvVar,
+  MAX_DATABASE_POOL_SIZE,
   MAX_TICK_SECONDS,
   parseServiceEnv,
 } from '../src/service-config.js';
@@ -825,6 +828,10 @@ const ENV_SAMPLES: Record<(typeof EnvVar)[keyof typeof EnvVar], string> = {
   [EnvVar.PurchaseStoreFile]: '/var/lib/india-subscriptions/purchases-state.json',
   [EnvVar.SchedulerStoreFile]: '/var/lib/india-subscriptions/scheduler.json',
   [EnvVar.SchedulerTickSeconds]: '300',
+  [EnvVar.DatabaseUrl]: 'postgres://billing:dummy-password@db.example.com:5432/billing',
+  [EnvVar.DatabaseSchema]: 'public',
+  [EnvVar.DatabaseTablePrefix]: 'india_subscriptions_',
+  [EnvVar.DatabasePoolSize]: '10',
   [EnvVar.EventsWebhookUrl]: 'https://app.example.com/billing-events',
   [EnvVar.EventsWebhookSecret]: 'dummy-events-secret',
 };
@@ -842,11 +849,12 @@ function envGroup(name: EnvName): string {
   if (name.startsWith('GOOGLE_PLAY_')) return 'Google Play';
   if (name === EnvVar.PublicBaseUrl || name === EnvVar.PurchasesFile || name === EnvVar.PurchaseStoreFile) return 'Purchases';
   if (name.startsWith('SCHEDULER_')) return 'Billing scheduler';
+  if (name.startsWith('DATABASE_')) return 'PostgreSQL';
   if (name.startsWith('EVENTS_WEBHOOK_')) return 'Events webhook';
   return 'Service';
 }
 
-const ENV_GROUPS = ['Service', 'Razorpay', 'Cashfree', 'PayU', 'PhonePe', 'Paytm', 'App Store', 'Google Play', 'Purchases', 'Billing scheduler', 'Events webhook'];
+const ENV_GROUPS = ['Service', 'Razorpay', 'Cashfree', 'PayU', 'PhonePe', 'Paytm', 'App Store', 'Google Play', 'Purchases', 'Billing scheduler', 'PostgreSQL', 'Events webhook'];
 
 function messageOf(action: () => unknown): string | undefined {
   try {
@@ -866,17 +874,22 @@ function envRequirement(name: EnvName, group: string): string {
     const owner = gatewayOf(variable);
     if (owner === group || owner === 'Service') base[variable] = full[variable] as string;
   }
-  if (group === 'Billing scheduler' || group === 'Events webhook') {
+  if (group === 'Billing scheduler' || group === 'Events webhook' || group === 'PostgreSQL') {
     // Needs some gateway to be valid at all.
     for (const variable of [EnvVar.RazorpayKeyId, EnvVar.RazorpayKeySecret]) base[variable] = full[variable] as string;
   }
   const without = { ...base };
   delete without[name];
+  if (group === 'PostgreSQL') return name === EnvVar.DatabaseUrl ? 'no' : `with ${code(EnvVar.DatabaseUrl)}`;
   const missing = messageOf(() => parseServiceEnv(without));
   if (name === EnvVar.ApiKey) {
     return missing?.includes(`${name}: is required`) ? 'yes, unless you pass `--allow-unauthenticated`' : 'no';
   }
-  if (missing?.includes(`${name}: is required`)) return 'yes';
+  if (missing?.includes(`${name}: is required`)) {
+    // The state file of the purchase module is not needed when the state is kept in the database.
+    const withDatabase = messageOf(() => parseServiceEnv({ ...without, [EnvVar.DatabaseUrl]: full[EnvVar.DatabaseUrl] as string }));
+    return withDatabase?.includes(`${name}: is required`) ? 'yes' : `yes, unless ${code(EnvVar.DatabaseUrl)} is set`;
+  }
   if (group === 'Events webhook') {
     const only = { ...without };
     const other = name === EnvVar.EventsWebhookUrl ? EnvVar.EventsWebhookSecret : EnvVar.EventsWebhookUrl;
@@ -895,6 +908,12 @@ function envDefault(name: EnvName): string {
       return code(String(DEFAULT_PORT));
     case EnvVar.SchedulerTickSeconds:
       return code(String(DEFAULT_TICK_SECONDS));
+    case EnvVar.DatabaseSchema:
+      return code(DEFAULT_SCHEMA);
+    case EnvVar.DatabaseTablePrefix:
+      return code(DEFAULT_TABLE_PREFIX);
+    case EnvVar.DatabasePoolSize:
+      return code(String(DEFAULT_DATABASE_POOL_SIZE));
     default:
       return '';
   }
@@ -942,7 +961,7 @@ function environmentPage(): string {
   lines.push(
     '## Limits',
     '',
-    `${code(EnvVar.SchedulerTickSeconds)} accepts 1 to ${MAX_TICK_SECONDS}. ${code(EnvVar.Port)} accepts 0 to 65535 (0 picks a free port).`,
+    `${code(EnvVar.SchedulerTickSeconds)} accepts 1 to ${MAX_TICK_SECONDS}. ${code(EnvVar.Port)} accepts 0 to 65535 (0 picks a free port). ${code(EnvVar.DatabasePoolSize)} accepts 1 to ${MAX_DATABASE_POOL_SIZE}.`,
     '',
     '## Command line',
     '',

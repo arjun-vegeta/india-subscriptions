@@ -22,6 +22,8 @@ import { PaytmConfigSchema, type PaytmConfig } from './providers/paytm/schemas.j
 import { PhonePeConfigSchema, type PhonePeConfig } from './providers/phonepe/schemas.js';
 import { AppStoreConfigSchema, type AppStoreConfig } from './providers/appstore/schemas.js';
 import { GooglePlayConfigSchema, type GooglePlayConfig } from './providers/googleplay/schemas.js';
+import { DEFAULT_SCHEMA, DEFAULT_TABLE_PREFIX, MAX_IDENTIFIER_BYTES } from './postgres/constants.js';
+import { resolveNames } from './postgres/names.js';
 import { RAZORPAY_MAX_DURATION_YEARS } from './providers/razorpay/constants.js';
 import { RazorpayConfigSchema, type RazorpayConfig } from './providers/razorpay/schemas.js';
 
@@ -107,6 +109,11 @@ export const EnvVar = {
   SchedulerStoreFile: 'SCHEDULER_STORE_FILE',
   SchedulerTickSeconds: 'SCHEDULER_TICK_SECONDS',
 
+  DatabaseUrl: 'DATABASE_URL',
+  DatabaseSchema: 'DATABASE_SCHEMA',
+  DatabaseTablePrefix: 'DATABASE_TABLE_PREFIX',
+  DatabasePoolSize: 'DATABASE_POOL_SIZE',
+
   EventsWebhookUrl: 'EVENTS_WEBHOOK_URL',
   EventsWebhookSecret: 'EVENTS_WEBHOOK_SECRET',
 } as const;
@@ -115,6 +122,10 @@ export type EnvVar = (typeof EnvVar)[keyof typeof EnvVar];
 export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_TICK_SECONDS = 300;
+/** Connections one instance may hold open to the database unless `DATABASE_POOL_SIZE` says otherwise (the driver's own default). */
+export const DEFAULT_DATABASE_POOL_SIZE = 10;
+/** Most connections `DATABASE_POOL_SIZE` accepts. */
+export const MAX_DATABASE_POOL_SIZE = 200;
 /** Longest tick interval accepted: a day. */
 export const MAX_TICK_SECONDS = 86_400;
 /** Keys shorter than this still work but earn a warning. */
@@ -124,6 +135,8 @@ const LOOPBACK_HOSTS: readonly string[] = [DEFAULT_HOST, 'localhost', '::1'];
 const WEBHOOK_PROTOCOLS: readonly string[] = ['http:', 'https:'];
 const INSECURE_PROTOCOL = 'http:';
 const WHOLE_NUMBER = /^\d+$/;
+/** The URL schemes of a PostgreSQL connection string. */
+const DATABASE_PROTOCOLS: readonly string[] = ['postgres:', 'postgresql:'];
 
 /** Variables of each gateway. Any of them being set means the gateway is meant to be on. */
 const GATEWAY_VARS: Record<EnvProvider, readonly EnvVar[]> = {
@@ -344,11 +357,32 @@ function hasWebhookProtocol(value: string): boolean {
   }
 }
 
+/** False for anything that does not parse as a URL. The value never reaches a message. */
+function hasDatabaseProtocol(value: string): boolean {
+  try {
+    return DATABASE_PROTOCOLS.includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether `resolveNames` accepts the schema name and the table prefix, one at a time so the message can name the variable. */
+function isValidIdentifier(option: 'schema' | 'tablePrefix', value: string): boolean {
+  try {
+    resolveNames({ [option]: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const urlText = z.url({ error: 'must be a valid URL' });
 const environmentText = z.enum(Environment, {
   error: (issue) => (issue.input === undefined ? REQUIRED_MESSAGE : 'must be "test" or "live"'),
 });
 const flag = z.stringbool({ error: 'must be "true" or "false"' });
+
+const IDENTIFIER_MESSAGE = `must be at most ${MAX_IDENTIFIER_BYTES} characters of letters, digits and underscores, not starting with a digit`;
 
 const ServiceEnvSchema = z.object({
   [EnvVar.ApiKey]: z.string().optional(),
@@ -359,6 +393,21 @@ const ServiceEnvSchema = z.object({
   [EnvVar.PurchaseStoreFile]: z.string().optional(),
   [EnvVar.SchedulerStoreFile]: z.string().optional(),
   [EnvVar.SchedulerTickSeconds]: wholeNumber(1, MAX_TICK_SECONDS).optional(),
+  [EnvVar.DatabaseUrl]: z
+    .string()
+    .refine(hasDatabaseProtocol, { error: 'must be a postgres:// or postgresql:// connection string' })
+    .optional(),
+  [EnvVar.DatabaseSchema]: z
+    .string()
+    .refine((value) => isValidIdentifier('schema', value), { error: IDENTIFIER_MESSAGE })
+    .optional(),
+  [EnvVar.DatabaseTablePrefix]: z
+    .string()
+    .refine((value) => isValidIdentifier('tablePrefix', value), {
+      error: `${IDENTIFIER_MESSAGE}, and short enough that every table and index name stays within ${MAX_IDENTIFIER_BYTES} characters`,
+    })
+    .optional(),
+  [EnvVar.DatabasePoolSize]: wholeNumber(1, MAX_DATABASE_POOL_SIZE).optional(),
   [EnvVar.EventsWebhookUrl]: urlText
     .refine(hasWebhookProtocol, { error: 'must be an http or https URL' })
     .optional(),
@@ -601,6 +650,23 @@ export interface EventsWebhookConfig {
   secret: string;
 }
 
+/** The PostgreSQL settings of the service. */
+export interface DatabaseConfig {
+  /** The connection string. A secret. */
+  url: string;
+  /** The schema that holds the tables. Default `public`. */
+  schema: string;
+  /** Prepended to every table and index name. */
+  tablePrefix: string;
+  /** Connections this instance may hold open. */
+  poolSize: number;
+}
+
+/** Whether the billing scheduler runs: a store file or a database is configured. */
+export function schedulerEnabled(config: Pick<ServiceConfig, 'schedulerStoreFile' | 'database'>): boolean {
+  return config.schedulerStoreFile !== undefined || config.database !== undefined;
+}
+
 /** Validated configuration. It holds secrets: never log it. */
 export interface ServiceConfig {
   host: string;
@@ -624,10 +690,15 @@ export interface ServiceConfig {
   publicBaseUrl?: string;
   /** Path of the purchases configuration (`{ catalog, policy?, routing? }`). Absent: the purchase routes answer with a configuration error. */
   purchasesFile?: string;
-  /** Path of the `FilePurchaseStore`. Set together with `purchasesFile`. */
+  /** Path of the `FilePurchaseStore`. Set together with `purchasesFile`, and never together with `database`. */
   purchaseStoreFile?: string;
-  /** Path of the scheduler's `FileSchedulerStore`. Absent: the billing scheduler is off. */
+  /** Path of the scheduler's `FileSchedulerStore`. Absent (and no `database`): the billing scheduler is off. */
   schedulerStoreFile?: string;
+  /**
+   * PostgreSQL for the scheduler, the purchase module and the routing statistics. Holds the connection string, which is
+   * a secret: never log it. Excludes `schedulerStoreFile` and `purchaseStoreFile`.
+   */
+  database?: DatabaseConfig;
   tickSeconds: number;
   eventsWebhook?: EventsWebhookConfig;
   /** Things worth saying at startup that are not errors. Free of secrets. */
@@ -783,18 +854,42 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
     );
   }
 
+  // The database: the connection string, and the settings that only mean something with it.
+  const databaseUrl = base?.[EnvVar.DatabaseUrl];
+  const databaseSettings = [EnvVar.DatabaseSchema, EnvVar.DatabaseTablePrefix, EnvVar.DatabasePoolSize] as const;
+  if (values[EnvVar.DatabaseUrl] === undefined) {
+    for (const name of databaseSettings) {
+      if (values[name] !== undefined) problems.push(`${EnvVar.DatabaseUrl}: is required when ${name} is set`);
+    }
+  }
+
   // Purchases: the configuration file and its durable store go together; the public URL is what the hosted checkout is built on.
+  // The durable store is a file, or the database.
   const purchasesFile = values[EnvVar.PurchasesFile];
   const purchaseStoreFile = values[EnvVar.PurchaseStoreFile];
-  if (purchasesFile && !purchaseStoreFile) {
+  const schedulerStoreFile = values[EnvVar.SchedulerStoreFile];
+  const hasDatabase = values[EnvVar.DatabaseUrl] !== undefined;
+  if (hasDatabase) {
+    for (const [name, file] of [
+      [EnvVar.SchedulerStoreFile, schedulerStoreFile],
+      [EnvVar.PurchaseStoreFile, purchaseStoreFile],
+    ] as const) {
+      if (file) {
+        problems.push(
+          `${EnvVar.DatabaseUrl} and ${name} cannot both be set: the state is kept in the database or in a file, not both. Unset ${name} to use the database, or ${EnvVar.DatabaseUrl} to keep the file`,
+        );
+      }
+    }
+  }
+  if (purchasesFile && !purchaseStoreFile && !hasDatabase) {
     problems.push(
-      `${EnvVar.PurchaseStoreFile}: is required when ${EnvVar.PurchasesFile} is set (sessions, entitlements and the report queue must survive a restart)`,
+      `${EnvVar.PurchaseStoreFile}: is required when ${EnvVar.PurchasesFile} is set (sessions, entitlements and the report queue must survive a restart; set ${EnvVar.DatabaseUrl} to keep them in PostgreSQL)`,
     );
   } else if (purchaseStoreFile && !purchasesFile) {
     problems.push(`${EnvVar.PurchasesFile}: is required when ${EnvVar.PurchaseStoreFile} is set`);
   }
   const publicBaseUrl = base?.[EnvVar.PublicBaseUrl]?.replace(/\/+$/, '');
-  if (purchasesFile && purchaseStoreFile) {
+  if (purchasesFile && (purchaseStoreFile || hasDatabase)) {
     if (!publicBaseUrl) {
       warnings.push(
         `${EnvVar.PublicBaseUrl} is not set: purchase options carry no hostedUrl and gateways return customers to the returnUrl of the purchase, so the hosted checkout is not offered.`,
@@ -855,7 +950,15 @@ export function parseServiceEnv(env: EnvironmentVariables, options: ParseService
     publicBaseUrl,
     purchasesFile,
     purchaseStoreFile,
-    schedulerStoreFile: base?.[EnvVar.SchedulerStoreFile],
+    schedulerStoreFile,
+    database: databaseUrl
+      ? {
+          url: databaseUrl,
+          schema: base?.[EnvVar.DatabaseSchema] ?? DEFAULT_SCHEMA,
+          tablePrefix: base?.[EnvVar.DatabaseTablePrefix] ?? DEFAULT_TABLE_PREFIX,
+          poolSize: base?.[EnvVar.DatabasePoolSize] ?? DEFAULT_DATABASE_POOL_SIZE,
+        }
+      : undefined,
     tickSeconds: base?.[EnvVar.SchedulerTickSeconds] ?? DEFAULT_TICK_SECONDS,
     eventsWebhook,
     warnings,
