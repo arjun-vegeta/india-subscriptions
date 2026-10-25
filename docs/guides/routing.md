@@ -272,49 +272,43 @@ The breaker's state lives in the router's memory: each process learns about outa
 
 ## Where the statistics live
 
-The statistics store counts outcomes in hourly UTC buckets per `(provider, kind, payment method)`. `MemoryRoutingStatsStore` is the default and loses its counts on restart. For several processes or restarts, implement `RoutingStatsStore` on your database and pass it as `routing.stats`:
+The statistics store counts outcomes in hourly UTC buckets per `(provider, kind, payment method)`. `MemoryRoutingStatsStore` is the default and loses its counts on restart. For several processes or restarts, use `PostgresRoutingStatsStore` from `india-subscriptions/postgres` and pass it as `routing.stats`:
 
-```ts title="routing-stats-store.ts"
-import {
-  statsBucketStart,
-  type RouteOutcomeResult,
-  type RoutingStatsKey,
-  type RoutingStatsStore,
-  type RoutingStatsTotals,
-} from 'india-subscriptions';
+```ts title="routing-postgres.ts"
+import { Pool } from 'pg';
+import { Provider, createSubscriptions, razorpay } from 'india-subscriptions';
+import { PostgresRoutingStatsStore, migratePostgres } from 'india-subscriptions/postgres';
 
-/** A sketch over a Map. On a database, `increment` must be one atomic `n = n + 1`, and `read` a sum of whole buckets. */
-export class SketchStatsStore implements RoutingStatsStore {
-  private readonly buckets = new Map<string, RoutingStatsTotals>();
+export async function buildClient() {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  pool.on('error', (error) => console.error('database connection failed', error.message));
+  await migratePostgres(pool);
 
-  private key(key: RoutingStatsKey, hour: string): string {
-    return `${key.provider}|${key.kind}|${key.paymentMethod ?? '*'}|${hour}`;
-  }
-
-  async increment(key: RoutingStatsKey, result: RouteOutcomeResult, at: string): Promise<void> {
-    const id = this.key(key, statsBucketStart(at));
-    const totals = this.buckets.get(id) ?? { success: 0, failure: 0, unavailable: 0 };
-    totals[result] += 1;
-    this.buckets.set(id, totals);
-  }
-
-  async read(key: RoutingStatsKey, since: string): Promise<RoutingStatsTotals> {
-    const total: RoutingStatsTotals = { success: 0, failure: 0, unavailable: 0 };
-    const from = Date.parse(statsBucketStart(since));
-    for (const [id, totals] of this.buckets) {
-      const [provider, kind, method, hour] = id.split('|');
-      if (provider !== key.provider || kind !== key.kind || method !== (key.paymentMethod ?? '*')) continue;
-      if (Date.parse(hour as string) < from) continue;
-      total.success += totals.success;
-      total.failure += totals.failure;
-      total.unavailable += totals.unavailable;
-    }
-    return total;
-  }
+  const subs = createSubscriptions({
+    providers: [razorpay({ keyId: process.env.RAZORPAY_KEY_ID!, keySecret: process.env.RAZORPAY_KEY_SECRET! })],
+    routing: {
+      stats: new PostgresRoutingStatsStore(pool, { retentionHours: 72 }),
+      strategy: { priority: [Provider.Razorpay] },
+    },
+  });
+  return { subs, close: () => pool.end() };
 }
 ```
 
-The contract, in short: increments are atomic and additive, buckets are UTC hours (`statsBucketStart`), reads sum whole buckets at or after the bucket of `since`, a key nobody wrote returns zeros, and the gateway-wide series is never derived from the per-method ones (the router writes both). If the store fails to read, routing carries on as if nothing had been observed and calls `onStatsError`: a statistics outage must not stop payments. The full text is in the doc comment of `RoutingStatsStore` in `src/routing/stats-store.ts`.
+With `DATABASE_URL` the HTTP service does this for you. [How migrations behave](./scheduler.md#running-it-on-postgresql) is the same for all three PostgreSQL stores.
+
+What `PostgresRoutingStatsStore` guarantees:
+
+- **Atomic increments.** `increment` is one `INSERT ... ON CONFLICT DO UPDATE SET n = n + 1` on the row of the series and the hour. PostgreSQL serialises concurrent updates of one row, so counts from many servers are never lost or counted twice.
+- **Buckets are the UTC hour** of the instant, computed with `statsBucketStart`, the function every store uses. `read` sums whole buckets at or after the bucket of `since`, inside the database.
+- **Independent series.** The gateway-wide series is stored on its own and is never derived from the per-method series.
+- **Retention.** Buckets older than `retentionHours` (default 168, seven days; at least 25) are deleted by `prune()`, which `increment` calls at most once an hour per process, on the database's clock.
+
+The statistics are what servers share. The circuit breaker is not: it stays in each process's memory.
+
+### Writing your own
+
+For another database, implement `RoutingStatsStore`. The contract, in short: increments are atomic and additive, buckets are UTC hours (`statsBucketStart`), reads sum whole buckets at or after the bucket of `since`, a key nobody wrote returns zeros, and the gateway-wide series is never derived from the per-method ones (the router writes both). If the store fails to read, routing carries on as if nothing had been observed and calls `onStatsError`: a statistics outage must not stop payments. The full text is in the doc comment of `RoutingStatsStore` in `src/routing/stats-store.ts`, and `test/routing/stats-store.test.ts` and `test/postgres/stats-store.test.ts` show what a correct store does.
 
 ## What it never does
 

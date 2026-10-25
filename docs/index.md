@@ -22,6 +22,7 @@ It does not hold your money, move an existing mandate to another gateway, or dra
 | Let the library choose the best gateway | [Routing](./guides/routing.md) |
 | Sell on iPhone, Android and the web with one catalog | [Selling on iPhone, Android and the web](./guides/purchases.md) |
 | Ask what a customer owns, across stores and gateways | [Entitlements](./concepts/entitlements.md) |
+| Keep billing state in PostgreSQL, shared by several servers | [PostgreSQL stores](./reference/postgres.md) |
 
 ## Gateways and stores
 

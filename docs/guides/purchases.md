@@ -346,13 +346,48 @@ Sessions, entitlements and the report outbox go through a `PurchaseStore`.
 |---|---|
 | `MemoryPurchaseStore` | Development and tests. Loses everything on restart. |
 | `FilePurchaseStore` from `india-subscriptions/server` | One server process. A single JSON file, written atomically with mode 0600. The service uses it with `PURCHASE_STORE_FILE`. |
-| Your own, implementing `PurchaseStore` | Several processes. |
+| `PostgresPurchaseStore` from `india-subscriptions/postgres` | Production, one process or many. The service uses it with `DATABASE_URL`. |
+| Your own, implementing `PurchaseStore` | Another database. |
 
 A store must meet the guarantees written in the doc comment of `PurchaseStore`: a lock with a time to live (so two requests do not complete one session twice), writes that are durable when they resolve (`complete` queues the Google report before it returns and relies on that write surviving a crash), reads that see your own writes, copies rather than shared objects, and an atomic insert-if-absent for reports. Every write `Purchases` makes is idempotent, so a crash between two writes is repaired by repeating the call.
 
+### On PostgreSQL
+
+Install [`pg`](https://node-postgres.com), create a `Pool`, run `migratePostgres`, and pass the store to `purchases`. The scheduler's tables and the routing statistics come from the same migration, so a deployment that keeps all three in PostgreSQL migrates once ([how migrations behave](./scheduler.md#running-it-on-postgresql)).
+
+```ts title="billing-purchases-postgres.ts"
+import { Pool } from 'pg';
+import { ProductKind, createSubscriptions, razorpay } from 'india-subscriptions';
+import { PostgresPurchaseStore, migratePostgres } from 'india-subscriptions/postgres';
+
+export async function buildClient() {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  pool.on('error', (error) => console.error('database connection failed', error.message));
+  await migratePostgres(pool);
+
+  const subs = createSubscriptions({
+    providers: [razorpay({ keyId: process.env.RAZORPAY_KEY_ID!, keySecret: process.env.RAZORPAY_KEY_SECRET! })],
+    purchases: {
+      catalog: [{ key: 'coins-100', kind: ProductKind.OneTime, name: '100 coins', amount: 9900 }],
+      store: new PostgresPurchaseStore(pool),
+    },
+  });
+  return { subs, close: () => pool.end() };
+}
+```
+
+What `PostgresPurchaseStore` guarantees, with several servers on one database:
+
+- **Durable writes that every server sees.** Each save and each queued report is one statement that has committed when it resolves, so a session a customer started on one server is found by another, and the report `complete` queues is in the database before `complete` returns. Point the pool at the primary.
+- **One owner per session.** The lock is a single statement on the database's clock: of any number of servers completing the same session at the same moment, one holds the lock, and a lock whose owner died expires by itself.
+- **Reports are claimed once.** `enqueueReport` stores a report only if its id is new, and says whether it was the one that stored it. `flush` claims due reports with a lease written into the row, in one statement that skips rows another server has locked: two servers flushing at once never send the same report, a server that crashes mid-flush leaves reports that become claimable again when its lease ends, and a server whose lease ran out cannot overwrite the result of the server that took over. Which reports are due, and when a lease ends, is decided by the instant the flush passes, so the flush's own clock decides.
+- **Copies and validation.** Rows are read into fresh objects, and every record is validated against its schema going in and coming out.
+
+The tables are `sessions`, `entitlements`, `reports` and `purchase_locks` (behind the `tablePrefix`, in the `schema` you choose). See [PostgreSQL stores](../reference/postgres.md) for the options.
+
 ## The service
 
-`india-subscriptions serve` runs all of this from configuration. Set `PURCHASES_FILE` to a JSON document with `catalog`, `policy` and `routing`, `PURCHASE_STORE_FILE` to where it keeps its state (both together or neither), and `PUBLIC_BASE_URL` for the hosted checkout. The service flushes Google's reports on every tick and says so in its start-up report. The routes are `POST /v1/purchases`, `GET /v1/purchases/{sessionId}`, `POST /v1/purchases/{sessionId}/alternative`, `POST /v1/purchases/{sessionId}/complete`, `GET /v1/entitlements/{customerRef}` and `POST /v1/purchases/flush`, all behind the API key, plus the public checkout routes. See [Running the HTTP service](./http-service.md) and the [HTTP API reference](../reference/generated/http-api.md#purchases).
+`india-subscriptions serve` runs all of this from configuration. Set `PURCHASES_FILE` to a JSON document with `catalog`, `policy` and `routing`, and give it somewhere to keep its state: `PURCHASE_STORE_FILE` (one instance), or `DATABASE_URL` (PostgreSQL, any number of instances). Set `PUBLIC_BASE_URL` for the hosted checkout. The service flushes Google's reports on every tick, on every instance, and says so in its start-up report. The routes are `POST /v1/purchases`, `GET /v1/purchases/{sessionId}`, `POST /v1/purchases/{sessionId}/alternative`, `POST /v1/purchases/{sessionId}/complete`, `GET /v1/entitlements/{customerRef}` and `POST /v1/purchases/flush`, all behind the API key, plus the public checkout routes. See [Running the HTTP service](./http-service.md) and the [HTTP API reference](../reference/generated/http-api.md#purchases).
 
 A mobile app never holds the service's API key. It talks to your backend, which forwards the calls: [Mobile apps](./mobile-apps.md).
 

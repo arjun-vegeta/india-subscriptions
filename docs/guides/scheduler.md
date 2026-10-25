@@ -1,6 +1,6 @@
 # Running the scheduler
 
-After this page you will be able to run the billing scheduler for PayU and for Cashfree on-demand plans: call `tick()` on a schedule, choose its policies, pick a store for development and for production, and implement your own store on PostgreSQL, including its lock.
+After this page you will be able to run the billing scheduler for PayU and for Cashfree on-demand plans: call `tick()` on a schedule, choose its policies, pick a store for development and for production, run the billing state on PostgreSQL so several workers can share it, and know what a store of your own for another database must guarantee.
 
 Read [Gateway-scheduled and merchant-scheduled subscriptions](../concepts/scheduling.md) first if you have not: it explains what the scheduler does and why it never debits twice.
 
@@ -90,8 +90,9 @@ A listener that throws never affects billing. Alert on `charge.outcome_overdue` 
 | Store | Use for | Survives restart | Several processes |
 |---|---|---|---|
 | `MemorySchedulerStore` | Tests and development | No | No |
-| `FileSchedulerStore` (`india-subscriptions/server`) | One service process, small deployments. It is what `serve` uses. | Yes (atomic file rewrite, mode 0600) | **No**: a second process would not see the first one's writes or locks |
-| Your own `SchedulerStore` | Production with more than one worker | Yes | Yes, if the lock is atomic |
+| `FileSchedulerStore` (`india-subscriptions/server`) | One service process, small deployments. It is what `serve` uses with `SCHEDULER_STORE_FILE`. | Yes (atomic file rewrite, mode 0600) | **No**: a second process would not see the first one's writes or locks |
+| `PostgresSchedulerStore` (`india-subscriptions/postgres`) | Production, one process or many. It is what `serve` uses with `DATABASE_URL`. | Yes | Yes: the lock and every write are single statements in the database |
+| Your own `SchedulerStore` | A database other than PostgreSQL | Yes | Yes, if the lock is atomic |
 
 **`MemorySchedulerStore` loses everything on restart.** A restarted process forgets every schedule: customers with a live mandate would never be billed. Never use it with real money.
 
@@ -103,9 +104,62 @@ export async function openStore(): Promise<FileSchedulerStore> {
 }
 ```
 
-## Implementing `SchedulerStore` on PostgreSQL
+## Running it on PostgreSQL
 
-The store is eight methods plus a lock. The records are plain JSON, so each fits in a `jsonb` column. What the scheduler relies on:
+`PostgresSchedulerStore` keeps schedules, cycles and locks in PostgreSQL 13 or later. The library has no database driver of its own: install [`pg`](https://node-postgres.com) and pass it a `Pool`. `migratePostgres` creates the tables.
+
+```bash
+npm install pg
+```
+
+```ts title="billing-postgres.ts"
+import { Pool } from 'pg';
+import { Environment, createSubscriptions, payu } from 'india-subscriptions';
+import { PostgresSchedulerStore, migratePostgres } from 'india-subscriptions/postgres';
+
+export async function buildClient() {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  // An idle connection the server drops emits an error on the pool; without a listener it ends the process.
+  pool.on('error', (error) => console.error('database connection failed', error.message));
+  await migratePostgres(pool);
+
+  const subs = createSubscriptions({
+    providers: [
+      payu({
+        key: process.env.PAYU_KEY!,
+        salt: process.env.PAYU_SALT!,
+        environment: Environment.Test,
+        successUrl: 'https://shop.example.com/payu/success',
+        failureUrl: 'https://shop.example.com/payu/failure',
+      }),
+    ],
+    scheduler: { store: new PostgresSchedulerStore(pool) },
+  });
+  return { subs, close: () => pool.end() };
+}
+```
+
+Every worker runs the same code, against the same database. Call `close()` on shutdown, after the last tick has finished: the store never opens or closes connections itself.
+
+**Migrations.** `migratePostgres(pool, options)` is versioned and idempotent, and it is safe to run from every worker at every start-up, at the same moment: the workers queue on a lock inside the database, and the ones that wait find the work already done. It creates the schema when it does not exist (a role without that privilege can run it against a schema an administrator created), and it rolls back completely when anything fails, so the schema is never half-migrated. A database that a newer version of the library migrated is refused with `CONFIG`: upgrade the library rather than run old code against a newer schema.
+
+**Where the tables live.** Both `migratePostgres` and the store take the same two options: `schema` (default `public`) and `tablePrefix` (default `india_subscriptions_`). They are checked as identifiers, quoted, and never sent as values. The scheduler, the [purchase store](./purchases.md#where-it-is-stored) and the [routing statistics store](./routing.md#where-the-statistics-live) share one migration and one set of tables, so a deployment that uses all three migrates once. Give every installation that shares a database its own schema or prefix, and pass the same options everywhere.
+
+**What it guarantees.**
+
+- **Durable writes.** Each `save*` is one statement that has committed when it resolves, so the `charging` write the scheduler makes before it asks a gateway to debit a customer survives a crash.
+- **Read your own writes.** Reads go to the same database. Point the pool at the primary rather than a replica, and keep `synchronous_commit` on.
+- **One lock, one statement.** `acquireLock` inserts the lock row or takes over an expired one in a single statement, and never waits. Whether a lock has expired is decided by PostgreSQL's own clock, so workers whose clocks disagree still agree on who holds it.
+- **Due schedules.** `listDueSchedules(at, limit)` compares against the `at` the scheduler passes, so the clock that decides what is due is the scheduler's own.
+- **Copies and validation.** Rows are read into fresh objects, and a record is validated against its schema when it is written and when it is read.
+
+At PostgreSQL's default READ COMMITTED isolation level the upserts and the lock are atomic; the lock stays correct at REPEATABLE READ and SERIALIZABLE too. A statement that fails rejects with `INTERNAL_ERROR` carrying the SQLSTATE and never the SQL or its values; missing tables reject with `CONFIG` and tell you to run `migratePostgres`.
+
+`PostgresSchedulerStore` takes any object with `query(text, values)` and `connect()` that returns a connection with `query` and `release` (`PostgresPool`), which `pg.Pool` is. See [PostgreSQL stores](../reference/postgres.md).
+
+## Writing your own store
+
+For a database other than PostgreSQL, implement `SchedulerStore`: eight methods plus a lock. The records are plain JSON, so each fits in a JSON column. What the scheduler relies on:
 
 - **Durability.** A resolved `save*` is really stored. The scheduler writes a cycle as `charging` **before** it asks the gateway to debit a customer and relies on that write surviving a crash.
 - **Read your own writes.** After `saveSchedule` resolves, any worker's `getSchedule` returns that version or a newer one. On a replicated database, read from the primary.
@@ -114,207 +168,15 @@ The store is eight methods plus a lock. The records are plain JSON, so each fits
 - **Own copies.** Returned objects must not share state with what is stored.
 - **Lookups by id.** `findBySubscriptionId(provider, id)` and `findScheduleByChargeId(chargeId)` (a gateway webhook that names only a debit uses it) need indexes on the cycle's `chargeId` and `providerChargeId`.
 
-The lock is the part people get wrong. It is a single `INSERT ... ON CONFLICT DO UPDATE ... WHERE expires_at <= now()`: it inserts the row, or takes over a lock that has expired, and returns nothing if a live lock exists. It uses the database's `now()`, so workers with skewed clocks agree.
-
-```sql
-CREATE TABLE IF NOT EXISTS billing_locks (
-  schedule_id text PRIMARY KEY,
-  token       text NOT NULL,
-  expires_at  timestamptz NOT NULL
-);
-```
-
-The whole store, as a documented example file that is type-checked against the real `SchedulerStore` interface by this repository's tests:
-
-```ts title="postgres-scheduler-store.ts" source="examples/postgres-scheduler-store.ts"
-import { randomUUID } from 'node:crypto';
-import {
-  CycleRecordSchema,
-  ScheduleRecordSchema,
-  type CycleRecord,
-  type Provider,
-  type ScheduleRecord,
-  type SchedulerStore,
-} from 'india-subscriptions';
-
-/**
- * The one thing this store needs from a Postgres client: run a statement with parameters and return its rows.
- * `pg.Pool#query(text, values)` has this shape. Typing against it keeps the example free of a dependency.
- */
-export interface Queryable {
-  query(text: string, values?: readonly unknown[]): Promise<{ rows: Array<{ record?: unknown; token?: string }> }>;
-}
-
-/**
- * A `SchedulerStore` on PostgreSQL, safe for several workers.
- *
- * Records are kept whole in `jsonb` columns, with the few fields the scheduler queries by in real columns.
- * The lock is one atomic statement, and it uses the database's clock, so workers with skewed clocks agree.
- */
-export class PostgresSchedulerStore implements SchedulerStore {
-  constructor(private readonly db: Queryable) {}
-
-  /** Run once at deploy time. */
-  static readonly schema = `
-    CREATE TABLE IF NOT EXISTS billing_schedules (
-      id              text PRIMARY KEY,
-      provider        text NOT NULL,
-      subscription_id text NOT NULL,
-      next_action_at  timestamptz,
-      created_at      timestamptz NOT NULL,
-      record          jsonb NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS billing_schedules_subscription ON billing_schedules (provider, subscription_id);
-    CREATE INDEX IF NOT EXISTS billing_schedules_due ON billing_schedules (next_action_at) WHERE next_action_at IS NOT NULL;
-
-    CREATE TABLE IF NOT EXISTS billing_cycles (
-      schedule_id        text NOT NULL,
-      idx                integer NOT NULL,
-      charge_id          text,
-      provider_charge_id text,
-      record             jsonb NOT NULL,
-      PRIMARY KEY (schedule_id, idx)
-    );
-    CREATE INDEX IF NOT EXISTS billing_cycles_charge ON billing_cycles (charge_id);
-    CREATE INDEX IF NOT EXISTS billing_cycles_provider_charge ON billing_cycles (provider_charge_id);
-
-    CREATE TABLE IF NOT EXISTS billing_locks (
-      schedule_id text PRIMARY KEY,
-      token       text NOT NULL,
-      expires_at  timestamptz NOT NULL
-    );
-  `;
-
-  async getSchedule(id: string): Promise<ScheduleRecord | undefined> {
-    const { rows } = await this.db.query('SELECT record FROM billing_schedules WHERE id = $1', [id]);
-    return rows[0] ? ScheduleRecordSchema.parse(rows[0].record) : undefined;
-  }
-
-  async saveSchedule(schedule: ScheduleRecord): Promise<void> {
-    await this.db.query(
-      `INSERT INTO billing_schedules (id, provider, subscription_id, next_action_at, created_at, record)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (id) DO UPDATE
-         SET provider = EXCLUDED.provider,
-             subscription_id = EXCLUDED.subscription_id,
-             next_action_at = EXCLUDED.next_action_at,
-             record = EXCLUDED.record`,
-      [
-        schedule.id,
-        schedule.provider,
-        schedule.subscriptionId,
-        schedule.nextActionAt ?? null,
-        schedule.createdAt,
-        JSON.stringify(schedule),
-      ],
-    );
-  }
-
-  async findBySubscriptionId(provider: Provider, subscriptionId: string): Promise<ScheduleRecord | undefined> {
-    const { rows } = await this.db.query(
-      `SELECT record FROM billing_schedules
-       WHERE provider = $1 AND subscription_id = $2
-       ORDER BY created_at DESC LIMIT 1`,
-      [provider, subscriptionId],
-    );
-    return rows[0] ? ScheduleRecordSchema.parse(rows[0].record) : undefined;
-  }
-
-  async findScheduleByChargeId(chargeId: string): Promise<ScheduleRecord | undefined> {
-    const { rows } = await this.db.query(
-      `SELECT s.record FROM billing_cycles c
-       JOIN billing_schedules s ON s.id = c.schedule_id
-       WHERE c.charge_id = $1 OR c.provider_charge_id = $1
-       ORDER BY s.created_at DESC LIMIT 1`,
-      [chargeId],
-    );
-    return rows[0] ? ScheduleRecordSchema.parse(rows[0].record) : undefined;
-  }
-
-  async listDueSchedules(at: string, limit: number): Promise<ScheduleRecord[]> {
-    const { rows } = await this.db.query(
-      `SELECT record FROM billing_schedules
-       WHERE next_action_at IS NOT NULL AND next_action_at <= $1::timestamptz
-       ORDER BY next_action_at ASC LIMIT $2`,
-      [at, limit],
-    );
-    return rows.map((row) => ScheduleRecordSchema.parse(row.record));
-  }
-
-  async getCycle(scheduleId: string, index: number): Promise<CycleRecord | undefined> {
-    const { rows } = await this.db.query('SELECT record FROM billing_cycles WHERE schedule_id = $1 AND idx = $2', [
-      scheduleId,
-      index,
-    ]);
-    return rows[0] ? CycleRecordSchema.parse(rows[0].record) : undefined;
-  }
-
-  async saveCycle(cycle: CycleRecord): Promise<void> {
-    await this.db.query(
-      `INSERT INTO billing_cycles (schedule_id, idx, charge_id, provider_charge_id, record)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (schedule_id, idx) DO UPDATE
-         SET charge_id = EXCLUDED.charge_id,
-             provider_charge_id = EXCLUDED.provider_charge_id,
-             record = EXCLUDED.record`,
-      [cycle.scheduleId, cycle.index, cycle.chargeId ?? null, cycle.providerChargeId ?? null, JSON.stringify(cycle)],
-    );
-  }
-
-  async listCycles(scheduleId: string): Promise<CycleRecord[]> {
-    const { rows } = await this.db.query('SELECT record FROM billing_cycles WHERE schedule_id = $1 ORDER BY idx ASC', [
-      scheduleId,
-    ]);
-    return rows.map((row) => CycleRecordSchema.parse(row.record));
-  }
-
-  /**
-   * One atomic statement. The row is inserted, or taken over when its lock has expired. When the lock is held and
-   * live, the WHERE clause is false, nothing is returned and the caller gets `undefined`. It never waits.
-   */
-  async acquireLock(scheduleId: string, ttlMs: number): Promise<string | undefined> {
-    const token = randomUUID();
-    const { rows } = await this.db.query(
-      `INSERT INTO billing_locks (schedule_id, token, expires_at)
-       VALUES ($1, $2, now() + $3 * interval '1 millisecond')
-       ON CONFLICT (schedule_id) DO UPDATE
-         SET token = EXCLUDED.token, expires_at = EXCLUDED.expires_at
-         WHERE billing_locks.expires_at <= now()
-       RETURNING token`,
-      [scheduleId, token, ttlMs],
-    );
-    return rows[0]?.token;
-  }
-
-  /** Deletes the lock only if `token` still holds it: a lock that expired and was taken by someone else stays taken. */
-  async releaseLock(scheduleId: string, token: string): Promise<void> {
-    await this.db.query('DELETE FROM billing_locks WHERE schedule_id = $1 AND token = $2', [scheduleId, token]);
-  }
-}
-```
-
-Using it, with a `pg` pool (`pg.Pool` has the same `query(text, values)` shape the example asks for; the example is typed against that minimal interface so it needs no dependency here):
-
-```ts
-import { Environment, createSubscriptions, payu } from 'india-subscriptions';
-import { PostgresSchedulerStore, type Queryable } from './postgres-scheduler-store';
-
-export async function buildClient(pool: Queryable) {
-  await pool.query(PostgresSchedulerStore.schema);
-  return createSubscriptions({
-    providers: [payu({ key: 'key', salt: 'salt', environment: Environment.Test, successUrl: 'https://shop.example.com/payu/ok' })],
-    scheduler: { store: new PostgresSchedulerStore(pool) },
-  });
-}
-```
+The lock is the part people get wrong. On a SQL database it is a single `INSERT ... ON CONFLICT DO UPDATE ... WHERE expires_at <= now()`: it inserts the row, or takes over a lock that has expired, and returns nothing if a live lock exists. Use the database's clock so workers with skewed clocks agree. The full contract, method by method, is in [The billing scheduler](../reference/scheduler.md#the-schedulerstore-contract), and `PostgresSchedulerStore` is the reference implementation.
 
 ::: warning Test your store
-Before relying on any store, run the scheduler's own contract through it: two workers ticking at once must never both raise a debit for one schedule, and a crash between saving a cycle and the schedule must heal on the next tick. This repository's `test/scheduler/memory-store.test.ts` shows what a correct store must do.
+Before relying on any store, run the scheduler's own contract through it: two workers ticking at once must never both raise a debit for one schedule, and a crash between saving a cycle and the schedule must heal on the next tick. This repository's `test/scheduler/store-suite.ts` is the shared suite every shipped store passes, and `test/postgres/scheduler.test.ts` runs two real workers over one database.
 :::
 
 ## Operating it
 
 - **Alert on** `charge.outcome_overdue` (a debit whose outcome is still unknown after the grace period) and `schedule.halted`.
-- **Do not run two schedulers on the file store.** For several workers use a shared store.
+- **Do not run two schedulers on the file store.** For several workers use PostgreSQL.
 - **Cancel the mandate at the gateway when you cancel a schedule.** The facade's `cancel` does both. Calling `scheduler.cancel` directly stops billing but does not call the gateway.
-- Back up the store: it holds customer details and mandate ids.
+- Back up the store: it holds customer details and mandate ids. With PostgreSQL that is your database backup.

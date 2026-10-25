@@ -4,10 +4,9 @@
  * `./billing` or `@/billing`); a fence without one becomes a file of its own. `ts fragment` fences are the sparing,
  * counted exception: they are not compiled.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import { join, posix, relative } from 'node:path';
+import { join } from 'node:path';
 import ts from 'typescript';
-import { DOCS, ROOT, allBlocks, type Block } from './lib.js';
+import { ROOT, allBlocks, type Block } from './lib.js';
 
 export const VIRTUAL_DIR = join(ROOT, 'test/docs/__virtual__');
 const AMBIENT = join(ROOT, 'test/docs/ambient.d.ts');
@@ -63,6 +62,7 @@ function compilerOptions(): ts.CompilerOptions {
         'india-subscriptions': ['src/index.ts'],
         'india-subscriptions/server': ['src/server-entry.ts'],
         'india-subscriptions/checkout': ['src/checkout/index.ts'],
+        'india-subscriptions/postgres': ['src/postgres-entry.ts'],
         '@/*': ['test/docs/__virtual__/*'],
       },
     },
@@ -119,25 +119,4 @@ export function typeCheck(files: VirtualFile[], extraRoots: string[] = []): Diag
     }
   }
   return found;
-}
-
-/** Real files outside the Markdown pages that the documentation promises type-check (the worked examples). */
-export function exampleFiles(): VirtualFile[] {
-  const directory = join(DOCS, 'examples');
-  if (!existsSync(directory)) return [];
-  const result: VirtualFile[] = [];
-  const stack = [directory];
-  while (stack.length > 0) {
-    const current = stack.pop() as string;
-    for (const entry of ts.sys.readDirectory(current, ['.ts'])) {
-      const name = posix.join('examples', relative(directory, entry).split('\\').join('/'));
-      result.push({
-        path: entry,
-        name,
-        source: readFileSync(entry, 'utf8'),
-        block: { page: `docs/${name}`, line: 1, lang: 'ts', info: '', attrs: {}, code: '', index: 0 },
-      });
-    }
-  }
-  return result;
 }

@@ -67,7 +67,7 @@ const REQUIRED_PAGES = [
   'reference/generated/purchases.md',
   'contributing/architecture.md',
   'contributing/adding-a-gateway.md',
-  'examples/postgres-scheduler-store.ts',
+  'reference/postgres.md',
 ];
 
 describe('structure', () => {

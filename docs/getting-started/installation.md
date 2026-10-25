@@ -15,13 +15,14 @@ The package has one runtime dependency, `zod`.
 npm install india-subscriptions
 ```
 
-## The three entry points
+## The four entry points
 
 | Import from | For | Runs in |
 |---|---|---|
 | `india-subscriptions` | The client (`createSubscriptions`), the gateway adapters, every schema and constant, the billing scheduler, the in-memory store | Node, and any runtime with `fetch` |
 | `india-subscriptions/checkout` | `openCheckout`: runs the customer's authorisation step in the browser | The browser only. It imports no Node module and never sees a secret. |
 | `india-subscriptions/server` | The HTTP service (`createHandler`, `createNodeServer`, `listen`), the durable `FileSchedulerStore`, and the pieces `serve` is built from | Node only |
+| `india-subscriptions/postgres` | The scheduler, purchase and routing-statistics stores on PostgreSQL, and `migratePostgres`. You bring the driver (`npm install pg`). See [PostgreSQL stores](../reference/postgres.md). | Node only |
 
 The main entry deliberately does not include `node:http` or any browser code, so you can import it anywhere.
 

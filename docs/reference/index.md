@@ -20,6 +20,7 @@ Reference pages come in two kinds.
 - [The billing scheduler](./scheduler.md): `BillingScheduler` and the `SchedulerStore` contract.
 - [The checkout helper](./checkout.md): `openCheckout`.
 - [The HTTP service functions](./http-service.md): `createHandler`, `createNodeServer`, `listen`, `runServe`.
+- [PostgreSQL stores](./postgres.md): `india-subscriptions/postgres`, the stores for several servers and the migration.
 - [The Python client](./python-client.md).
 
 To regenerate the generated pages after changing the code: `npm run docs:reference`.

@@ -23,8 +23,8 @@ The service as a Fetch API handler. It runs on Node, Bun, Deno, Cloudflare Worke
 
 | Export | Meaning |
 |---|---|
-| `runServe({ env?, allowUnauthenticated?, handleSignals?, logger?, fetch? })` | Builds the service from environment variables, starts listening and the tick loop, prints the startup report. Returns `{ service, server, url, port, stop(), stopped }`. |
-| `buildService(env, options)` | Everything `serve` needs, built but not listening. |
+| `runServe({ env?, allowUnauthenticated?, handleSignals?, logger?, fetch?, importDriver? })` | Builds the service from environment variables, starts listening and the tick loop, prints the startup report. Returns `{ service, server, url, port, stop(), stopped }`. |
+| `buildService(env, options)` | Everything `serve` needs, built but not listening. With `DATABASE_URL` it loads the PostgreSQL driver, connects and migrates first. `options.importDriver` replaces the loader of the driver (`() => import('pg')` by default), for tests. |
 | `parseServiceEnv(env, { allowUnauthenticated? })` | Validates an environment into a `ServiceConfig`. Throws one `CONFIG` error listing every problem. |
 | `createTickLoop({ scheduler, purchases, intervalMs, logger })` | Ticks the scheduler and flushes the Google reports on an interval, never overlapping itself. A failing tick or flush is logged, not thrown. |
 | `FileSchedulerStore` | The durable one-file scheduler store. `FileSchedulerStore.open(path)`. Single instance only. |
@@ -34,7 +34,10 @@ The service as a Fetch API handler. It runs on Node, Bun, Deno, Cloudflare Worke
 | `buildOpenApiDocument({ title?, version?, serverUrl? })` | The OpenAPI 3.1 document. |
 | `routes` | The route table the dispatcher and the OpenAPI document are both built from. |
 | `ReturnParam`, `returnLocation`, `gatherReturnFields`, `escapeHtml`, `jsonForScript` | The pieces of the hosted checkout: the `session` and `status` parameters added to the return URL, and the helpers that read a return and escape page data. |
-| `EnvVar`, `DEFAULT_HOST`, `DEFAULT_PORT`, `DEFAULT_TICK_SECONDS` | The variable names and defaults. |
+| `EnvVar`, `DEFAULT_HOST`, `DEFAULT_PORT`, `DEFAULT_TICK_SECONDS`, `DEFAULT_DATABASE_POOL_SIZE` | The variable names and defaults. |
+| `DATABASE_DRIVER_PACKAGE` | The package `serve` loads for `DATABASE_URL`: `pg`. |
+
+The PostgreSQL stores, which several instances can share, are in [PostgreSQL stores](./postgres.md).
 
 ## The command line
 

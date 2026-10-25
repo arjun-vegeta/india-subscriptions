@@ -11,7 +11,7 @@ export default withMermaid(
     description: 'One headless API for subscriptions and payments on Indian payment gateways and app stores.',
     lang: 'en',
     cleanUrls: true,
-    srcExclude: ['README.md', 'node_modules/**', 'examples/**'],
+    srcExclude: ['README.md', 'node_modules/**'],
     ignoreDeadLinks: [OUTSIDE_DOCS],
     themeConfig: {
       nav: [
@@ -83,6 +83,7 @@ export default withMermaid(
             { text: 'The billing scheduler', link: '/reference/scheduler' },
             { text: 'The checkout helper', link: '/reference/checkout' },
             { text: 'The HTTP service functions', link: '/reference/http-service' },
+            { text: 'PostgreSQL stores', link: '/reference/postgres' },
             { text: 'The Python client', link: '/reference/python-client' },
           ],
         },

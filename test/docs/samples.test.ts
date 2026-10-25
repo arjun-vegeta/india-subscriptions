@@ -1,7 +1,7 @@
 /**
  * Every code sample in the documentation is checked here.
  *
- * - `ts` fences are type-checked against the real entry points (`india-subscriptions`, `/server`, `/checkout`), in one
+ * - `ts` fences are type-checked against the real entry points (`india-subscriptions`, `/server`, `/checkout`, `/postgres`), in one
  *   virtual project, so a sample can import another by its title. A fence marked `ts fragment` is the counted exception.
  * - `ts` fences use the exported constants: no string literal may equal the value of a constant.
  * - `bash` fences hold one command and no `$` prompt; `json` fences parse; `python` fences compile and import from the
@@ -18,7 +18,7 @@ import * as CheckoutConstants from '../../src/checkout/constants.js';
 import * as Constants from '../../src/constants.js';
 import * as SchedulerConstants from '../../src/scheduler/constants.js';
 import { ALLOWED_LANGUAGES, MAX_TS_FRAGMENTS, ROOT, allBlocks } from './lib.js';
-import { exampleFiles, isFragment, tsBlocks, typeCheck, virtualFiles } from './typescript-blocks.js';
+import { isFragment, tsBlocks, typeCheck, virtualFiles } from './typescript-blocks.js';
 
 const blocks = allBlocks();
 
@@ -41,23 +41,12 @@ describe('code fences', () => {
 });
 
 describe('TypeScript samples', () => {
-  const files = [...virtualFiles(), ...exampleFiles()];
+  const files = virtualFiles();
   const diagnostics = typeCheck(files);
 
   it('compile against the real entry points', () => {
     expect(files.length).toBeGreaterThan(0);
     expect(diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`)).toEqual([]);
-  });
-
-  it('keep the worked examples identical to the files they are shown from', () => {
-    for (const block of tsBlocks()) {
-      const source = block.attrs.source;
-      if (typeof source !== 'string') continue;
-      const real = join(ROOT, 'docs', source);
-      expect(existsSync(real), `${block.page}:${block.line}: ${source} exists`).toBe(true);
-      const example = exampleFiles().find((file) => file.path === real);
-      expect(block.code.trim(), `${block.page}:${block.line} must equal docs/${source}`).toBe(example?.source.trim());
-    }
   });
 });
 

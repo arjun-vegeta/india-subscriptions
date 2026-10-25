@@ -43,7 +43,7 @@ See the table in [Running the scheduler](../guides/scheduler.md#policies) and th
 
 ## The `SchedulerStore` contract
 
-Implement it on any database; the records are plain JSON ([`ScheduleRecord`](./generated/scheduler-records.md#schedulerecord), [`CycleRecord`](./generated/scheduler-records.md#cyclerecord)). A full PostgreSQL example is in [Running the scheduler](../guides/scheduler.md#implementing-schedulerstore-on-postgresql).
+Implement it on any database; the records are plain JSON ([`ScheduleRecord`](./generated/scheduler-records.md#schedulerecord), [`CycleRecord`](./generated/scheduler-records.md#cyclerecord)). `PostgresSchedulerStore` implements it on PostgreSQL ([PostgreSQL stores](./postgres.md)), and [Running the scheduler](../guides/scheduler.md#writing-your-own-store) says what a store for another database must guarantee.
 
 | Method | Contract |
 |---|---|
@@ -58,4 +58,4 @@ Implement it on any database; the records are plain JSON ([`ScheduleRecord`](./g
 | `acquireLock(scheduleId, ttlMs)` | **Atomic.** At most one concurrent caller gets a token; the others get `undefined`. The lock expires after `ttlMs`; an expired lock is taken over. Never blocks. The schedule need not exist. |
 | `releaseLock(scheduleId, token)` | Releases only if `token` is the current holder's. A stale token is a no-op. |
 
-The scheduler saves a cycle first and the schedule second, and recovers from a crash between the two. A store that writes both in one transaction may, but need not. Stores shipped: `MemorySchedulerStore` and, from `india-subscriptions/server`, `FileSchedulerStore`.
+The scheduler saves a cycle first and the schedule second, and recovers from a crash between the two. A store that writes both in one transaction may, but need not. Stores shipped: `MemorySchedulerStore`, from `india-subscriptions/server` `FileSchedulerStore`, and from `india-subscriptions/postgres` `PostgresSchedulerStore`.

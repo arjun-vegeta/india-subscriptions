@@ -133,7 +133,7 @@ curl -X POST http://127.0.0.1:8787/v1/routing/decide \
   -d '{"kind":"one_time","amount":49900}'
 ```
 
-To sell one catalog on iPhone, Android and the web, set `PURCHASES_FILE` (the catalog, the platform policy and the routing strategy), `PURCHASE_STORE_FILE` and `PUBLIC_BASE_URL`. Then start a purchase. The platform decides where it may go, and the answer is a session with the ways to pay:
+To sell one catalog on iPhone, Android and the web, set `PURCHASES_FILE` (the catalog, the platform policy and the routing strategy), either `PURCHASE_STORE_FILE` or `DATABASE_URL` for its state, and `PUBLIC_BASE_URL`. Then start a purchase. The platform decides where it may go, and the answer is a session with the ways to pay:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/purchases \

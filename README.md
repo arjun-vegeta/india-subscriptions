@@ -236,8 +236,10 @@ export function tick() {
 
 `MemorySchedulerStore` loses everything on restart and is for development
 only. For one server process use `FileSchedulerStore` from
-`india-subscriptions/server`; for several, implement the `SchedulerStore`
-interface on your database (a PostgreSQL example is in the guide).
+`india-subscriptions/server`; for several, use `PostgresSchedulerStore` from
+`india-subscriptions/postgres` (with the purchase and routing-statistics stores
+and `npm install pg`), or run the HTTP service with `DATABASE_URL`; for another
+database implement the `SchedulerStore` interface.
 
 ## One-time payments
 
@@ -330,6 +332,9 @@ the public internet, apart from the gateway webhook routes
 (`POST /v1/{provider}/webhooks`), which are authenticated by the gateway's own
 signature.
 
+- Set `DATABASE_URL` and the service keeps schedules, purchases and routing
+  statistics in PostgreSQL (`npm install pg`), so several instances can share
+  one database. See [Running the HTTP service](docs/guides/http-service.md#using-postgresql).
 - Set `EVENTS_WEBHOOK_URL` and `EVENTS_WEBHOOK_SECRET` and the service posts
   normalised events to your application, signed with HMAC-SHA256 over
   `<timestamp>.<raw body>`. See

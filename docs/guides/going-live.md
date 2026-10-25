@@ -75,7 +75,7 @@ Do this on each gateway you take payments on.
 - [ ] Your strategy lists every gateway in `costs` (a gateway without an entry costs nothing, and would win every close call) and in `priority`.
 - [ ] `limits` carries the per-debit ceiling each gateway's mandates allow without extra authentication (Rs 15,000 under the RBI e-mandate framework, with its exceptions).
 - [ ] Ask `subs.router.route` for each kind of purchase you sell and read the decision: the gateway you expected, and a plausible reason for each one excluded.
-- [ ] The statistics store is durable if you run more than one process or restart often. Success rates are shared through it; the circuit breaker is per process.
+- [ ] The statistics store is durable if you run more than one process or restart often (`PostgresRoutingStatsStore`, which `DATABASE_URL` turns on in the service). Success rates are shared through it; the circuit breaker is per process.
 - [ ] You handle `NO_ROUTE`.
 
 ## 2c. The app stores and purchase sessions
@@ -104,7 +104,7 @@ Skip what you do not sell. [Selling on iPhone, Android and the web](./purchases.
 
 **Sessions and entitlements**
 
-- [ ] The purchase store is durable (`PURCHASE_STORE_FILE`, or your own implementation of `PurchaseStore`), and there is one service instance.
+- [ ] The purchase store is durable: `PostgresPurchaseStore` (`DATABASE_URL`) for any number of instances, or `FilePurchaseStore` (`PURCHASE_STORE_FILE`) for exactly one. See [the store choice](#4-billing-and-where-its-state-lives).
 - [ ] Every provider's webhook goes through `subs.webhooks.handle`, so entitlements follow renewals, cancellations and refunds.
 - [ ] A second purchase of a product the customer owns is refused with `CONFLICT`, and `duplicate_purchase` raises an alert.
 - [ ] Your mobile backend holds the API key, authenticates the user and checks every session and customer against them. See [Mobile apps](./mobile-apps.md).
@@ -117,8 +117,11 @@ Skip what you do not sell. [Selling on iPhone, Android and the web](./purchases.
 - [ ] A job reconciles subscriptions with `subs.get`, and payments with `subs.payments.get`, in case a webhook is missed.
 - [ ] If you use stores: Apple's notification URL and Google's push endpoint are set for production, and the routes are reachable without an API key and nowhere else.
 
-## 4. Billing
+## 4. Billing and where its state lives
 
+- [ ] The state is in a store that survives a restart. Never go live on `MemorySchedulerStore`, `MemoryPurchaseStore` or `MemoryRoutingStatsStore`: a restart forgets every schedule, session and queued report.
+- [ ] You chose the store for how many processes run. One process: the file stores (`SCHEDULER_STORE_FILE`, `PURCHASE_STORE_FILE`) are enough, on a persistent volume that is backed up. More than one process, or a platform that replaces containers freely: PostgreSQL (`PostgresSchedulerStore`, `PostgresPurchaseStore`, `PostgresRoutingStatsStore`, or `DATABASE_URL` in the service). Two processes must never share a file store. See [Choosing a store](./scheduler.md#choosing-a-store).
+- [ ] With PostgreSQL: the driver (`pg`) is installed in the image, the role can create tables in the schema the first time the service starts, the pool size times the number of instances stays below the server's `max_connections`, the pool points at the primary, and the database is backed up. See [Using PostgreSQL](./http-service.md#using-postgresql).
 - [ ] For PayU and Cashfree on-demand: a **durable** scheduler store, `tick()` running on a schedule, and alerts on `charge.outcome_overdue` and `schedule.halted`. See [Running the scheduler](./scheduler.md).
 - [ ] You know what your product does in `past_due`, `halted` and `paused`. See [The subscription lifecycle](../concepts/lifecycle.md).
 - [ ] Refund flows work, including the ₹2 PayU consent amount that is not refunded automatically.
