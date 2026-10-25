@@ -1,0 +1,28 @@
+name: india_subscriptions
+description: "Flutter plugin for the india-subscriptions purchase SDKs (iOS StoreKit 2, Android Play Billing)."
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+  flutter: '>=3.41.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  meta: ^1.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  pigeon: ^30.0.4
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: dev.indiasubscriptions.flutter
+        pluginClass: IndiaSubscriptionsPlugin
+      ios:
+        pluginClass: IndiaSubscriptionsPlugin
