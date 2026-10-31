@@ -67,7 +67,8 @@ class ConfigureRequest {
   /// `setAuthorization`.
   String? authorization;
 
-  /// Extra request headers (iOS only; Android reports that it cannot send them).
+  /// Fixed extra request headers, sent with every call. `Authorization` comes
+  /// from `authorization` and `setAuthorization`.
   Map<String, String>? headers;
   PurchasePathsMessage? paths;
   int? timeoutMillis;

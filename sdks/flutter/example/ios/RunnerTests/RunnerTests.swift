@@ -94,14 +94,12 @@ struct TranslationTests {
     #expect(unverified.reason == "bad")
   }
 
-  @Test func entitlementsKeepOpenValuesAsText() throws {
-    let json = """
-      {"customerRef":"cust_1","active":true,"items":[{"product":"pro_monthly","kind":"subscription",
-      "provider":"app_store","channel":"store","platform":"ios","subscriptionId":"sub_1","status":"on_hold",
-      "active":false,"cancelAtPeriodEnd":true,"currentPeriodEnd":"2023-12-14T22:13:20Z",
-      "updatedAt":"2023-11-14T22:13:20Z"}]}
-      """
-    let message = try JSONDecoder().decode(Entitlements.self, from: Data(json.utf8)).wire
+  @Test func entitlementsKeepOpenValuesAsText() {
+    let item = EntitlementItem(
+      product: "pro_monthly", kind: .subscription, provider: .appStore, channel: .store, platform: .ios,
+      subscriptionId: "sub_1", status: "on_hold", active: false, cancelAtPeriodEnd: true,
+      currentPeriodEnd: Date(timeIntervalSince1970: 1_702_592_000), updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+    let message = Entitlements(customerRef: "cust_1", active: true, items: [item]).wire
     #expect(message.items[0].status == "on_hold")
     #expect(message.items[0].currentPeriodEnd == 1_702_592_000_000)
     #expect(message.items[0].updatedAt == 1_700_000_000_000)

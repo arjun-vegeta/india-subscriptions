@@ -40,11 +40,16 @@ Package Manager by default (the plugin requires Flutter 3.41 or later). There is
 turned Swift Package Manager off cannot use this plugin.
 
 `ios/india_subscriptions/Package.swift` depends on the iOS SDK by path (`.package(path: "../../../ios")`), which is how
-the repository is developed. A published plugin replaces that line with the SDK's repository and version, for example
-`.package(url: "https://example.com/india-subscriptions-ios.git", from: "0.1.0")`, and keeps
-`.product(name: "IndiaSubscriptions", package: ...)` as the target dependency; SwiftPM needs `Package.swift` at the root of a
-repository it resolves by URL, so the SDK has to be published from a repository root. In Xcode, add the **In-App Purchase**
-capability to the Runner target.
+the repository is developed. A published plugin names this repository by URL instead; the repository has a `Package.swift`
+at its root that exposes the same `IndiaSubscriptions` library:
+
+```swift
+.package(url: "https://example.com/path/to/india-subscriptions.git", from: "0.1.0"),   // this repository's URL
+// target dependency:
+.product(name: "IndiaSubscriptions", package: "india-subscriptions"),                  // the repository's name
+```
+
+In Xcode, add the **In-App Purchase** capability to the Runner target.
 
 ### Android
 
@@ -138,6 +143,7 @@ Future<void> startBilling() async {
   await subs.configure(
     baseUrl: 'https://api.example.com/billing/',
     authorization: 'Bearer ${await auth.freshToken()}', // the user's own token
+    headers: {'X-App-Version': '1.4.0'}, // optional fixed headers for every call, on both platforms
   );
 }
 
@@ -246,7 +252,6 @@ The Dart API is the same on both platforms. A call that applies to one platform 
 | `showManageSubscriptions`, `requestRefund` | Apple's sheets | `UnsupportedOnPlatformException` |
 | `subscriptionManagementUrl`, `openSubscriptionManagement` | `UnsupportedOnPlatformException` | Google Play's subscription page |
 | `handleReturnLink`, `returnLinkResults` | `UnsupportedOnPlatformException` / never emits | the hosted checkout's return link |
-| `configure(headers:)` | extra request headers | `UnsupportedOnPlatformException`: the SDK's HTTP backend sends the `Authorization` header only |
 | iOS-only options | `finishUnmatchedTransactions` | ignored |
 | Android-only options | ignored | `allowBasePlanFallback`, `enablePrepaidPlans`, `allowCleartextCheckout` |
 | Activity | | `purchase` needs a live activity; the plugin holds it only between attach and detach, through a weak reference |

@@ -133,12 +133,6 @@ class IndiaSubscriptionsPlugin : FlutterPlugin, ActivityAware, PurchasesHostApi 
     // -- PurchasesHostApi ----------------------------------------------------------------------------------------------
 
     override suspend fun configure(request: ConfigureRequest) {
-        if (!request.headers.isNullOrEmpty()) {
-            throw unsupportedOnAndroid(
-                "configure(headers)",
-                "is not supported on Android: the SDK's HTTP backend sends the Authorization header only.",
-            )
-        }
         val context = applicationContext ?: throw notConfigured()
         stopClient()
         authorization.set(request.authorization)
@@ -154,9 +148,10 @@ class IndiaSubscriptionsPlugin : FlutterPlugin, ActivityAware, PurchasesHostApi 
             )
         } ?: defaults
         val reader: suspend () -> String? = { authorization.get() }
+        val headers = request.headers ?: emptyMap()
         val backend = request.timeoutMillis?.let {
-            HttpPurchaseBackend(request.baseUrl, reader, paths, timeoutMillis = it.toInt())
-        } ?: HttpPurchaseBackend(request.baseUrl, reader, paths)
+            HttpPurchaseBackend(request.baseUrl, reader, paths, timeoutMillis = it.toInt(), headers = headers)
+        } ?: HttpPurchaseBackend(request.baseUrl, reader, paths, headers = headers)
 
         val base = PurchaseClient.Configuration()
         val configuration = base.copy(

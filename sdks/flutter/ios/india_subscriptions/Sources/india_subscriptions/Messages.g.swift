@@ -250,7 +250,8 @@ struct ConfigureRequest: Hashable, CustomStringConvertible {
   /// The first value of the `Authorization` header; changed later with
   /// `setAuthorization`.
   var authorization: String? = nil
-  /// Extra request headers (iOS only; Android reports that it cannot send them).
+  /// Fixed extra request headers, sent with every call. `Authorization` comes
+  /// from `authorization` and `setAuthorization`.
   var headers: [String: String]? = nil
   var paths: PurchasePathsMessage? = nil
   var timeoutMillis: Int64? = nil

@@ -50,8 +50,9 @@ class IndiaSubscriptions {
   ///   purchase calls. The app never holds the service's API key.
   /// - [authorization]: the first value of the `Authorization` header; call
   ///   [setAuthorization] when the user's token changes.
-  /// - [headers]: extra request headers. iOS only; on Android a non-empty map
-  ///   throws [UnsupportedOnPlatformException].
+  /// - [headers]: fixed extra request headers sent with every call, on both
+  ///   platforms. The `Authorization` header always comes from [authorization]
+  ///   and [setAuthorization]; `Accept` and `Content-Type` are the SDK's own.
   /// - [paths]: where your backend mounts the five routes.
   /// - [timeout], [maxCompletionAttempts], [retryDelay] and [maxServerFailures]
   ///   tune the native SDKs' retry rules.

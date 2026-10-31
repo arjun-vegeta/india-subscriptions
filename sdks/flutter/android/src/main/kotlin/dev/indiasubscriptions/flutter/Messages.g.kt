@@ -268,7 +268,10 @@ data class ConfigureRequest (
    * `setAuthorization`.
    */
   val authorization: String? = null,
-  /** Extra request headers (iOS only; Android reports that it cannot send them). */
+  /**
+   * Fixed extra request headers, sent with every call. `Authorization` comes
+   * from `authorization` and `setAuthorization`.
+   */
   val headers: Map<String, String>? = null,
   val paths: PurchasePathsMessage? = null,
   val timeoutMillis: Long? = null,
