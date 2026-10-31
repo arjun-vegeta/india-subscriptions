@@ -9,9 +9,9 @@ After reading this page you will know what the library is, whether it fits, and 
 - **Node and TypeScript developers.** Import the package. Every input and output is a typed Zod schema, and every status, event and error is an exported constant.
 - **Everyone else.** Run `npx india-subscriptions serve` next to your application and call it over HTTP, with a client generated from its OpenAPI document. A Python client with Pydantic models is included. See [Using it from any language](./getting-started/any-language.md).
 
-- **Mobile developers.** An iOS SDK (Swift) drives StoreKit and your backend; an Android app drives Play Billing and the hosted checkout page through the same five calls. See [Mobile apps](./guides/mobile-apps.md).
+- **Mobile developers.** An iOS SDK (Swift), an Android SDK (Kotlin), a React Native library and a Flutter plugin drive the device side: Apple in-app purchase on iPhone, Google Play or Google's user choice screen with the hosted checkout on Android. They talk to your backend through the same five calls. See [Mobile apps](./guides/mobile-apps.md).
 
-It does not hold your money, move an existing mandate to another gateway, or draw any user interface for payments: customers pay in the gateway's or the store's own screens. There is no Android SDK yet.
+It does not hold your money, move an existing mandate to another gateway, or draw any user interface for payments: customers pay in the gateway's or the store's own screens.
 
 ## What it does
 
@@ -90,7 +90,7 @@ That is the whole shape. The rest of the documentation is about doing it safely:
 | Choose the best gateway for each purchase | [Routing](./guides/routing.md) |
 | Sell on iPhone, Android and the web | [Selling on iPhone, Android and the web](./guides/purchases.md) |
 | Set up the App Store or Google Play | [Setting up the App Store](./guides/setting-up-app-store.md), [Setting up Google Play](./guides/setting-up-google-play.md) |
-| Build a mobile app | [Mobile apps](./guides/mobile-apps.md) |
+| Build a mobile app with the iOS SDK, the Android SDK, React Native or Flutter | [Mobile apps](./guides/mobile-apps.md) |
 | Run the billing scheduler | [Running the scheduler](./guides/scheduler.md) |
 | Look something up | [Reference](./reference/index.md) |
 | Add a gateway | [Adding a gateway](./contributing/adding-a-gateway.md) |

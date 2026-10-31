@@ -14,8 +14,13 @@ and you.
 - **Any other language**: run the same code as a small self-hosted HTTP
   service and call it with a client generated from its OpenAPI document. A
   Python client with Pydantic models is included.
-- **Mobile**: an iOS SDK (Swift) in [sdks/ios](sdks/ios/README.md), and the
-  same five calls for an Android app. See
+- **Mobile**: four SDKs for the device side, all talking to your own backend
+  and never holding the service's API key: an iOS SDK (Swift) in
+  [sdks/ios](sdks/ios/README.md), an Android SDK (Kotlin) in
+  [sdks/android](sdks/android/README.md), a React Native library in
+  [sdks/react-native](sdks/react-native/README.md) and a Flutter plugin in
+  [sdks/flutter](sdks/flutter/README.md). The repository root has a
+  `Package.swift`, so the iOS SDK can be added by this repository's URL. See
   [Mobile apps](docs/guides/mobile-apps.md).
 
 ## Documentation
@@ -34,7 +39,7 @@ site: see [docs/README.md](docs/README.md).
 | Choose the best gateway for each purchase | [Routing](docs/guides/routing.md) |
 | Sell on iPhone, Android and the web | [Selling on iPhone, Android and the web](docs/guides/purchases.md), [Entitlements](docs/concepts/entitlements.md) |
 | Set up the App Store or Google Play | [Setting up the App Store](docs/guides/setting-up-app-store.md), [Setting up Google Play](docs/guides/setting-up-google-play.md), [Apple App Store](docs/gateways/app-store.md), [Google Play](docs/gateways/google-play.md) |
-| Build a mobile app | [Mobile apps](docs/guides/mobile-apps.md) |
+| Build a mobile app with the iOS SDK, the Android SDK, React Native or Flutter | [Mobile apps](docs/guides/mobile-apps.md), [iOS](sdks/ios/README.md), [Android](sdks/android/README.md), [React Native](sdks/react-native/README.md), [Flutter](sdks/flutter/README.md) |
 | Go live | [Going-live checklist](docs/guides/going-live.md) |
 | Look things up | [Reference](docs/reference/index.md) |
 
@@ -311,7 +316,9 @@ export async function owns(customerRef: string) {
 }
 ```
 
-A mobile app never holds the service's API key: it talks to your backend. See
+A mobile app never holds the service's API key: it talks to your backend. The
+device side is done by the iOS SDK, the Android SDK, React Native or Flutter,
+and [Mobile apps](docs/guides/mobile-apps.md) compares them call by call. See
 [Selling on iPhone, Android and the web](docs/guides/purchases.md),
 [Mobile apps](docs/guides/mobile-apps.md) and the setup guides for
 [the App Store](docs/guides/setting-up-app-store.md) and
@@ -367,8 +374,9 @@ it is trusted). See [Errors](docs/concepts/errors.md).
 
 ## Not included
 
-- An Android SDK (an Android app drives the same five calls; see
-  [Mobile apps](docs/guides/mobile-apps.md)).
+- SDKs for other mobile frameworks (an app that cannot use one of the four
+  drives the same five calls itself; see
+  [Mobile apps](docs/guides/mobile-apps.md#without-an-sdk)).
 - Storefronts other than India and currencies other than INR.
 - PayU's own scheduler product (ZION), Cashfree paper mandates.
 

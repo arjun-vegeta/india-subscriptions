@@ -1,6 +1,6 @@
 # Google Play
 
-Google Play is an **app store**, not a gateway. The product (a subscription base plan or a one-time product) lives in Play Console, the purchase happens on the customer's Android device through Google Play Billing, and Google collects the money. The adapter's job is on your server: it hands the device what it needs to start the purchase, then **verifies** what the device bought by reading it from the Google Play Developer API, **acknowledges** it (Google refunds a purchase that is not acknowledged within three days), and keeps your records current from Google's real-time developer notifications.
+Google Play is an **app store**, not a gateway. The product (a subscription base plan or a one-time product) lives in Play Console, the purchase happens on the customer's Android device through Google Play Billing, and Google collects the money. On the device the [Android SDK](../guides/mobile-apps.md#android-sdk) (or React Native or Flutter) runs the purchase and sends the purchase token to your backend. The adapter's job is on your server: it hands the device what it needs to start the purchase, then **verifies** what the device bought by reading it from the Google Play Developer API, **acknowledges** it (Google refunds a purchase that is not acknowledged within three days), and keeps your records current from Google's real-time developer notifications.
 
 Because the purchase starts on the device, the adapter follows the app store contract of `SubscriptionProvider`: `create` and `payments.create` make **no purchase and no network call**.
 

@@ -42,7 +42,7 @@ npx vitest run test/docs
 index.md               overview
 getting-started/       installation, first subscription, any language
 concepts/              how recurring payments work, lifecycle, trials, scheduling, events, entitlements, money and time, errors
-guides/                checkout, one-time payments, routing, purchases, store setup, mobile apps, webhooks, managing, scheduler, HTTP service, security, testing, going live
+guides/                checkout, one-time payments, routing, purchases, store setup, mobile apps (the four SDKs), webhooks, managing, scheduler, HTTP service, security, testing, going live
 gateways/              one page per provider: five gateways and the two app stores
 reference/             hand-written reference, and generated/ for the generated pages
 contributing/          architecture and adding a gateway

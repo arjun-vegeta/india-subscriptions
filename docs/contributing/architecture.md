@@ -10,7 +10,7 @@ flowchart TB
     Main["india-subscriptions (client.ts, index.ts)"]
     Server["india-subscriptions/server (HTTP service, hosted checkout, file stores)"]
     Checkout["india-subscriptions/checkout (browser)"]
-    SDK["sdks/ios (Swift package)"]
+    SDK["sdks/ (iOS, Android, React Native, Flutter)"]
   end
   subgraph Core["Core"]
     Schemas["schemas.ts, constants.ts (the unified model, Zod)"]
@@ -85,7 +85,9 @@ The HTTP service is a thin layer over the same client. The route table in `serve
 | `src/purchase/` | Purchase sessions: the catalog and platform policy (`policy.ts`), `Purchases`, entitlement rules, tax split, ids, the `PurchaseStore` contract and its in-memory store |
 | `src/providers/appstore/`, `src/providers/googleplay/` | The two store adapters. Google Play also implements `ExternalTransactionReporter` |
 | `src/purchase-file-store.ts`, `src/service-purchases.ts` | The durable one-file purchase store, and the reader of the service's purchases file |
-| `sdks/ios/` | The Swift package for the device side of an App Store purchase |
+| `sdks/ios/`, `sdks/android/` | The Swift package and the Kotlin library for the device side of an App Store and a Google Play purchase |
+| `sdks/react-native/`, `sdks/flutter/` | Thin bridges over the two native SDKs, with one TypeScript API and one Dart API |
+| `Package.swift` | The repository-root Swift package that exposes the iOS SDK by the repository's URL |
 | `src/server/`, `src/service.ts`, `src/service-config.ts`, `src/cli.ts` | The HTTP service (including the hosted checkout) and `serve` |
 | `src/events-webhook.ts`, `src/events-envelope.ts` | The signed events webhook |
 | `src/checkout/` | The browser helper |

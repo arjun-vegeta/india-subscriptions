@@ -4,7 +4,7 @@ The App Store adapter sells nothing itself. The product, its price, its billing 
 
 Apple renews and bills the subscription itself, so there is no mandate, no scheduler and no pre-debit notice. Cancelling, pausing, changing the product and refunding are things the customer and Apple do; the adapter reports them but cannot do them (see [What only the customer can do](#what-only-the-customer-can-do)).
 
-The App Store is a provider of kind `store`. The [router](../guides/routing.md) never picks it; [purchase sessions](../guides/purchases.md) use it for iOS. To create the products, keys and notification URLs it needs, see [Setting up the App Store](../guides/setting-up-app-store.md).
+The App Store is a provider of kind `store`. The [router](../guides/routing.md) never picks it; [purchase sessions](../guides/purchases.md) use it for iOS. On the device the [iOS SDK](../guides/mobile-apps.md#ios-sdk) (or React Native or Flutter) buys the product and hands the signed transaction to your backend. To create the products, keys and notification URLs it needs, see [Setting up the App Store](../guides/setting-up-app-store.md).
 
 ## Configuration
 
