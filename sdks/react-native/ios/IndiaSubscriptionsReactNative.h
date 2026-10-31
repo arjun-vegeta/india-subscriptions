@@ -1,0 +1,5 @@
+#import <IndiaSubscriptionsReactNativeSpec/IndiaSubscriptionsReactNativeSpec.h>
+
+@interface IndiaSubscriptionsReactNative : NativeIndiaSubscriptionsReactNativeSpecBase <NativeIndiaSubscriptionsReactNativeSpec>
+
+@end
