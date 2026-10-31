@@ -75,7 +75,39 @@ class HttpPurchaseBackendTests {
         authorization: suspend () -> String? = { "Bearer user-token" },
         paths: HttpPurchaseBackend.Paths = HttpPurchaseBackend.Paths(),
         timeoutMillis: Int = 5_000,
-    ) = HttpPurchaseBackend(baseUrl, authorization, paths, timeoutMillis)
+        headers: Map<String, String> = emptyMap(),
+    ) = HttpPurchaseBackend(baseUrl, authorization, paths, timeoutMillis, headers = headers)
+
+    @Test
+    fun `extra headers are sent on all five calls and the authorisation hook wins for the authorisation header`() = runBlocking<Unit> {
+        val backend = backend(
+            headers = mapOf("X-App-Version" to "1.4.0", "x-tenant" to "acme", "Authorization" to "Bearer from-headers", "accept" to "text/plain"),
+        )
+        reply = { request ->
+            if (request.path.startsWith("/v1/entitlements/")) Reply(200, fixture("entitlements.json")) else Reply(200, fixture("session-completed.json"))
+        }
+
+        backend.startPurchase(StartPurchaseInput(product = "pro_monthly", customerRef = "cust_1"))
+        backend.purchase("ps_1")
+        backend.chooseAlternative("ps_1", ChooseAlternativeInput("tok"))
+        backend.completePurchase("ps_1", CompletePurchaseInput.googlePlay("pt", "in.example.pro"))
+        backend.entitlements("cust_1")
+
+        assertEquals(5, received.size)
+        for (request in received) {
+            assertEquals("1.4.0", request.headers["x-app-version"])
+            assertEquals("acme", request.headers["x-tenant"])
+            assertEquals("Bearer user-token", request.headers["authorization"])
+            assertEquals("application/json", request.headers["accept"])
+        }
+    }
+
+    @Test
+    fun `without an authorisation value an extra authorisation header is still sent`() = runBlocking<Unit> {
+        val backend = backend(authorization = { null }, headers = mapOf("Authorization" to "Basic abc"))
+        backend.purchase("ps_1")
+        assertEquals("Basic abc", received.single().headers["authorization"])
+    }
 
     @Test
     fun `the five calls use the service's routes, the user's authorisation and JSON bodies`() = runBlocking<Unit> {

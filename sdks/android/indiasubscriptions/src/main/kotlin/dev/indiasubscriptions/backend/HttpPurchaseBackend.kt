@@ -34,6 +34,10 @@ import org.json.JSONObject
  * - [paths] are the five relative paths, with `{sessionId}` and `{customerRef}` placeholders. The defaults are the
  *   service's own routes; override them when the merchant's backend mounts them elsewhere.
  *
+ * - [headers] are fixed extra headers sent on every request (for example an app version or a tenant id). `Accept`
+ *   and `Content-Type` are the SDK's own: a same-named entry in [headers] is replaced. The [authorization] hook takes
+ *   precedence for `Authorization`: when it returns a value, that value replaces an `Authorization` entry of [headers].
+ *
  * Every call runs on `Dispatchers.IO` and never blocks the caller's thread. Cancelling the calling coroutine closes the
  * connection. Redirects are not followed, so the `Authorization` header never travels to another host.
  */
@@ -43,6 +47,7 @@ public class HttpPurchaseBackend(
     public val paths: Paths = Paths(),
     public val timeoutMillis: Int = 30_000,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    public val headers: Map<String, String> = emptyMap(),
 ) : PurchaseBackend {
 
     /**
@@ -145,6 +150,7 @@ public class HttpPurchaseBackend(
             connection.readTimeout = timeoutMillis
             connection.instanceFollowRedirects = false
             connection.useCaches = false
+            for ((name, value) in headers) connection.setRequestProperty(name, value)
             connection.setRequestProperty("Accept", JSON)
             if (authorizationHeader != null) connection.setRequestProperty("Authorization", authorizationHeader)
             if (body != null) {

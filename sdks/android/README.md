@@ -53,7 +53,8 @@ link (below).
 
 `HttpPurchaseBackend` sends these calls to `baseUrl`, with `Authorization` set from your hook, `Accept:
 application/json` and, for a body, `Content-Type: application/json`. The paths are the service's own routes and each is
-overridable (`HttpPurchaseBackend.Paths`).
+overridable (`HttpPurchaseBackend.Paths`). `HttpPurchaseBackend(headers = mapOf(...))` adds fixed extra headers to every request; the
+authorisation hook takes precedence for `Authorization`.
 
 | Call | Default path | Body | Answer |
 |---|---|---|---|
