@@ -78,6 +78,20 @@ describe('argument translation', () => {
     });
   });
 
+  it('sends the same configure options on Android, headers included', async () => {
+    setPlatform('android');
+    await Subscriptions.configure({
+      baseUrl: 'https://api.example.com/',
+      headers: { 'X-App-Version': '42' },
+      android: { allowBasePlanFallback: true },
+    });
+    expect(mockNative.configure).toHaveBeenCalledWith({
+      baseUrl: 'https://api.example.com/',
+      headers: { 'X-App-Version': '42' },
+      android: { allowBasePlanFallback: true },
+    });
+  });
+
   it('passes the authorization value through, including null', async () => {
     await Subscriptions.setAuthorization('Bearer abc');
     await Subscriptions.setAuthorization(null);

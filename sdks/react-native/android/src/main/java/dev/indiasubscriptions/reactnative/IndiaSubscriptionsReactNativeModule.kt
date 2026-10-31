@@ -55,12 +55,17 @@ class IndiaSubscriptionsReactNativeModule(private val reactContext: ReactApplica
       if (baseUrl.isNullOrEmpty()) {
         return promise.fail(Codes.INVALID_ARGUMENT, "baseUrl is required")
       }
-      val headers = options.map("headers")
-      if (headers != null && headers.keySetIterator().hasNextKey()) {
-        return promise.fail(
-          Codes.UNSUPPORTED_OPTION,
-          "The Android SDK's HTTP backend sends the Authorization header only; extra headers are not supported on Android",
-        )
+      val headers = options.map("headers")?.let { map ->
+        val out = LinkedHashMap<String, String>()
+        val names = map.keySetIterator()
+        while (names.hasNextKey()) {
+          val name = names.nextKey()
+          map.string(name)?.let { out[name] = it }
+        }
+        out
+      } ?: emptyMap()
+      if (headers.keys.any { it.equals("Authorization", ignoreCase = true) }) {
+        return promise.fail(Codes.INVALID_ARGUMENT, "Set the Authorization header with `authorization`, not `headers`")
       }
       val android = options.map("android")
       val defaults = PurchaseClient.Configuration()
@@ -87,6 +92,7 @@ class IndiaSubscriptionsReactNativeModule(private val reactContext: ReactApplica
         baseUrl = baseUrl,
         authorization = { ClientHolder.authorization.get() },
         paths = paths,
+        headers = headers,
         timeoutMillis = options.int("timeoutMs") ?: DEFAULT_TIMEOUT_MILLIS,
       )
       val applicationContext = reactContext.applicationContext

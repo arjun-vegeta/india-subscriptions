@@ -8,7 +8,6 @@ import dev.indiasubscriptions.backend.PurchaseBackendException
 internal object Codes {
   const val NOT_CONFIGURED = "NOT_CONFIGURED"
   const val NOT_APPLICABLE = "NOT_APPLICABLE"
-  const val UNSUPPORTED_OPTION = "UNSUPPORTED_OPTION"
   const val INVALID_ARGUMENT = "INVALID_ARGUMENT"
   const val NO_ACTIVITY = "NO_ACTIVITY"
   const val BACKEND = "BACKEND"

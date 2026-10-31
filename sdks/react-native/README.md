@@ -60,9 +60,12 @@ wrapper is 9.6.1). The SDK also needs `compileSdk` 36 or later.
 - **Android:** from a Maven repository, as `dev.indiasubscriptions:android:<version>` (the bridge's `build.gradle` asks
   for `0.1.0`; set `ext.indiaSubscriptionsAndroidVersion` in your root `build.gradle` to use another release). Publish
   the SDK with `./gradlew :indiasubscriptions:publishToMavenLocal` or to your own repository.
-- **iOS:** the podspec asks CocoaPods, through `spm_dependency`, for the Swift package product `IndiaSubscriptions` of
-  a released package version. The SDK's `Package.swift` sits in `sdks/ios`, so the package must be published from a
-  repository whose root holds that `Package.swift` (or the podspec's `url` pointed at one that does).
+- **iOS:** the pod's podspec asks CocoaPods, through `spm_dependency`, for the Swift package product `IndiaSubscriptions`
+  of this repository, from `0.1.0` up to the next major version. The repository root holds a `Package.swift` (package
+  `IndiaSubscriptions`, product `IndiaSubscriptions`, sources from `sdks/ios/Sources/IndiaSubscriptions`), so the SDK
+  can be depended on by the repository's URL; in a clone of this repository the podspec uses `sdks/ios` by path instead.
+  An app that uses the SDK from Swift as well adds the same package with Swift Package Manager:
+  `.package(url: "<repository URL>", from: "0.1.0")`.
 
 ## The backend it expects
 
@@ -201,7 +204,7 @@ const hasPro = owned.items.some((item) => item.product === 'pro_monthly' && item
 
 | Function | Notes |
 |---|---|
-| `configure(options)` | Builds the native client: `baseUrl`, `authorization`, `headers`, `paths`, `timeoutMs`, retry limits, and `ios` / `android` option groups. Call once at start-up; calling it again replaces the client. |
+| `configure(options)` | Builds the native client: `baseUrl`, `authorization`, `headers` (fixed extra headers on every request), `paths`, `timeoutMs`, retry limits, and `ios` / `android` option groups. Call once at start-up; calling it again replaces the client. |
 | `setAuthorization(value \| null)` | Replaces the Authorization header value the native HTTP backend sends. Held in memory only. Call it whenever the app's token changes. |
 | `start()` / `stop()` | Starts or stops the native listeners and the pass over purchases that are waiting. Add your listener before `start()`. |
 | `purchase(productKey, { customerRef, customer?, reference?, returnUrl? })` | Resolves with a `PurchaseOutcome`; rejects with an `IndiaSubscriptionsError` when something went wrong before the payment screen. |
@@ -229,7 +232,6 @@ is `server`, `transport`, `malformedResponse` or `invalidRequest`, and for a ser
 | Events only here | `unverifiedTransaction` | `pending`, `hostedCheckoutOpened` |
 | `cancelled` | no session | carries the session |
 | Platform-only calls | `showManageSubscriptions`, `requestRefund` | `getSubscriptionManagementUrl`, `handleReturnLink` |
-| `configure` | `headers` sets extra request headers | a non-empty `headers` rejects with `UNSUPPORTED_OPTION` (the Android SDK's HTTP backend sends the Authorization header only) |
 | Restore | calls `AppStore.sync()` (prompts the customer) | re-reads Google Play's purchases; no prompt |
 | Needs | In-App Purchase capability | a return link in the manifest for hosted checkouts; the current Activity (`NO_ACTIVITY` when there is none) |
 

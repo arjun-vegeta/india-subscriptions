@@ -7,8 +7,6 @@ export const ErrorCode = {
   NotConfigured: 'NOT_CONFIGURED',
   /** The call exists on the other platform only. */
   NotApplicable: 'NOT_APPLICABLE',
-  /** An option the platform cannot honour. */
-  UnsupportedOption: 'UNSUPPORTED_OPTION',
   InvalidArgument: 'INVALID_ARGUMENT',
   /** Android: no foreground activity to launch the purchase from. */
   NoActivity: 'NO_ACTIVITY',

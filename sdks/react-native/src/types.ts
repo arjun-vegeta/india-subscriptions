@@ -264,8 +264,8 @@ export interface ConfigureOptions {
   /** The value of the Authorization header, for example `Bearer <the user's token>`. Update it with `setAuthorization`. */
   authorization?: string | null;
   /**
-   * Extra headers for every request. iOS only: on Android a non-empty `headers` rejects with the code
-   * `UNSUPPORTED_OPTION`. `Authorization` is set through `authorization`, not here.
+   * Fixed extra headers sent on every request, for example an app version or a tenant id. `Authorization` is set
+   * through `authorization`, not here (naming it here rejects with `INVALID_ARGUMENT`).
    */
   headers?: Record<string, string>;
   paths?: BackendPaths;

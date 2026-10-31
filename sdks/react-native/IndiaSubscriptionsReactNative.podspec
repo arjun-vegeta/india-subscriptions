@@ -24,7 +24,8 @@ Pod::Spec.new do |s|
 
   # The iOS SDK is a Swift package, not a pod. React Native's `spm_dependency` helper links a Swift package product into
   # this pod. In this repository the package is next to the bridge (`sdks/ios`) and is used by path; a published
-  # package of the bridge asks for the released package instead.
+  # package of the bridge asks for the released package of this repository, whose root Package.swift exposes the
+  # `IndiaSubscriptions` product.
   sdk_products = ["IndiaSubscriptions"]
   sdk_path = File.expand_path(File.join(__dir__, "..", "ios"))
   if File.exist?(File.join(sdk_path, "Package.swift"))
