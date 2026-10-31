@@ -1,0 +1,47 @@
+// The Android half of the bridge. It depends on the india-subscriptions Android SDK by its Maven coordinates; an app
+// or the example resolves that either from a repository (a published package) or from this repository by path (a
+// Gradle composite build, see the README and example/android/settings.gradle).
+
+ext.IndiaSubscriptionsReactNative = [
+  minSdkVersion: 24,
+  compileSdkVersion: 36
+]
+
+ext.getExtOrDefault = { prop ->
+  if (rootProject.ext.has(prop)) {
+    return rootProject.ext.get(prop)
+  }
+
+  return IndiaSubscriptionsReactNative[prop]
+}
+
+apply plugin: "com.android.library"
+
+if (project.extensions.findByName("kotlin") == null) {
+  apply plugin: "kotlin-android"
+}
+
+apply plugin: "com.facebook.react"
+
+android {
+  namespace "dev.indiasubscriptions.reactnative"
+
+  compileSdkVersion getExtOrDefault("compileSdkVersion")
+
+  defaultConfig {
+    minSdkVersion getExtOrDefault("minSdkVersion")
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+}
+
+dependencies {
+  implementation "com.facebook.react:react-android"
+  // The native SDK. A root project may set `ext.indiaSubscriptionsAndroidVersion` to pick another release.
+  api "dev.indiasubscriptions:android:${rootProject.ext.has('indiaSubscriptionsAndroidVersion') ? rootProject.ext.get('indiaSubscriptionsAndroidVersion') : '0.1.0'}"
+  // The SDK's public API is made of suspend functions and a Flow.
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0"
+}
