@@ -66,7 +66,7 @@ APP_STORE_APP_APPLE_ID=<the app's Apple id>
 
 ## 6. Add the capability to the app
 
-In Xcode, add the **In-App Purchase** capability to the app target. The [iOS SDK](./mobile-apps.md#ios) does the rest of the device side.
+In Xcode, add the **In-App Purchase** capability to the app target (the Runner target of a Flutter app, the app target of a React Native app). The device side is done by the [iOS SDK](./mobile-apps.md#ios-sdk), or by [React Native](./mobile-apps.md#react-native) or [Flutter](./mobile-apps.md#flutter), which use it underneath: it starts the purchase for a product key, buys the product with StoreKit 2, sends the signed transaction to your backend and finishes it once your backend confirmed it. The product ids you created in step 2 are the ones the catalog's `appStore.productId` holds; the app only passes your product key.
 
 ## Test with a sandbox account
 
@@ -82,6 +82,7 @@ Configure `Environment.Test` (the sandbox host) and the sandbox notification URL
 - [ ] The `.p8` key is in a secret manager, and nobody else holds a copy.
 - [ ] The catalog's `appStore.productId` values match App Store Connect exactly.
 - [ ] You sell on the India storefront: the library's amounts are INR, and a transaction in another currency is `UNSUPPORTED` for reads of charges and payments.
+- [ ] The **In-App Purchase** capability is on the app target, and the app uses the iOS SDK (or React Native or Flutter on iPhone).
 - [ ] Your iOS app does not steer customers to other ways to pay (App Review Guideline 3.1.1(a)).
 
 See also [Apple App Store](../gateways/app-store.md) and [Selling on iPhone, Android and the web](./purchases.md).

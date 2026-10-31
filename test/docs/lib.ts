@@ -105,6 +105,9 @@ export const ALLOWED_LANGUAGES = [
   'html',
   'kotlin',
   'swift',
+  'xml',
+  'dart',
+  'tsx',
 ] as const;
 
 /** How many `ts fragment` opt-outs the documentation may contain. Raise it only with a reason. */

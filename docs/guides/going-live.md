@@ -109,6 +109,46 @@ Skip what you do not sell. [Selling on iPhone, Android and the web](./purchases.
 - [ ] A second purchase of a product the customer owns is refused with `CONFLICT`, and `duplicate_purchase` raises an alert.
 - [ ] Your mobile backend holds the API key, authenticates the user and checks every session and customer against them. See [Mobile apps](./mobile-apps.md).
 
+## 2d. Mobile apps
+
+Skip the SDKs your app does not use. [Mobile apps](./mobile-apps.md) describes each one.
+
+**Every SDK**
+
+- [ ] The app holds no API key. It sends the signed-in user's own authorisation header to your backend, and your backend forwards the five calls with the key.
+- [ ] The app keeps the header current: the `authorization` hook of the native SDKs returns the current token, and React Native and Flutter call `setAuthorization` when the token changes.
+- [ ] The app reads what the customer owns from your backend (`entitlements`), not from the store alone, and calls the SDK's pass over waiting purchases when it returns to the foreground or the user signs in.
+- [ ] The app listens for purchase events before it starts the SDK (the SDKs do not replay events), and handles every outcome, including the one for a purchase that is paid but not yet confirmed.
+
+**iOS SDK**
+
+- [ ] The **In-App Purchase** capability is on the app target, and the package is added from the repository's URL at a released version.
+- [ ] `start()` runs at launch so that transactions that arrive later are completed.
+- [ ] Restore is called only from a button, because Apple's `AppStore.sync()` prompts the customer to sign in.
+- [ ] Manage-subscriptions and refund-request go through `AppStoreSheets`: the server can neither cancel nor refund an App Store purchase.
+
+**Android SDK**
+
+- [ ] The app depends on the SDK's released Maven coordinates, with `minSdk` 23 or later and `compileSdk` 36 or later.
+- [ ] `start()` runs at launch and `processPendingPurchases()` runs in `onResume`.
+- [ ] For user choice billing or the `gateways` policy: the return link is declared on the activity, `launchMode` is `singleTop` (or `onNewIntent` is handled), the intent is passed to `handleReturnLink` from `onCreate` and `onNewIntent`, and the same link is passed as `returnUrl` to `purchase`.
+- [ ] The purchase-record file is excluded from backups (the backup rule files in the SDK's README).
+- [ ] The manage-subscriptions link opens Google Play's subscription page (`PlaySubscriptions`).
+
+**React Native**
+
+- [ ] `configure` runs, then the listener is added, then `start()`, at start-up, and `configure` runs again after a JavaScript reload.
+- [ ] On iOS, the **In-App Purchase** capability is on the app target. On Android, the return link is declared in the manifest, the app passes links from `Linking` to `handleReturnLink`, and `purchase` is called while an activity is in the foreground.
+- [ ] Calls that belong to one platform (`showManageSubscriptions`, `requestRefund`, `getSubscriptionManagementUrl`, `handleReturnLink`) are only called there.
+- [ ] The app's Android build uses the Android Gradle plugin and Gradle versions the SDK asks for, and `compileSdk` 36 or later.
+
+**Flutter**
+
+- [ ] Swift Package Manager is on for the project (the plugin has no CocoaPods podspec), and the **In-App Purchase** capability is on the Runner target.
+- [ ] `configure` runs once at launch after the `events` and `returnLinkResults` listeners are attached.
+- [ ] On Android, the return link and `flutter_deeplinking_enabled` set to `false` are in `AndroidManifest.xml`, and a deep link handler of your own passes the link to `handleReturnLink`.
+- [ ] Calls that belong to one platform are caught as `UnsupportedOnPlatformException` where the other platform runs them.
+
 ## 3. Webhooks
 
 - [ ] Register the production URL with the gateway and send a real test event.

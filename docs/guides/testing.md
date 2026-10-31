@@ -107,7 +107,7 @@ Use each gateway's test mode while you build.
 | Cashfree | Sandbox keys. Use an **on-demand** plan: raise a charge, then call Cashfree's Simulate Payment API. Periodic charges only run on their real dates. | None yet. |
 | PayU | The public test merchant PayU prints in its documentation, or your own test account. | `PAYU_TEST_KEY=... PAYU_TEST_SALT=... npx tsx scripts/payu-test-env-check.mts`. It refuses to run unless the environment is test, talks to PayU's test hosts only, never prints the salt, and (with Playwright installed) runs the browser flow: one ₹2 consent and one ₹1 test debit. PayU's test environment never captures a card debit, so a successful recurring debit cannot be observed there. |
 | Apple App Store | `Environment.Test` with a Sandbox Apple Account on a device, and the sandbox notification URL. Steps: [Setting up the App Store](./setting-up-app-store.md#test-with-a-sandbox-account). | None. |
-| Google Play | License testers in Play Console, with `Environment.Test` so that test purchases are accepted (with `Environment.Live` they are refused). Steps: [Setting up Google Play](./setting-up-google-play.md#6-test-with-license-testers). | None. |
+| Google Play | License testers in Play Console, with `Environment.Test` so that test purchases are accepted (with `Environment.Live` they are refused). Steps: [Setting up Google Play](./setting-up-google-play.md#7-test-with-license-testers). | None. |
 
 Run the scripts from a checkout of this repository. They need the repository's dev dependencies, and they print a pass or fail table.
 

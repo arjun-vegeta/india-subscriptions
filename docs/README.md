@@ -33,7 +33,7 @@ npx vitest run test/docs
 - Every `ts` code block is type-checked against the real entry points (`india-subscriptions`, `/server`, `/checkout`, `/postgres`). A block with `title="name.ts"` is a file other blocks can import. A block marked `ts fragment reason="..."` is exempt, and the number of exemptions is capped.
 - TypeScript samples use the exported constants, never their string values.
 - The main flows (the first-subscription walkthrough for Express and Next.js, managing subscriptions, one-time payments, routing, a web purchase and an Android user choice purchase through the HTTP service, an iPhone purchase start, the mobile backend that forwards the five calls, the events signature in TypeScript, Python and Go, the curl commands) are executed against scripted provider responses.
-- Python samples are compiled and their imports checked against `clients/python`. Kotlin and Swift fences are shown as written and are not compiled. Shell samples are one command each, with no `$` prompt.
+- Python samples are compiled and their imports checked against `clients/python`. Kotlin, Swift, Dart, XML and `tsx` fences (the mobile SDK samples) are shown as written and are not compiled. Shell samples are one command each, with no `$` prompt.
 - Every relative link and anchor is checked.
 
 ## Layout

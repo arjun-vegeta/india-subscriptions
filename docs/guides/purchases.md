@@ -22,8 +22,8 @@ flowchart TB
 
 These are the providers' own rules, and they are why the library works the way it does. Read them at the source; they change.
 
-- **iOS: in-app purchase only.** Digital goods and subscriptions sold in an iOS app go through the App Store. For the India storefront there is no external-link or alternative-payment entitlement, and an iOS app may not steer customers to other ways to pay (App Review Guideline 3.1.1(a)). A service may let iOS users use what they bought elsewhere, if it is also sold as an in-app purchase in the app (guideline 3.1.3(b)). [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/).
-- **Android: user choice billing is available in India.** For apps and games, for in-app purchases and subscriptions. Google Play billing must remain an option, and Google renders the information and choice screens. Alternative billing without Play billing, and link-outs, are not available in India. [Understanding user choice billing on Google Play](https://support.google.com/googleplay/android-developer/answer/13821247) and [the program page](https://support.google.com/googleplay/android-developer/answer/13306652).
+- **iOS: in-app purchase only.** Digital goods and subscriptions sold in an iOS app go through the App Store. For the India storefront there is no external-link or alternative-payment entitlement, and an iOS app may not steer customers to other ways to pay (App Review Guideline 3.1.1(a)). A service may let iOS users use what they bought elsewhere, if it is also sold as an in-app purchase in the app (guideline 3.1.3(b)). [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/). The [iOS SDK](./mobile-apps.md#ios-sdk) only ever offers the App Store, and React Native and Flutter follow it on iPhone.
+- **Android: user choice billing is available in India.** For apps and games, for in-app purchases and subscriptions. Google Play billing must remain an option, and Google renders the information and choice screens. Alternative billing without Play billing, and link-outs, are not available in India. [Understanding user choice billing on Google Play](https://support.google.com/googleplay/android-developer/answer/13821247) and [the program page](https://support.google.com/googleplay/android-developer/answer/13306652). The [Android SDK](./mobile-apps.md#android-sdk) builds Google's billing client with user choice billing only when the session's option says so.
 - **Android: you report every alternative transaction to Google** within 24 hours of the payment's authorisation: the first payment (a free trial too, with a zero amount), every renewal, upgrades and downgrades, and refunds. India needs the customer's state with the tax split. [Report external transactions](https://developer.android.com/google/play/billing/outside-gpb-backend).
 - **Physical goods and services consumed outside the app** are not in-app purchases. The catalog marks them `physicalGoods` and they go to the gateways on every platform.
 - **Recurring payments on gateways follow the RBI e-mandate framework**: after registration, no additional factor up to Rs 15,000 per debit (Rs 1,00,000 for insurance premiums, mutual funds and credit card bills), with a 24-hour pre-debit notice. [RBI notification](https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=13374). Put the per-debit ceiling in your [routing limits](./routing.md#set-it-up).
@@ -200,11 +200,11 @@ What the customer's client does depends on the option:
 | `google_play_billing` | Play Billing flow with `setObfuscatedAccountId`; with `userChoiceBilling` the billing client is built with user choice billing enabled | `{ purchaseToken, productId }` |
 | A gateway instruction | [`openCheckout`](./checkout.md) in a browser, or the `hostedUrl` in a browser tab | What the gateway returned, untouched (the hosted page does this itself) |
 
-A mobile app never calls these functions directly: it talks to your backend. See [Mobile apps](./mobile-apps.md).
+A mobile app never calls these functions directly: it talks to your backend. The [iOS SDK](./mobile-apps.md#ios-sdk), the [Android SDK](./mobile-apps.md#android-sdk), [React Native](./mobile-apps.md#react-native) and [Flutter](./mobile-apps.md#flutter) carry out the device column of this table and send your backend the calls. See [Mobile apps](./mobile-apps.md).
 
 ### Choose the alternative (Android, user choice billing)
 
-When Google's choice screen reports that the customer picked the alternative, the app receives an external transaction token and sends it to your backend, which forwards it:
+When Google's choice screen reports that the customer picked the alternative, the app receives an external transaction token and sends it to your backend, which forwards it. The Android SDK does this itself, and then opens the gateway option's hosted page:
 
 ```ts title="purchases-alternative.ts"
 import { SalesChannel } from 'india-subscriptions';
@@ -289,7 +289,7 @@ If the Android policy is `user_choice`, these are the things Google asks of you 
 | Google asks | The library | You |
 |---|---|---|
 | **Enrol.** Accept the terms and complete onboarding in Play Console, then enable user choice billing for the app. | Nothing: it is an account step. | Do it. [Setting up Google Play](./setting-up-google-play.md#enrol-in-user-choice-billing) has the steps. |
-| **Show Google's own screens.** Google renders the information and choice screens when the billing client is built with `enableUserChoiceBilling`. | Marks the Google Play option with `userChoiceBilling: true`. It never draws the choice. | Build the `BillingClient` accordingly: [Mobile apps](./mobile-apps.md#android). |
+| **Show Google's own screens.** Google renders the information and choice screens when the billing client is built with `enableUserChoiceBilling`. | Marks the Google Play option with `userChoiceBilling: true`. It never draws the choice. | Nothing, when you use the [Android SDK](./mobile-apps.md#android-sdk), React Native or Flutter: they build the `BillingClient` with user choice billing when the session says so. Without an SDK, build it that way yourself: [Mobile apps](./mobile-apps.md#without-an-sdk). |
 | **Report within 24 hours** of the payment's authorisation: the first payment (a free trial as zero), every renewal, every refund. | Queues each report in the store before `complete` returns, sends them with `flush`, retries with backoff, and flags any that pass the deadline. | Run `flush` (the service does it on every tick) and alert when `overdue` is not empty. |
 | **Send the customer's state** with the tax split. | Splits the charge with `taxRateBps` and reports the state with region `IN`. | Collect `customer.state` and set `taxRateBps` on the products. |
 | **Keep Google Play billing as an option.** | The Google Play option is always in the session. | Do not hide it. |
@@ -324,12 +324,12 @@ A failed send stays queued and is retried with a doubling backoff (1 minute, up 
 
 ## The hosted checkout page
 
-An Android app that took the alternative cannot run the browser helper, so the service serves a page that performs the gateway's checkout step. `GET /checkout/{sessionId}` opens in a Custom Tab, and works for any gateway instruction: a redirect, a form post, Razorpay Standard Checkout or cashfree.js.
+An Android app that took the alternative cannot run the browser helper, so the service serves a page that performs the gateway's checkout step. The Android SDK (and React Native and Flutter on Android) opens it in a Custom Tab; `GET /checkout/{sessionId}` is the address, and works for any gateway instruction: a redirect, a form post, Razorpay Standard Checkout or cashfree.js.
 
 - The session id in the path is the only credential. No API key is needed, and no secret is in the page: it holds what the customer's browser is allowed to know (a Razorpay key id, a payment session id, the signed form fields).
 - An unknown id and an expired or completed session answer 404 with the same empty page, so neither can be told from the other.
 - The page is served with a strict Content-Security-Policy that allows only the gateway's script and frames, and one fixed script per instruction kind.
-- When the customer comes back, `GET` or `POST /checkout/{sessionId}/return` gathers the result the gateway sent (query and form fields), calls `purchases.complete` (which asks the gateway about the order the session created, so a forged field changes nothing) and redirects the customer to the session's own `returnUrl` with `session` and `status` appended. The `returnUrl` may be an app deep link. The status is always the session's own, never taken from the request.
+- When the customer comes back, `GET` or `POST /checkout/{sessionId}/return` gathers the result the gateway sent (query and form fields), calls `purchases.complete` (which asks the gateway about the order the session created, so a forged field changes nothing) and redirects the customer to the session's own `returnUrl` with `session` and `status` appended. The `returnUrl` may be an app deep link: the app declares it in its manifest, and the SDK reads the session from your backend when the link opens the app (see [the Android SDK](./mobile-apps.md#android-sdk)). The status is always the session's own, never taken from the request.
 - A return URL with a script-running scheme (`javascript:`, `data:` and similar) is never redirected to.
 
 `PUBLIC_BASE_URL` makes the service build these addresses (`hostedUrl` on each gateway option, and the return address gateways are given). Use `https`. Without it, options carry no `hostedUrl` and gateways return customers to the `returnUrl` you passed to `start`.
@@ -389,7 +389,7 @@ The tables are `sessions`, `entitlements`, `reports` and `purchase_locks` (behin
 
 `india-subscriptions serve` runs all of this from configuration. Set `PURCHASES_FILE` to a JSON document with `catalog`, `policy` and `routing`, and give it somewhere to keep its state: `PURCHASE_STORE_FILE` (one instance), or `DATABASE_URL` (PostgreSQL, any number of instances). Set `PUBLIC_BASE_URL` for the hosted checkout. The service flushes Google's reports on every tick, on every instance, and says so in its start-up report. The routes are `POST /v1/purchases`, `GET /v1/purchases/{sessionId}`, `POST /v1/purchases/{sessionId}/alternative`, `POST /v1/purchases/{sessionId}/complete`, `GET /v1/entitlements/{customerRef}` and `POST /v1/purchases/flush`, all behind the API key, plus the public checkout routes. See [Running the HTTP service](./http-service.md) and the [HTTP API reference](../reference/generated/http-api.md#purchases).
 
-A mobile app never holds the service's API key. It talks to your backend, which forwards the calls: [Mobile apps](./mobile-apps.md).
+A mobile app never holds the service's API key. It talks to your backend, which forwards the calls: [Mobile apps](./mobile-apps.md), which also compares the four SDKs.
 
 ## What it does not do
 

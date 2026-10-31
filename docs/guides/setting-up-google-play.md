@@ -68,7 +68,11 @@ GOOGLE_PLAY_PUSH_SERVICE_ACCOUNT_EMAIL=pubsub-push@example-project.iam.gservicea
 
 `GOOGLE_PLAY_ENVIRONMENT` is `test` to accept purchases made by license testers and `live` to refuse them. The full list, with `GOOGLE_PLAY_REVOKE_ON_REFUND` and `GOOGLE_PLAY_CONSUMABLE_PRODUCT_IDS`, is in [Environment variables](../reference/generated/environment.md#google-play); with the library, the same settings are the options of [`googlePlay(...)`](../gateways/google-play.md#configuration).
 
-## 6. Test with license testers
+## 6. The app side
+
+The device steps are done by the [Android SDK](./mobile-apps.md#android-sdk), or by [React Native](./mobile-apps.md#react-native) or [Flutter](./mobile-apps.md#flutter) on Android, which use it underneath. The app depends on the SDK, builds with the Play Billing Library the SDK brings, and passes your product key to `purchase`; the SDK loads the product, picks the offer from the catalog's `basePlanId` and `offerId`, and launches Google's purchase screen. It sends the purchase token to your backend and never acknowledges or consumes a purchase: the service does that when it verifies the purchase, which is why the service account in step 2 needs the permission to manage orders and subscriptions. For user choice billing the app must also declare the return link that the hosted checkout sends the customer back to; [the Android SDK section](./mobile-apps.md#android-sdk) shows the manifest entry. Subscription management links go to Google Play's page, which the SDK's `PlaySubscriptions` helper opens.
+
+## 7. Test with license testers
 
 Add the Google accounts of your testers as license testers in Play Console (see [Test in-app billing with application licensing](https://support.google.com/googleplay/android-developer/answer/6062777)). Their purchases are not charged, they carry a test marker, and with `GOOGLE_PLAY_ENVIRONMENT=live` the adapter refuses to grant anything for them. License testers are also how you test user choice billing: you are not invoiced for transactions started by their accounts.
 
@@ -79,6 +83,7 @@ Skip this if your Android policy is `store`. For `user_choice` Google requires y
 1. Review the requirements on [Understanding user choice billing on Google Play](https://support.google.com/googleplay/android-developer/answer/13821247): the app must offer alternative billing to mobile and tablet users in India.
 2. In Play Console go to **Manage account**, **Play apps settings**, **Monetization settings**, **Alternative billing**. Accept the terms of service and set up a payment profile if required.
 3. Wait for Google's e-mail confirming onboarding. It carries the instructions for enrolling your app, implementing the APIs and meeting the program requirements.
+4. In Play Console's alternative billing settings for the app, choose to offer the alternative, upload the payment method logos, and, if you offer subscriptions, provide the subscription management link Google requires. The logos are optional but recommended: one PNG with a transparent background, 192 dp by 20 dp, up to five cards of 32 dp by 20 dp spaced 8 dp apart, and nothing else in the image; an image that does not follow the specification is not shown. Google's page does not state the format of the management link: point it at the page where your customers manage subscriptions bought through the alternative. Source: [Alternative billing](https://developer.android.com/google/play/billing/alternative). Google renders the choice screen; the app draws nothing.
 
 What the program asks of you, as Google states it on [the program page](https://support.google.com/googleplay/android-developer/answer/13306652): Google Play billing stays an option beside yours, Google renders the information and choice screens when you use the alternative billing APIs, transactions are reported within 24 hours of the payment's authorisation, and an adjusted service fee applies to transactions made outside Google Play's billing. The library queues and sends the reports; see [Google's user choice billing](./purchases.md#google-user-choice-billing).
 
@@ -90,6 +95,7 @@ What the program asks of you, as Google states it on [the program page](https://
 - [ ] Base plans and offers are **active**, and the catalog's `googlePlay` mapping matches the ids exactly.
 - [ ] `GOOGLE_PLAY_ENVIRONMENT` is `live`.
 - [ ] For user choice billing: you are enrolled, the products carry `taxRateBps`, `customer.state` is collected, `PUBLIC_BASE_URL` is set and the report queue is flushed on a schedule with an alert on `overdue`.
-- [ ] A purchase that never reaches your server is not acknowledged and Google refunds it after three days: the app retries the completion until the backend confirms it.
+- [ ] A purchase that never reaches your server is not acknowledged and Google refunds it after three days: the Android SDK retries the completion until the backend confirms it or refuses it for good.
+- [ ] For user choice billing: the app declares the return link, and the payment-method logos and the subscription-management link are set in Play Console's alternative billing settings.
 
 See also [Google Play](../gateways/google-play.md) and [Selling on iPhone, Android and the web](./purchases.md).
