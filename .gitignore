@@ -21,3 +21,6 @@ build/
 docs/node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+
+# Swift package build output
+.build/
