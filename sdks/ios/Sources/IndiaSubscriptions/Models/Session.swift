@@ -26,6 +26,14 @@ public struct PurchaseAttempt: Codable, Hashable, Sendable {
     public var at: Date
     public var errorCode: String?
     public var message: String?
+
+    public init(provider: Provider, outcome: AttemptOutcome, at: Date, errorCode: String? = nil, message: String? = nil) {
+        self.provider = provider
+        self.outcome = outcome
+        self.at = at
+        self.errorCode = errorCode
+        self.message = message
+    }
 }
 
 /// A purchase in progress or done: where the customer may pay and how it ended.

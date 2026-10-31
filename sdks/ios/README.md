@@ -30,6 +30,17 @@ directory (or, in a `Package.swift`):
 .target(name: "MyApp", dependencies: [.product(name: "IndiaSubscriptions", package: "ios")]),
 ```
 
+From this repository's URL, which has a `Package.swift` at its root exposing the same `IndiaSubscriptions` library (the
+sources are the ones in `sdks/ios`; `sdks/ios/Package.swift` stays for development by path and for the package's own tests):
+
+```swift
+.package(url: "https://example.com/path/to/india-subscriptions.git", from: "0.1.0"),   // this repository's URL
+// ...
+.target(name: "MyApp", dependencies: [.product(name: "IndiaSubscriptions", package: "india-subscriptions")]),
+```
+
+The package name in `package:` is the repository's name (the last component of the URL).
+
 Add the **In-App Purchase** capability to the app target.
 
 ## The backend it expects
