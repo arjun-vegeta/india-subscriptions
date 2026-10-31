@@ -1,0 +1,14 @@
+pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
+plugins { id("com.facebook.react.settings") }
+extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
+rootProject.name = 'indiasubscriptionsreactnative.example'
+include ':app'
+includeBuild('../node_modules/@react-native/gradle-plugin')
+
+// The india-subscriptions Android SDK, consumed from this repository by path as a composite build. The bridge asks for
+// it by its Maven coordinates (dev.indiasubscriptions:android); Gradle substitutes the included project.
+includeBuild("../../../android") {
+    dependencySubstitution {
+        substitute module("dev.indiasubscriptions:android") using project(":indiasubscriptions")
+    }
+}

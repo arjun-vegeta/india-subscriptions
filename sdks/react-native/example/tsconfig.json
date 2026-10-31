@@ -1,0 +1,9 @@
+{
+  "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    "customConditions": ["india-subscriptions-react-native-source", "react-native-strict-api"],
+    "moduleResolution": "bundler",
+    "noEmit": true
+  },
+  "include": ["src", "index.js"]
+}
